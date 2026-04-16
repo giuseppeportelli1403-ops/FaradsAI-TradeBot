@@ -22,6 +22,7 @@ import {
   saveResearchBrief, getLatestBrief,
   getDailyPnl, upsertDailyPnl,
 } from '../database/index.js';
+import { getRankedInstruments } from '../scanner/index.js';
 
 // ==================== INIT ====================
 
@@ -271,14 +272,14 @@ server.tool(
     limit: z.number().optional().default(20).describe('Number of top instruments to return'),
   },
   async ({ limit }) => {
-    // TODO: Call scanner module (Step 5)
+    const instruments = await getRankedInstruments(limit);
     return {
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
-          instruments: [],
-          count: 0,
-          note: 'Scanner not yet implemented (Step 5)',
+          instruments,
+          count: instruments.length,
+          timestamp: new Date().toISOString(),
         }),
       }],
     };

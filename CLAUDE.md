@@ -53,9 +53,9 @@ get_economic_calendar, get_correlation_matrix, get_sector_strength, get_vix, get
 | 2 | Set up project folder + structure | Complete |
 | 3 | Build MCP Server with all 21 tools | Complete |
 | 4 | Build SQLite database (split-leg schema + lessons table + research briefs) | Complete |
-| 5 | Build Universe Scanner | Pending |
-| 6a | Build News Context System | Pending |
-| 6b | Build Market Researcher Agent | Pending |
+| 5 | Build Universe Scanner | Complete |
+| 6a | Build News Context System | Complete |
+| 6b | Build Market Researcher Agent | Complete |
 | 7a | Build ICT Intraday Trading Agent (5-step decision cycle) | Pending |
 | 7b | Build Swing Trading Agent (10-step decision sequence) | Pending |
 | 7c | Build Trade Analyst Agent (6-check approval gate) | Pending |
