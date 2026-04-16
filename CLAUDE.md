@@ -52,7 +52,7 @@ get_economic_calendar, get_correlation_matrix, get_sector_strength, get_vix, get
 | 1 | Get T212 API Key (manual) | Pending |
 | 2 | Set up project folder + structure | Complete |
 | 3 | Build MCP Server with all 21 tools | Complete |
-| 4 | Build SQLite database (split-leg schema + lessons table + research briefs) | Pending |
+| 4 | Build SQLite database (split-leg schema + lessons table + research briefs) | Complete |
 | 5 | Build Universe Scanner | Pending |
 | 6a | Build News Context System | Pending |
 | 6b | Build Market Researcher Agent | Pending |

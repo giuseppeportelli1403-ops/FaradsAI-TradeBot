@@ -13,7 +13,15 @@ import {
   fetchEconomicCalendar, fetchSectorStrength, fetchNewsContext,
   computeCorrelation,
 } from './market-data.js';
-import type { Timeframe } from '../types.js';
+import type { Timeframe, StrategyTag } from '../types.js';
+import {
+  initDatabaseAsync,
+  insertTrade, updateTradeStatus, getTradeById, getTradeHistory,
+  getLessons, getLessonWinRate, getOpenTrades, countOpenPositions,
+  createSlTpOrder, updateSlPrice, setTrailingStop as dbSetTrailingStop,
+  saveResearchBrief, getLatestBrief,
+  getDailyPnl, upsertDailyPnl,
+} from '../database/index.js';
 
 // ==================== INIT ====================
 
@@ -142,7 +150,7 @@ server.tool(
     distance: z.number().describe('Trailing stop distance in price terms'),
   },
   async ({ trade_id, distance }) => {
-    // TODO: Save to DB via database module (Step 4)
+    dbSetTrailingStop(trade_id, 'B', distance);
     return {
       content: [{
         type: 'text' as const,
@@ -150,7 +158,7 @@ server.tool(
           trade_id,
           trailing_stop_distance: distance,
           status: 'set',
-          note: 'Trailing stop saved locally. Scheduler will monitor price and execute.',
+          note: 'Trailing stop saved to DB. Scheduler will monitor price and execute.',
         }),
       }],
     };
@@ -168,7 +176,8 @@ server.tool(
     new_sl: z.number().describe('New stop loss price'),
   },
   async ({ trade_id, new_sl }) => {
-    // TODO: Update in DB via database module (Step 4)
+    updateSlPrice(trade_id, 'A', new_sl);
+    updateSlPrice(trade_id, 'B', new_sl);
     return {
       content: [{
         type: 'text' as const,
@@ -176,7 +185,7 @@ server.tool(
           trade_id,
           new_sl,
           status: 'updated',
-          note: 'SL updated locally. Scheduler will monitor price and execute.',
+          note: 'SL updated in DB for both legs. Scheduler will monitor price and execute.',
         }),
       }],
     };
@@ -192,12 +201,33 @@ server.tool(
     trade_data: z.string().describe('JSON string of full trade record (see TradeRecord type)'),
   },
   async ({ trade_data }) => {
-    // TODO: Insert into trades table via database module (Step 4)
     const parsed = JSON.parse(trade_data);
+    insertTrade(parsed);
+
+    // Create SL/TP monitoring entries for both legs
+    createSlTpOrder({
+      trade_id: parsed.id,
+      leg: 'A',
+      instrument: parsed.instrument,
+      direction: parsed.direction,
+      quantity: parsed.size_a,
+      sl_price: parsed.sl,
+      tp_price: parsed.tp1,
+    });
+    createSlTpOrder({
+      trade_id: parsed.id,
+      leg: 'B',
+      instrument: parsed.instrument,
+      direction: parsed.direction,
+      quantity: parsed.size_b,
+      sl_price: parsed.sl,
+      tp_price: parsed.tp2,
+    });
+
     return {
       content: [{
         type: 'text' as const,
-        text: JSON.stringify({ status: 'logged', trade_id: parsed.id || 'pending' }),
+        text: JSON.stringify({ status: 'logged', trade_id: parsed.id }),
       }],
     };
   }
@@ -216,15 +246,16 @@ server.tool(
     limit: z.number().optional().default(20).describe('Max lessons to return'),
   },
   async ({ setup_type, instrument_category, kill_zone, strategy_tag, limit }) => {
-    // TODO: Query lessons table via database module (Step 4)
+    const lessons = getLessons({ setup_type, instrument_category, kill_zone, strategy_tag, limit });
+    const winRate = getLessonWinRate({ setup_type, instrument_category, kill_zone, strategy_tag });
     return {
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
-          lessons: [],
+          lessons,
+          count: lessons.length,
+          win_rate: winRate,
           filters: { setup_type, instrument_category, kill_zone, strategy_tag },
-          count: 0,
-          note: 'Database not yet implemented (Step 4)',
         }),
       }],
     };
@@ -275,19 +306,30 @@ server.tool(
   'get_daily_pnl',
   {},
   async () => {
-    // Combine T212 portfolio P&L with today's closed trades from DB
     const balance = await t212.getBalance();
-    // TODO: Add closed trades P&L from DB (Step 4)
+    const today = new Date().toISOString().split('T')[0];
+    const dailyRecord = getDailyPnl(today);
+
+    const unrealised = balance.ppl;
+    const realised = dailyRecord?.realised_pnl ?? 0;
+    const total = unrealised + realised;
+    const pct = balance.total ? (total / balance.total) * 100 : 0;
+    const killSwitch = pct <= -4;
+
+    // Update daily P&L snapshot
+    upsertDailyPnl(today, realised, unrealised, balance.total);
+
     return {
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
-          unrealised_pnl: balance.ppl,
-          realised_pnl_today: 0, // TODO: from DB
-          total_daily_pnl: balance.ppl,
+          unrealised_pnl: unrealised,
+          realised_pnl_today: realised,
+          total_daily_pnl: total,
           equity: balance.total,
-          daily_pnl_pct: balance.total ? (balance.ppl / balance.total) * 100 : 0,
-          kill_switch_active: false, // TODO: check if daily loss >= 4%
+          daily_pnl_pct: Math.round(pct * 100) / 100,
+          kill_switch_active: killSwitch,
+          open_positions: countOpenPositions(),
         }),
       }],
     };
@@ -304,15 +346,14 @@ server.tool(
     strategy_tag: z.enum(['ICT_INTRADAY', 'SWING']).optional().describe('Filter by strategy'),
   },
   async ({ limit, strategy_tag }) => {
-    // TODO: Query trades table via database module (Step 4)
+    const trades = getTradeHistory(limit, strategy_tag as StrategyTag | undefined);
     return {
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
-          trades: [],
-          count: 0,
+          trades,
+          count: trades.length,
           filters: { strategy_tag },
-          note: 'Database not yet implemented (Step 4)',
         }),
       }],
     };
@@ -430,15 +471,15 @@ server.tool(
     content: z.string().describe('JSON string of full research brief (see ResearchBrief type)'),
   },
   async ({ content }) => {
-    // TODO: Save to DB or file via database module (Step 4)
     const parsed = JSON.parse(content);
+    saveResearchBrief(parsed);
     return {
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
           status: 'saved',
-          brief_id: parsed.brief_id || 'pending',
-          note: 'Research brief saved. Trading agents will read this at cycle start.',
+          brief_id: parsed.brief_id,
+          note: 'Research brief saved to DB. Trading agents will read this at cycle start.',
         }),
       }],
     };

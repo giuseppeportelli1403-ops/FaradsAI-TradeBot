@@ -88,6 +88,7 @@ export interface Lesson {
   setup_type: string;
   kill_zone: string;
   news_category: string;
+  news_description: string;
   composite_score: number;
   position_a_outcome: string;
   position_b_outcome: string;
