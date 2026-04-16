@@ -1,19 +1,27 @@
 // BetterOpsAI Trading Bot — Main Entry Point
-// Initialises database, starts scheduler, connects all agents
+// Initialises database, Telegram, starts scheduler, connects all agents
 
 import { initDatabaseAsync } from './database/index.js';
+import { initTelegram } from './notifications/telegram.js';
 import { startScheduler } from './scheduler/index.js';
 
 async function main(): Promise<void> {
-  console.log('BetterOpsAI Trading Bot starting...');
+  console.log('='.repeat(50));
+  console.log('BetterOpsAI Trading Bot v0.1.0');
+  console.log('='.repeat(50));
 
   // Step 1: Initialise database
   await initDatabaseAsync();
-  console.log('Database initialised.');
+  console.log('[OK] Database initialised.');
 
-  // Step 2: Start scheduler (candle detection, position monitoring, agent triggers)
+  // Step 2: Initialise Telegram notifications
+  initTelegram();
+  console.log('[OK] Telegram initialised.');
+
+  // Step 3: Start scheduler (candle detection, position monitoring, agent triggers)
   startScheduler();
-  console.log('Scheduler running. Bot is live.');
+  console.log('[OK] Scheduler running. Bot is live.');
+  console.log('='.repeat(50));
 }
 
 main().catch((error) => {

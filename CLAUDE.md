@@ -59,10 +59,10 @@ get_economic_calendar, get_correlation_matrix, get_sector_strength, get_vix, get
 | 7a | Build ICT Intraday Trading Agent (5-step decision cycle) | Complete |
 | 7b | Build Swing Trading Agent (10-step decision sequence) | Complete |
 | 7c | Build Trade Analyst Agent (6-check approval gate) | Complete |
-| 8 | Build Reflection Agent (structured JSON lessons — both strategies) | Pending |
-| 9 | Build Weekly Review Agent (dual strategy report + updates) | Pending |
-| 10 | Build Scheduler (all triggers for 6 agents) | Pending |
-| 11 | Add Telegram Alerts (all alert types) | Pending |
+| 8 | Build Reflection Agent (structured JSON lessons — both strategies) | Complete |
+| 9 | Build Weekly Review Agent (dual strategy report + updates) | Complete |
+| 10 | Build Scheduler (all triggers for 6 agents) | Complete |
+| 11 | Add Telegram Alerts (all alert types) | Complete |
 | 12 | Write strategy.md + swing_strategy.md with trading team (manual) | Pending |
 | 13 | Test on T212 Practice Account — minimum 2 weeks | Pending |
 | 14 | Deploy to VPS | Pending |
