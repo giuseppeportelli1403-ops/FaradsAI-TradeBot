@@ -56,9 +56,9 @@ get_economic_calendar, get_correlation_matrix, get_sector_strength, get_vix, get
 | 5 | Build Universe Scanner | Complete |
 | 6a | Build News Context System | Complete |
 | 6b | Build Market Researcher Agent | Complete |
-| 7a | Build ICT Intraday Trading Agent (5-step decision cycle) | Pending |
-| 7b | Build Swing Trading Agent (10-step decision sequence) | Pending |
-| 7c | Build Trade Analyst Agent (6-check approval gate) | Pending |
+| 7a | Build ICT Intraday Trading Agent (5-step decision cycle) | Complete |
+| 7b | Build Swing Trading Agent (10-step decision sequence) | Complete |
+| 7c | Build Trade Analyst Agent (6-check approval gate) | Complete |
 | 8 | Build Reflection Agent (structured JSON lessons — both strategies) | Pending |
 | 9 | Build Weekly Review Agent (dual strategy report + updates) | Pending |
 | 10 | Build Scheduler (all triggers for 6 agents) | Pending |
