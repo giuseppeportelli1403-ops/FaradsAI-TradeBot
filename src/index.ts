@@ -1,6 +1,7 @@
 // BetterOpsAI Trading Bot — Main Entry Point
 // Initialises database, Telegram, starts scheduler, connects all agents
 
+import { runPreflight } from './preflight.js';
 import { initDatabaseAsync } from './database/index.js';
 import { initTelegram } from './notifications/telegram.js';
 import { startScheduler } from './scheduler/index.js';
@@ -9,6 +10,10 @@ async function main(): Promise<void> {
   console.log('='.repeat(50));
   console.log('BetterOpsAI Trading Bot v0.1.0');
   console.log('='.repeat(50));
+
+  // Step 0: Preflight environment checks
+  runPreflight();
+  console.log('[OK] Preflight checks passed.');
 
   // Step 1: Initialise database
   await initDatabaseAsync();
