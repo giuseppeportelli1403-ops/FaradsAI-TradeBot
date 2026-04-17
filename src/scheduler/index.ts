@@ -15,13 +15,17 @@ import { runResearcherAgent } from '../agents/researcher-agent.js';
 import { runReflectionAgent } from '../agents/reflection-agent.js';
 import { runWeeklyReviewAgent } from '../agents/review-agent.js';
 import {
-  getActiveSlTpOrders,
-  deactivateSlTpOrder,
-  updateTradeStatus,
-  getTradeById,
+  getActiveSlTpOrders as realGetActiveSlTpOrders,
+  deactivateSlTpOrder as realDeactivateSlTpOrder,
+  updateTradeStatus as realUpdateTradeStatus,
+  getTradeById as realGetTradeById,
 } from '../database/index.js';
 import { CapitalClient } from '../mcp-server/capital-client.js';
-import { alertTp1Hit, alertTp2Hit, alertSlHit } from '../notifications/telegram.js';
+import {
+  alertTp1Hit as realAlertTp1Hit,
+  alertTp2Hit as realAlertTp2Hit,
+  alertSlHit as realAlertSlHit,
+} from '../notifications/telegram.js';
 import type { CapitalPosition, Activity, TradeRecord } from '../types.js';
 
 const capital = new CapitalClient({
@@ -30,6 +34,25 @@ const capital = new CapitalClient({
   password: process.env.CAPITAL_API_KEY_PASSWORD || '',
   baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
 });
+
+// ==================== DEPENDENCY-INJECTION SURFACE ====================
+// monitorSplitPositions() is called in production from the cron loop with no
+// arguments — it then uses the real Capital client, real DB, real Telegram.
+// For unit tests we inject mocks via the optional `deps` parameter so the
+// orchestration logic (if/else tree across TP/SL/OTHER + leg-B second pass)
+// can be exercised without touching the network or the sqlite file.
+// Production behaviour is unchanged when `deps` is undefined.
+
+export interface MonitorDeps {
+  capital: Pick<CapitalClient, 'getOpenPositions' | 'getActivityHistory' | 'updatePosition'>;
+  getActiveSlTpOrders: typeof realGetActiveSlTpOrders;
+  getTradeById: typeof realGetTradeById;
+  deactivateSlTpOrder: typeof realDeactivateSlTpOrder;
+  updateTradeStatus: typeof realUpdateTradeStatus;
+  alertTp1Hit?: typeof realAlertTp1Hit;
+  alertTp2Hit?: typeof realAlertTp2Hit;
+  alertSlHit?: typeof realAlertSlHit;
+}
 
 // Track last processed candle timestamps to detect new closes
 let last15mCandle = '';
@@ -104,8 +127,26 @@ export function classifyCloseReason(
   return 'OTHER';
 }
 
-async function monitorSplitPositions(): Promise<void> {
-  const activeOrders = getActiveSlTpOrders();
+/** Build the default production dependency set — the real Capital client, the
+ *  real sqlite-backed DB functions, and the real Telegram alerters. Kept as a
+ *  factory so we only capture the module-level `capital` singleton lazily. */
+function defaultMonitorDeps(): MonitorDeps {
+  return {
+    capital,
+    getActiveSlTpOrders: realGetActiveSlTpOrders,
+    getTradeById: realGetTradeById,
+    deactivateSlTpOrder: realDeactivateSlTpOrder,
+    updateTradeStatus: realUpdateTradeStatus,
+    alertTp1Hit: realAlertTp1Hit,
+    alertTp2Hit: realAlertTp2Hit,
+    alertSlHit: realAlertSlHit,
+  };
+}
+
+export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
+  const d = deps ?? defaultMonitorDeps();
+
+  const activeOrders = d.getActiveSlTpOrders();
   // We only act on leg A — leg B's SL is managed by Capital after we move it to BE.
   const legAOrders = activeOrders.filter((o) => o.leg === 'A');
   if (legAOrders.length === 0) return;
@@ -115,8 +156,8 @@ async function monitorSplitPositions(): Promise<void> {
   let activities: Activity[];
   try {
     [openPositions, activities] = await Promise.all([
-      capital.getOpenPositions(),
-      capital.getActivityHistory(),
+      d.capital.getOpenPositions(),
+      d.capital.getActivityHistory(),
     ]);
   } catch (error) {
     console.error('[Monitor] Failed to fetch Capital state this tick:', error);
@@ -139,17 +180,17 @@ async function monitorSplitPositions(): Promise<void> {
 
       // Position A is no longer open — Capital closed it (SL or TP hit).
       const reason = classifyCloseReason(activities, order.deal_id);
-      const trade = getTradeById(order.trade_id);
+      const trade = d.getTradeById(order.trade_id);
       if (!trade) {
         console.warn(`[Monitor] Trade ${order.trade_id} not found for closed leg A`);
-        deactivateSlTpOrder(order.trade_id, 'A');
+        d.deactivateSlTpOrder(order.trade_id, 'A');
         continue;
       }
 
       if (reason === 'TP') {
-        await handleTp1Hit(trade, order.trade_id);
+        await handleTp1Hit(trade, order.trade_id, d);
       } else if (reason === 'SL') {
-        await handleLegAClosed(trade, order.trade_id, 'sl_hit');
+        await handleLegAClosed(trade, order.trade_id, 'sl_hit', d);
       } else {
         // Unknown close reason — still mark leg A inactive so we don't loop on it.
         // Do NOT touch trade status; a human/later tick can investigate.
@@ -157,7 +198,7 @@ async function monitorSplitPositions(): Promise<void> {
           `[Monitor] Leg A for trade ${order.trade_id} (deal ${order.deal_id}) ` +
             `closed but reason could not be classified. Deactivating leg A only.`,
         );
-        deactivateSlTpOrder(order.trade_id, 'A');
+        d.deactivateSlTpOrder(order.trade_id, 'A');
       }
     } catch (error) {
       console.error(`[Monitor] Error processing leg A for trade ${order.trade_id}:`, error);
@@ -166,42 +207,53 @@ async function monitorSplitPositions(): Promise<void> {
 
   // Second pass: if leg B is still marked active in our DB but is no longer
   // open on Capital, the trade is fully closed — promote to 'complete'.
-  const legBOrders = getActiveSlTpOrders().filter((o) => o.leg === 'B');
+  const legBOrders = d.getActiveSlTpOrders().filter((o) => o.leg === 'B');
   for (const order of legBOrders) {
     if (!order.deal_id) continue;
     if (openDealIds.has(order.deal_id)) continue;
 
-    const trade = getTradeById(order.trade_id);
+    const trade = d.getTradeById(order.trade_id);
     if (!trade) {
-      deactivateSlTpOrder(order.trade_id, 'B');
+      d.deactivateSlTpOrder(order.trade_id, 'B');
       continue;
     }
 
     const reason = classifyCloseReason(activities, order.deal_id);
     const status = reason === 'TP' ? 'complete' : reason === 'SL' ? 'sl_hit' : 'complete';
-    updateTradeStatus(order.trade_id, status);
-    deactivateSlTpOrder(order.trade_id, 'B');
+    d.updateTradeStatus(order.trade_id, status);
+    d.deactivateSlTpOrder(order.trade_id, 'B');
 
     try {
-      if (status === 'complete') await alertTp2Hit(trade);
-      else await alertSlHit(trade);
+      if (status === 'complete') {
+        if (d.alertTp2Hit) await d.alertTp2Hit(trade);
+      } else {
+        if (d.alertSlHit) await d.alertSlHit(trade);
+      }
     } catch (e) {
       console.error('[Monitor] Telegram alert for leg B close failed:', e);
     }
 
-    // Trigger reflection once both legs are closed.
-    setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
+    // Trigger reflection once both legs are closed. Skip when deps were
+    // injected (tests don't want side effects from the agent runner).
+    if (!deps) {
+      setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
+    }
   }
 }
 
-async function handleTp1Hit(trade: TradeRecord, tradeId: string): Promise<void> {
-  updateTradeStatus(tradeId, 'tp1_hit');
-  deactivateSlTpOrder(tradeId, 'A');
+export async function handleTp1Hit(
+  trade: TradeRecord,
+  tradeId: string,
+  deps?: MonitorDeps,
+): Promise<void> {
+  const d = deps ?? defaultMonitorDeps();
+  d.updateTradeStatus(tradeId, 'tp1_hit');
+  d.deactivateSlTpOrder(tradeId, 'A');
 
   // Move Position B's SL to break-even (the entry price).
   if (trade.position_b_id) {
     try {
-      await capital.updatePosition(trade.position_b_id, { stopLevel: trade.entry });
+      await d.capital.updatePosition(trade.position_b_id, { stopLevel: trade.entry });
       console.log(
         `[TP1] ${trade.instrument} — Position B SL moved to break-even (${trade.entry})`,
       );
@@ -211,23 +263,25 @@ async function handleTp1Hit(trade: TradeRecord, tradeId: string): Promise<void> 
   }
 
   try {
-    await alertTp1Hit(trade);
+    if (d.alertTp1Hit) await d.alertTp1Hit(trade);
   } catch (e) {
     console.error('[Monitor] Telegram TP1 alert failed:', e);
   }
 }
 
-async function handleLegAClosed(
+export async function handleLegAClosed(
   trade: TradeRecord,
   tradeId: string,
   status: 'sl_hit',
+  deps?: MonitorDeps,
 ): Promise<void> {
+  const d = deps ?? defaultMonitorDeps();
   // Leg A SL-hit before TP1. Capital already closed it; we just record the state.
-  updateTradeStatus(tradeId, status);
-  deactivateSlTpOrder(tradeId, 'A');
+  d.updateTradeStatus(tradeId, status);
+  d.deactivateSlTpOrder(tradeId, 'A');
 
   try {
-    await alertSlHit(trade);
+    if (d.alertSlHit) await d.alertSlHit(trade);
   } catch (e) {
     console.error('[Monitor] Telegram SL alert failed:', e);
   }
