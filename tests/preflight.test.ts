@@ -13,7 +13,7 @@ describe('checkEnvKeys', () => {
     // Strip any inherited keys from the parent shell so each test starts clean
     delete process.env.CAPITAL_API_KEY;
     delete process.env.CAPITAL_IDENTIFIER;
-    delete process.env.CAPITAL_PASSWORD;
+    delete process.env.CAPITAL_API_KEY_PASSWORD;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.TELEGRAM_BOT_TOKEN;
     delete process.env.TELEGRAM_CHAT_ID;
@@ -32,7 +32,7 @@ describe('checkEnvKeys', () => {
   it('returns canStart=false when required CAPITAL_API_KEY is missing', () => {
     // Set all OTHER required keys so this test isolates CAPITAL_API_KEY.
     process.env.CAPITAL_IDENTIFIER = 'user@example.com';
-    process.env.CAPITAL_PASSWORD = 'pw';
+    process.env.CAPITAL_API_KEY_PASSWORD = 'pw';
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx';
 
     const result = checkEnvKeys();
@@ -43,7 +43,7 @@ describe('checkEnvKeys', () => {
 
   it('returns canStart=false when required CAPITAL_IDENTIFIER is missing', () => {
     process.env.CAPITAL_API_KEY = 'key';
-    process.env.CAPITAL_PASSWORD = 'pw';
+    process.env.CAPITAL_API_KEY_PASSWORD = 'pw';
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx';
 
     const result = checkEnvKeys();
@@ -51,20 +51,20 @@ describe('checkEnvKeys', () => {
     expect(result.errors.some((e) => e.includes('CAPITAL_IDENTIFIER'))).toBe(true);
   });
 
-  it('returns canStart=false when required CAPITAL_PASSWORD is missing', () => {
+  it('returns canStart=false when required CAPITAL_API_KEY_PASSWORD is missing', () => {
     process.env.CAPITAL_API_KEY = 'key';
     process.env.CAPITAL_IDENTIFIER = 'user@example.com';
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx';
 
     const result = checkEnvKeys();
     expect(result.canStart).toBe(false);
-    expect(result.errors.some((e) => e.includes('CAPITAL_PASSWORD'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('CAPITAL_API_KEY_PASSWORD'))).toBe(true);
   });
 
   it('returns canStart=false when required ANTHROPIC_API_KEY is missing', () => {
     process.env.CAPITAL_API_KEY = 'key';
     process.env.CAPITAL_IDENTIFIER = 'user@example.com';
-    process.env.CAPITAL_PASSWORD = 'pw';
+    process.env.CAPITAL_API_KEY_PASSWORD = 'pw';
 
     const result = checkEnvKeys();
     expect(result.canStart).toBe(false);
@@ -74,7 +74,7 @@ describe('checkEnvKeys', () => {
   it('returns canStart=true with warnings when only optional keys are missing', () => {
     process.env.CAPITAL_API_KEY = 'key';
     process.env.CAPITAL_IDENTIFIER = 'user@example.com';
-    process.env.CAPITAL_PASSWORD = 'pw';
+    process.env.CAPITAL_API_KEY_PASSWORD = 'pw';
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx';
     // All optional keys intentionally left unset.
 
@@ -87,7 +87,7 @@ describe('checkEnvKeys', () => {
   it('returns clean result when all required + optional keys are present', () => {
     process.env.CAPITAL_API_KEY = 'key';
     process.env.CAPITAL_IDENTIFIER = 'user@example.com';
-    process.env.CAPITAL_PASSWORD = 'pw';
+    process.env.CAPITAL_API_KEY_PASSWORD = 'pw';
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx';
     process.env.CAPITAL_API_URL = 'https://demo-api-capital.backend-capital.com';
     process.env.TELEGRAM_BOT_TOKEN = 't';
@@ -110,7 +110,7 @@ describe('checkEnvKeys', () => {
     delete process.env.T212_API_KEY;
     process.env.CAPITAL_API_KEY = 'key';
     process.env.CAPITAL_IDENTIFIER = 'user@example.com';
-    process.env.CAPITAL_PASSWORD = 'pw';
+    process.env.CAPITAL_API_KEY_PASSWORD = 'pw';
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx';
 
     const result = checkEnvKeys();
@@ -127,7 +127,7 @@ describe('runPreflight', () => {
     process.env = { ...originalEnv };
     delete process.env.CAPITAL_API_KEY;
     delete process.env.CAPITAL_IDENTIFIER;
-    delete process.env.CAPITAL_PASSWORD;
+    delete process.env.CAPITAL_API_KEY_PASSWORD;
     delete process.env.ANTHROPIC_API_KEY;
   });
 
@@ -158,7 +158,7 @@ describe('runPreflight', () => {
   it('respects --skip-broker-check and does NOT attempt a live Capital session', async () => {
     process.env.CAPITAL_API_KEY = 'key';
     process.env.CAPITAL_IDENTIFIER = 'user@example.com';
-    process.env.CAPITAL_PASSWORD = 'pw';
+    process.env.CAPITAL_API_KEY_PASSWORD = 'pw';
     process.env.ANTHROPIC_API_KEY = 'sk-ant-xxx';
     process.argv = [...originalArgv, '--skip-broker-check'];
 

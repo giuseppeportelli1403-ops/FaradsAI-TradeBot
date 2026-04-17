@@ -260,7 +260,7 @@ trading-bot/
 ```
 CAPITAL_API_KEY=your_capital_com_api_key
 CAPITAL_IDENTIFIER=your_login_email
-CAPITAL_PASSWORD=your_password
+CAPITAL_API_KEY_PASSWORD=your_api_key_password
 CAPITAL_API_URL=https://demo-api-capital.backend-capital.com
 ANTHROPIC_API_KEY=your_anthropic_api_key
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token

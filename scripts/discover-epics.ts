@@ -33,13 +33,13 @@ interface DiscoveryRow {
 async function main(): Promise<void> {
   const apiKey = process.env.CAPITAL_API_KEY ?? '';
   const identifier = process.env.CAPITAL_IDENTIFIER ?? '';
-  const password = process.env.CAPITAL_PASSWORD ?? '';
+  const password = process.env.CAPITAL_API_KEY_PASSWORD ?? '';
   const baseURL =
     process.env.CAPITAL_API_URL ?? 'https://demo-api-capital.backend-capital.com';
 
   if (!apiKey || !identifier || !password) {
     console.error(
-      'Missing Capital.com credentials. Set CAPITAL_API_KEY, CAPITAL_IDENTIFIER, CAPITAL_PASSWORD.'
+      'Missing Capital.com credentials. Set CAPITAL_API_KEY, CAPITAL_IDENTIFIER, CAPITAL_API_KEY_PASSWORD.'
     );
     process.exit(1);
   }

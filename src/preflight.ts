@@ -17,7 +17,7 @@ interface PreflightResult {
 const REQUIRED_KEYS = [
   'CAPITAL_API_KEY',
   'CAPITAL_IDENTIFIER',
-  'CAPITAL_PASSWORD',
+  'CAPITAL_API_KEY_PASSWORD',
   'ANTHROPIC_API_KEY',
 ] as const;
 
@@ -73,7 +73,7 @@ async function verifyCapitalConnectivity(): Promise<void> {
   const capital = new CapitalClient({
     apiKey: process.env.CAPITAL_API_KEY || '',
     identifier: process.env.CAPITAL_IDENTIFIER || '',
-    password: process.env.CAPITAL_PASSWORD || '',
+    password: process.env.CAPITAL_API_KEY_PASSWORD || '',
     baseURL,
   });
 

@@ -27,7 +27,7 @@ import type { CapitalPosition, Activity, TradeRecord } from '../types.js';
 const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
   identifier: process.env.CAPITAL_IDENTIFIER || '',
-  password: process.env.CAPITAL_PASSWORD || '',
+  password: process.env.CAPITAL_API_KEY_PASSWORD || '',
   baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
 });
 

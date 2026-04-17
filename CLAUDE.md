@@ -125,7 +125,7 @@ Capital.com natively supports: OHLC candles, SL/TP on open, trailing stops, modi
 |-----|--------|--------|
 | CAPITAL_API_KEY | Capital.com → Settings → API Keys | Complete |
 | CAPITAL_IDENTIFIER | Capital.com login email | Complete |
-| CAPITAL_PASSWORD | Capital.com account password | Complete |
+| CAPITAL_API_KEY_PASSWORD | Capital.com "Custom Password for API Key" (set when generating API key) | Complete |
 | CAPITAL_API_URL | `https://demo-api-capital.backend-capital.com` | Complete |
 | ANTHROPIC_API_KEY | console.anthropic.com | Pending |
 | TELEGRAM_BOT_TOKEN | @BotFather on Telegram | Pending |
