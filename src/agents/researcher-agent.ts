@@ -8,6 +8,7 @@
 //   3. Which instruments are in play?
 
 import Anthropic from '@anthropic-ai/sdk';
+import { loadPrompt } from './load-prompt.js';
 import { fetchVix, fetchDxy, fetchYieldCurve, fetchEconomicCalendar, fetchSectorStrength } from '../mcp-server/market-data.js';
 import { getRankedInstruments, INSTRUMENT_UNIVERSE } from '../scanner/index.js';
 import { getNewsContext } from '../news/index.js';
@@ -108,6 +109,9 @@ function generateWarnings(calendar: EconomicEvent[], regime: RegimeData): string
 
 export async function runResearcherAgent(): Promise<ResearchBrief> {
   console.log('Market Researcher Agent starting...');
+
+  // Load the full researcher prompt (used as reference context; theme extraction uses inline prompt)
+  const _systemPrompt = loadPrompt('researcher-agent.md');
 
   // Phase 1: Gather all data in parallel
   const [regime, calendar, sectors] = await Promise.all([

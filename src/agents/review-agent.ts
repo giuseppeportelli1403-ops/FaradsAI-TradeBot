@@ -19,6 +19,8 @@ function saveFile(filename: string, content: string): void {
 export async function runWeeklyReviewAgent(): Promise<string> {
   console.log('Weekly Review Agent starting...');
 
+  const systemPrompt = loadPrompt('review-agent.md');
+
   // Calculate week boundaries (last Mon 00:00 to this Sun 00:00)
   const now = new Date();
   const weekEnd = new Date(now);
@@ -36,8 +38,8 @@ export async function runWeeklyReviewAgent(): Promise<string> {
   const ictWinRate = getLessonWinRate({ strategy_tag: 'ICT_INTRADAY' });
   const swingWinRate = getLessonWinRate({ strategy_tag: 'SWING' });
 
-  const ictStrategy = loadFile('strategy.md');
-  const swingStrategy = loadFile('swing_strategy.md');
+  const ictStrategy = loadStrategy('strategy.md');
+  const swingStrategy = loadStrategy('swing_strategy.md');
 
   if (trades.length === 0) {
     console.log('No trades this week. Skipping review.');
@@ -47,7 +49,7 @@ export async function runWeeklyReviewAgent(): Promise<string> {
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 4096,
-    system: REVIEW_SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: [{
       role: 'user',
       content: `WEEK: ${weekStartStr.split('T')[0]} to ${weekEndStr.split('T')[0]}
