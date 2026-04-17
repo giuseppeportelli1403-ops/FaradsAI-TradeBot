@@ -12,10 +12,11 @@
 //
 // The agents then take the top N and run their full analysis pipeline.
 //
-// IMPORTANT: These epics are STUBBED based on Capital.com naming conventions.
-// Run `npx tsx scripts/discover-epics.ts` with valid Capital credentials to
-// verify each epic against the live market catalog. Update this table before
-// going live on the practice account.
+// NOTE: epic values on INSTRUMENT_UNIVERSE were verified live against the
+// Capital.com demo API on 2026-04-17. For all 20 instruments epic == ticker
+// verbatim. Ignore scripts/epic-mapping.json — that file was produced by the
+// older markets[0] heuristic and contains ETF/weekend contracts for 4 entries;
+// the epic field here is the source of truth.
 
 import { fetchCandles } from '../mcp-server/market-data.js';
 import { getNewsScore } from '../news/index.js';
@@ -23,41 +24,54 @@ import type { Candle, RankedInstrument } from '../types.js';
 
 // ==================== INSTRUMENT UNIVERSE ====================
 // Categorised for position concentration limits.
-// `ticker` holds the Capital.com `epic` used by the broker API.
-
+// `ticker` is the human-readable identifier (used for display, logging,
+// Telegram alerts, news lookups via Alpha Vantage, candle fetches via Twelve
+// Data, and DB storage). `epic` is the Capital.com broker identifier used
+// for any Capital REST API call (searchMarkets, getMarketDetails,
+// openPosition, closePosition, getCandles, etc.).
+//
+// epic values verified live against Capital.com demo on 2026-04-17 — epic == ticker for all 20.
+//
+// WARNING: do NOT add an instrument where epic !== ticker without first
+// refactoring src/agents/researcher-agent.ts. The researcher emits tickers
+// (not epics) in its shortlist briefs, and the trading/swing agents forward
+// those strings verbatim to Capital tool calls that expect an epic. The
+// invariant is locked by tests/instrument-universe.test.ts — if that test
+// fails, fix the researcher-agent contract, not the test.
 export const INSTRUMENT_UNIVERSE: Array<{
   ticker: string;
+  epic: string;
   name: string;
   category: string;
   spread_quality: 'tight' | 'medium' | 'wide';
 }> = [
   // Indices
-  { ticker: 'US100', name: 'Nasdaq 100', category: 'index', spread_quality: 'tight' },
-  { ticker: 'US500', name: 'S&P 500', category: 'index', spread_quality: 'tight' },
-  { ticker: 'US30', name: 'Dow Jones 30', category: 'index', spread_quality: 'tight' },
-  { ticker: 'DE40', name: 'DAX 40', category: 'index', spread_quality: 'tight' },
-  { ticker: 'UK100', name: 'FTSE 100', category: 'index', spread_quality: 'medium' },
+  { ticker: 'US100', epic: 'US100', name: 'Nasdaq 100', category: 'index', spread_quality: 'tight' },
+  { ticker: 'US500', epic: 'US500', name: 'S&P 500', category: 'index', spread_quality: 'tight' },
+  { ticker: 'US30', epic: 'US30', name: 'Dow Jones 30', category: 'index', spread_quality: 'tight' },
+  { ticker: 'DE40', epic: 'DE40', name: 'DAX 40', category: 'index', spread_quality: 'tight' },
+  { ticker: 'UK100', epic: 'UK100', name: 'FTSE 100', category: 'index', spread_quality: 'medium' },
 
   // Commodities
-  { ticker: 'GOLD', name: 'Gold', category: 'commodity', spread_quality: 'tight' },
-  { ticker: 'SILVER', name: 'Silver', category: 'commodity', spread_quality: 'medium' },
-  { ticker: 'OIL_CRUDE', name: 'Crude Oil WTI', category: 'commodity', spread_quality: 'medium' },
+  { ticker: 'GOLD', epic: 'GOLD', name: 'Gold', category: 'commodity', spread_quality: 'tight' },
+  { ticker: 'SILVER', epic: 'SILVER', name: 'Silver', category: 'commodity', spread_quality: 'medium' },
+  { ticker: 'OIL_CRUDE', epic: 'OIL_CRUDE', name: 'Crude Oil WTI', category: 'commodity', spread_quality: 'medium' },
 
   // FX Majors
-  { ticker: 'EURUSD', name: 'EUR/USD', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'GBPUSD', name: 'GBP/USD', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'USDJPY', name: 'USD/JPY', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'GBPJPY', name: 'GBP/JPY', category: 'fx', spread_quality: 'medium' },
-  { ticker: 'AUDUSD', name: 'AUD/USD', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'EURUSD', epic: 'EURUSD', name: 'EUR/USD', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'GBPUSD', epic: 'GBPUSD', name: 'GBP/USD', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'USDJPY', epic: 'USDJPY', name: 'USD/JPY', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'GBPJPY', epic: 'GBPJPY', name: 'GBP/JPY', category: 'fx', spread_quality: 'medium' },
+  { ticker: 'AUDUSD', epic: 'AUDUSD', name: 'AUD/USD', category: 'fx', spread_quality: 'tight' },
 
   // US Large-Cap Stocks
-  { ticker: 'AAPL', name: 'Apple', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'MSFT', name: 'Microsoft', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'NVDA', name: 'NVIDIA', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'AMZN', name: 'Amazon', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'GOOGL', name: 'Alphabet', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'META', name: 'Meta', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'TSLA', name: 'Tesla', category: 'us-large-cap', spread_quality: 'medium' },
+  { ticker: 'AAPL', epic: 'AAPL', name: 'Apple', category: 'us-large-cap', spread_quality: 'tight' },
+  { ticker: 'MSFT', epic: 'MSFT', name: 'Microsoft', category: 'us-large-cap', spread_quality: 'tight' },
+  { ticker: 'NVDA', epic: 'NVDA', name: 'NVIDIA', category: 'us-large-cap', spread_quality: 'tight' },
+  { ticker: 'AMZN', epic: 'AMZN', name: 'Amazon', category: 'us-large-cap', spread_quality: 'tight' },
+  { ticker: 'GOOGL', epic: 'GOOGL', name: 'Alphabet', category: 'us-large-cap', spread_quality: 'tight' },
+  { ticker: 'META', epic: 'META', name: 'Meta', category: 'us-large-cap', spread_quality: 'tight' },
+  { ticker: 'TSLA', epic: 'TSLA', name: 'Tesla', category: 'us-large-cap', spread_quality: 'medium' },
 ];
 
 // ==================== BIAS DETECTION ====================
