@@ -1,0 +1,1 @@
+# FaradsAI-TradeBot
