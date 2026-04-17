@@ -73,6 +73,18 @@ Respond with EXACTLY this JSON format:
 
 Target 15-25% rejection rate. >40% = too strict. <5% = rubber-stamping.`;
 
+export function parseAnalystResponse(text: string): AnalystDecision {
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+      return JSON.parse(match[0]);
+    }
+    return { decision: 'REJECT', reason: 'Could not parse response, defaulting to reject', modifications: {}, confidence: 0.5 };
+  } catch {
+    return { decision: 'REJECT', reason: 'JSON parse error, defaulting to reject', modifications: {}, confidence: 0.5 };
+  }
+}
+
 interface TradeProposal {
   trade_id: string;
   strategy_tag: StrategyTag;
@@ -129,18 +141,8 @@ Run your 6-check sequence and respond with your decision JSON.`;
   const text = response.content[0].type === 'text' ? response.content[0].text : '';
   console.log('[Analyst Agent]', text);
 
-  // Parse the decision JSON
-  let decision: AnalystDecision;
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (match) {
-      decision = JSON.parse(match[0]);
-    } else {
-      decision = { decision: 'APPROVE', reason: 'Could not parse response, defaulting to approve', modifications: {}, confidence: 0.5 };
-    }
-  } catch {
-    decision = { decision: 'APPROVE', reason: 'JSON parse error, defaulting to approve', modifications: {}, confidence: 0.5 };
-  }
+  // Parse the decision JSON (defaults to REJECT on failure — fail-closed)
+  const decision = parseAnalystResponse(text);
 
   // Log the decision
   logAnalystDecision(proposal.trade_id, proposal.strategy_tag, decision);
