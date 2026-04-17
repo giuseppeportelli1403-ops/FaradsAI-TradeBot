@@ -14,6 +14,34 @@ import type {
   SectorStrength, CorrelationPair,
 } from '../types.js';
 
+// ==================== RESILIENCE UTILITIES ====================
+
+/** Wrap an async fetcher with a time-based cache. */
+export function withCache<T>(fetcher: () => Promise<T>, ttlMs: number): () => Promise<T> {
+  let cachedValue: T | undefined;
+  let cachedAt = 0;
+
+  return async () => {
+    const now = Date.now();
+    if (cachedValue !== undefined && now - cachedAt < ttlMs) {
+      return cachedValue;
+    }
+    cachedValue = await fetcher();
+    cachedAt = Date.now();
+    return cachedValue;
+  };
+}
+
+/** Run an async fetcher; on any error, log and return the fallback value. */
+export async function withFallback<T>(fetcher: () => Promise<T>, fallback: T): Promise<T> {
+  try {
+    return await fetcher();
+  } catch (err) {
+    console.error('[Market Data] Fallback triggered:', (err as Error).message);
+    return fallback;
+  }
+}
+
 // ==================== TWELVE DATA ====================
 // Covers: OHLC candles, VIX, DXY, and raw data for correlation computation
 
@@ -33,7 +61,7 @@ export async function fetchCandles(
   outputSize: number = 100
 ): Promise<Candle[]> {
   const apiKey = process.env.TWELVE_DATA_API_KEY;
-  if (!apiKey) throw new Error('TWELVE_DATA_API_KEY not set');
+  if (!apiKey) { console.error('[Market Data] TWELVE_DATA_API_KEY not set'); return []; }
 
   const { data } = await axios.get(`${TWELVE_DATA_BASE}/time_series`, {
     params: {
@@ -126,7 +154,7 @@ const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
 export async function fetchEconomicCalendar(daysAhead: number): Promise<EconomicEvent[]> {
   const apiKey = process.env.FINNHUB_API_KEY;
-  if (!apiKey) throw new Error('FINNHUB_API_KEY not set');
+  if (!apiKey) { console.error('[Market Data] FINNHUB_API_KEY not set'); return []; }
 
   const from = new Date().toISOString().split('T')[0];
   const to = new Date(Date.now() + daysAhead * 86400000).toISOString().split('T')[0];
@@ -155,7 +183,7 @@ const FMP_BASE = 'https://financialmodelingprep.com/api/v3';
 
 export async function fetchSectorStrength(): Promise<SectorStrength[]> {
   const apiKey = process.env.FMP_API_KEY;
-  if (!apiKey) throw new Error('FMP_API_KEY not set');
+  if (!apiKey) { console.error('[Market Data] FMP_API_KEY not set'); return []; }
 
   const { data } = await axios.get(`${FMP_BASE}/sector-performance`, {
     params: { apikey: apiKey },
@@ -176,7 +204,7 @@ const FRED_BASE = 'https://api.stlouisfed.org/fred';
 
 async function fetchFredSeries(seriesId: string): Promise<number> {
   const apiKey = process.env.FRED_API_KEY;
-  if (!apiKey) throw new Error('FRED_API_KEY not set');
+  if (!apiKey) { console.error('[Market Data] FRED_API_KEY not set'); return 0; }
 
   const { data } = await axios.get(`${FRED_BASE}/series/observations`, {
     params: {
@@ -208,7 +236,7 @@ const ALPHA_VANTAGE_BASE = 'https://www.alphavantage.co/query';
 
 export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> {
   const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
-  if (!apiKey) throw new Error('ALPHA_VANTAGE_API_KEY not set');
+  if (!apiKey) { console.error('[Market Data] ALPHA_VANTAGE_API_KEY not set'); return []; }
 
   const { data } = await axios.get(ALPHA_VANTAGE_BASE, {
     params: {
