@@ -2,7 +2,7 @@
 // Post-migration: required keys are the Capital.com trio + ANTHROPIC_API_KEY.
 // T212_API_KEY is gone.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { checkEnvKeys, runPreflight } from '../src/preflight.js';
+import { checkEnvKeys, checkLiveTradingGate, runPreflight } from '../src/preflight.js';
 
 describe('checkEnvKeys', () => {
   const originalEnv = process.env;
@@ -170,5 +170,44 @@ describe('runPreflight', () => {
     // test would either hang or throw. The --skip-broker-check flag should
     // let runPreflight() resolve cleanly.
     await expect(runPreflight()).resolves.toBeUndefined();
+  });
+});
+
+describe('checkLiveTradingGate', () => {
+  const DEMO_URL = 'https://demo-api-capital.backend-capital.com';
+  const LIVE_URL = 'https://api-capital.backend-capital.com';
+
+  it('allows demo URL with LIVE_TRADING_OK unset', () => {
+    expect(() => checkLiveTradingGate(DEMO_URL, undefined)).not.toThrow();
+  });
+
+  it('allows demo URL even when LIVE_TRADING_OK=true (harmless)', () => {
+    expect(() => checkLiveTradingGate(DEMO_URL, 'true')).not.toThrow();
+  });
+
+  it('BLOCKS live URL when LIVE_TRADING_OK is unset', () => {
+    expect(() => checkLiveTradingGate(LIVE_URL, undefined)).toThrow(
+      /LIVE_TRADING_OK !== 'true'/,
+    );
+  });
+
+  it("BLOCKS live URL when LIVE_TRADING_OK='false'", () => {
+    expect(() => checkLiveTradingGate(LIVE_URL, 'false')).toThrow(
+      /LIVE_TRADING_OK !== 'true'/,
+    );
+  });
+
+  it("BLOCKS live URL when LIVE_TRADING_OK='TRUE' (case-sensitive — only lowercase 'true' unlocks)", () => {
+    expect(() => checkLiveTradingGate(LIVE_URL, 'TRUE')).toThrow(
+      /LIVE_TRADING_OK !== 'true'/,
+    );
+  });
+
+  it("allows live URL when LIVE_TRADING_OK === 'true' (explicit opt-in)", () => {
+    expect(() => checkLiveTradingGate(LIVE_URL, 'true')).not.toThrow();
+  });
+
+  it('error message includes the offending URL so misconfig is easy to debug', () => {
+    expect(() => checkLiveTradingGate(LIVE_URL, undefined)).toThrow(LIVE_URL);
   });
 });

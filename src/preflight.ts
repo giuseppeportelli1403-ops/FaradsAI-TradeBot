@@ -66,9 +66,30 @@ export function checkEnvKeys(): PreflightResult {
  *
  * Throws on any failure; the caller exits the process.
  */
+/**
+ * Live-endpoint safety gate. Capital.com discriminates demo vs live purely
+ * by URL; the accountType field on /api/v1/accounts is the product type
+ * (CFD / SPREADBET / CASH), not a demo/live flag. So we gate on URL and
+ * require an explicit opt-in before letting the bot trade live.
+ *
+ * Exported so tests can exercise it in isolation without mocking Capital.
+ */
+export function checkLiveTradingGate(
+  baseURL: string,
+  liveTradingOk: string | undefined,
+): void {
+  const isLiveURL = !baseURL.includes('demo-api-capital');
+  if (isLiveURL && liveTradingOk !== 'true') {
+    throw new Error(
+      `CAPITAL_API_URL points at LIVE (${baseURL}) but LIVE_TRADING_OK !== 'true'. ` +
+        `Refusing to start. Set LIVE_TRADING_OK=true to confirm you want live trading.`,
+    );
+  }
+}
+
 async function verifyCapitalConnectivity(): Promise<void> {
   const baseURL = process.env.CAPITAL_API_URL || DEFAULT_CAPITAL_URL;
-  const isDemo = baseURL.includes('demo-api-capital');
+  checkLiveTradingGate(baseURL, process.env.LIVE_TRADING_OK);
 
   const capital = new CapitalClient({
     apiKey: process.env.CAPITAL_API_KEY || '',
@@ -82,16 +103,6 @@ async function verifyCapitalConnectivity(): Promise<void> {
 
   if (!Array.isArray(accounts) || accounts.length === 0) {
     throw new Error('Capital.com returned no accounts for these credentials');
-  }
-
-  if (isDemo) {
-    const hasDemo = accounts.some((a) => a.accountType === 'DEMO');
-    if (!hasDemo) {
-      throw new Error(
-        `CAPITAL_API_URL points at demo but no account has accountType='DEMO'. ` +
-          `Accounts found: ${accounts.map((a) => a.accountType).join(', ')}`,
-      );
-    }
   }
 
   // Clean up the session we just opened. Swallow errors — the bot will open its
