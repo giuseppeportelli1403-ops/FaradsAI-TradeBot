@@ -11,67 +11,11 @@
 //   6. Sizing math (recompute independently, reject if >5% discrepancy)
 
 import Anthropic from '@anthropic-ai/sdk';
-import { readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { loadPrompt, loadStrategy } from './load-prompt.js';
 import { getLatestBrief, getOpenTrades, getLessons, logAnalystDecision } from '../database/index.js';
 import type { AnalystDecision, StrategyTag } from '../types.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const anthropic = new Anthropic();
-
-function loadStrategy(tag: StrategyTag): string {
-  const file = tag === 'SWING' ? 'swing_strategy.md' : 'strategy.md';
-  try {
-    return readFileSync(join(__dirname, '..', '..', 'memory', file), 'utf-8');
-  } catch {
-    return 'Strategy file not found.';
-  }
-}
-
-const ANALYST_SYSTEM_PROMPT = `You are the Trade Analyst Agent for BetterOpsAI. You are the second pair of eyes on every trade before it is executed.
-
-You receive a full trade proposal and must APPROVE, REJECT, or MODIFY it.
-
-Run these 6 checks in order:
-
-CHECK 1 — SANITY
-- SL on correct side of entry?
-- TP1 closer to entry than TP2?
-- SL distance reasonable (not 0.1% or 20%)?
-- Position size within risk budget?
-
-CHECK 2 — CONTEXT
-- Does direction contradict researcher brief regime/themes?
-- Tier 1 macro event within trade duration?
-- Correlated asset disagrees strongly?
-
-CHECK 3 — HISTORICAL PATTERN MATCH
-- Setup in banned patterns list?
-- 3 losing trades in a row on this setup in last 10?
-
-CHECK 4 — RISK CONCENTRATION
-- Total risk deployed across open trades?
-- Correlated risk would exceed 3% of equity?
-
-CHECK 5 — TIMING
-- Entry candle closed?
-- Entry >0.5 ATR from current price?
-- Market closing in <30 min?
-
-CHECK 6 — SIZING MATH
-- Recompute position size independently
-- Reject if >5% discrepancy
-
-Respond with EXACTLY this JSON format:
-{
-  "decision": "APPROVE" | "REJECT" | "MODIFY",
-  "reason": "brief one-line reason",
-  "modifications": {},
-  "confidence": 0.85
-}
-
-Target 15-25% rejection rate. >40% = too strict. <5% = rubber-stamping.`;
 
 export function parseAnalystResponse(text: string): AnalystDecision {
   try {
@@ -106,7 +50,9 @@ interface TradeProposal {
 export async function runAnalystAgent(proposal: TradeProposal): Promise<AnalystDecision> {
   console.log(`Trade Analyst reviewing: ${proposal.instrument} ${proposal.direction} (${proposal.strategy_tag})`);
 
-  const strategy = loadStrategy(proposal.strategy_tag);
+  const systemPrompt = loadPrompt('analyst-agent.md');
+  const strategyFile = proposal.strategy_tag === 'SWING' ? 'swing_strategy.md' : 'strategy.md';
+  const strategy = loadStrategy(strategyFile);
   const brief = getLatestBrief();
   const openTrades = getOpenTrades();
   const recentLessons = getLessons({
@@ -134,7 +80,7 @@ Run your 6-check sequence and respond with your decision JSON.`;
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 500,
-    system: ANALYST_SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: [{ role: 'user', content: contextMessage }],
   });
 

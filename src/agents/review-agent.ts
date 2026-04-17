@@ -3,54 +3,14 @@
 // Analyses the full week, detects patterns, updates both strategy files
 
 import Anthropic from '@anthropic-ai/sdk';
-import { readFileSync, writeFileSync } from 'fs';
+import { writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { loadPrompt, loadStrategy } from './load-prompt.js';
 import { getTradesForWeek, getLessons, getLessonWinRate } from '../database/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const anthropic = new Anthropic();
-
-const REVIEW_SYSTEM_PROMPT = `You are the Weekly Review Agent for BetterOpsAI. You analyse the full week of trades and improve the strategy.
-
-You receive: all trades (ICT + Swing), lessons, and current strategy files.
-
-Produce a weekly performance report with these sections:
-1. Weekly summary (total trades, win rate, avg R, total P&L) — by strategy
-2. Win rate by setup type (ICT and Swing separately)
-3. Win rate by kill zone (ICT only)
-4. Win rate by daily setup type (Swing only)
-5. Win rate by news category
-6. Win rate by instrument category
-7. Analyst agent statistics
-8. Best/worst performing setup per strategy
-9. Banned pattern candidates
-10. Scoring weight adjustments
-
-Then output strategy update instructions as JSON.
-
-RULES:
-- Never change a rule based on fewer than 10 trades. Small samples lie.
-- Cite exact win rate and trade count for every change.
-- Never remove core risk management rules (Section 7) or kill switches.
-- If both strategies underperform 2 consecutive weeks → flag "SYSTEM_REVIEW" alert.
-
-Output format:
-{
-  "report": "full markdown report text",
-  "ict_updates": [{ "section": "5", "change": "description", "basis": "X% over N trades" }],
-  "swing_updates": [{ "section": "4", "change": "description", "basis": "X% over N trades" }],
-  "banned_patterns": [{ "pattern": "description", "win_rate": "X%", "trade_count": N }],
-  "alerts": ["any alerts like SYSTEM_REVIEW"]
-}`;
-
-function loadFile(filename: string): string {
-  try {
-    return readFileSync(join(__dirname, '..', '..', 'memory', filename), 'utf-8');
-  } catch {
-    return '';
-  }
-}
 
 function saveFile(filename: string, content: string): void {
   writeFileSync(join(__dirname, '..', '..', 'memory', filename), content, 'utf-8');

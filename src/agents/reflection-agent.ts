@@ -3,24 +3,16 @@
 // Uses Claude to analyse the trade and generate a structured lesson
 
 import Anthropic from '@anthropic-ai/sdk';
+import { loadPrompt } from './load-prompt.js';
 import { getTradeById, insertLesson } from '../database/index.js';
 import type { Lesson, StrategyTag } from '../types.js';
 
 const anthropic = new Anthropic();
 
-const REFLECTION_SYSTEM_PROMPT = `You are the Reflection Agent for BetterOpsAI. You analyse completed trades and generate structured lessons.
-
-You receive a complete trade record. Write a lesson that is SPECIFIC and ACTIONABLE.
-
-Not "the trade worked out well." Instead: exactly what conditions made it work (or fail), what to do differently, and what patterns are building across trades.
-
-Keep separate thinking for ICT vs Swing. An ICT lesson about kill zones does not apply to a 6-day swing trade.
-
-Output EXACTLY one JSON object matching the lesson schema. No other text.`;
-
 export async function runReflectionAgent(tradeId: string): Promise<void> {
   console.log(`Reflection Agent analysing trade: ${tradeId}`);
 
+  const systemPrompt = loadPrompt('reflection-agent.md');
   const trade = getTradeById(tradeId);
   if (!trade) {
     console.error(`Trade ${tradeId} not found in database`);
@@ -30,7 +22,7 @@ export async function runReflectionAgent(tradeId: string): Promise<void> {
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514',
     max_tokens: 1500,
-    system: REFLECTION_SYSTEM_PROMPT,
+    system: systemPrompt,
     messages: [{
       role: 'user',
       content: `Analyse this completed trade and generate a structured lesson JSON:
