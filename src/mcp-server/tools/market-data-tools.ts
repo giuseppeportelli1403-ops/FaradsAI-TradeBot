@@ -1,10 +1,14 @@
-// MCP Tools — Market Data (external APIs)
+// MCP Tools — Market Data (Capital.com candles + external APIs)
 // Tools: get_prices, get_news_context, get_economic_calendar, get_correlation_matrix,
-//        get_sector_strength, get_vix, get_dxy, get_yield_curve, write_research_brief
-// Uses registerTool (modern API) with annotations
+//        get_sector_strength, get_vix, get_dxy, get_yield_curve, get_client_sentiment,
+//        write_research_brief
+// Uses registerTool (modern API) with annotations.
+// get_prices prefers Capital.com OHLC candles for tradeable epics; falls back
+// to Twelve Data for macro instruments (VIX, DXY, yield curve).
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { CapitalClient } from '../capital-client.js';
 import { wrapTool } from '../logger.js';
 import {
   fetchCandles, fetchVix, fetchDxy, fetchYieldCurve,
@@ -12,7 +16,33 @@ import {
   computeCorrelation,
 } from '../market-data.js';
 import { saveResearchBrief } from '../../database/index.js';
-import type { Timeframe } from '../../types.js';
+import type { Timeframe, Resolution } from '../../types.js';
+
+const capital = new CapitalClient({
+  apiKey: process.env.CAPITAL_API_KEY || '',
+  identifier: process.env.CAPITAL_IDENTIFIER || '',
+  password: process.env.CAPITAL_PASSWORD || '',
+  baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
+});
+
+// Instruments Capital.com does not serve — always fall back to Twelve Data.
+// Keep this list conservative; anything not listed attempts Capital first.
+const MACRO_ONLY = new Set<string>(['VIX', 'DXY', 'US2Y', 'US10Y', 'US30Y']);
+
+function timeframeToResolution(tf: Timeframe): Resolution {
+  switch (tf) {
+    case '15m': return 'MINUTE_15';
+    case '1h': return 'HOUR';
+    case '4h': return 'HOUR_4';
+    case '1d': return 'DAY';
+    case '1w': return 'WEEK';
+    default: {
+      // Exhaustiveness guard; Timeframe should cover all cases above.
+      const _exhaustive: never = tf;
+      return 'HOUR' as Resolution;
+    }
+  }
+}
 
 export function registerMarketDataTools(server: McpServer): void {
 
@@ -20,17 +50,52 @@ export function registerMarketDataTools(server: McpServer): void {
     'get_prices',
     {
       title: 'Get Price Candles',
-      description: 'Fetch OHLCV candle data for an instrument from Twelve Data. Supports 15m, 1h, 4h, 1d, 1w timeframes.',
+      description: 'Fetch OHLCV candle data. Prefers Capital.com for tradeable instruments (by epic) and falls back to Twelve Data for macro symbols (VIX, DXY, yield curve) or anything Capital does not serve. Supports 15m, 1h, 4h, 1d, 1w timeframes.',
       inputSchema: {
-        instrument: z.string().describe('Instrument ticker (e.g. XAUUSD, NAS100, AAPL, EURUSD)'),
+        instrument: z.string().describe('Instrument ticker / Capital.com epic (e.g. GOLD, US100, AAPL, EURUSD, VIX)'),
         timeframe: z.enum(['15m', '1h', '4h', '1d', '1w']).describe('Candle timeframe'),
         count: z.number().optional().default(100).describe('Number of candles to fetch (max 5000)'),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('get_prices', async ({ instrument, timeframe, count }) => {
-      const candles = await fetchCandles(instrument, timeframe as Timeframe, count);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(candles) }] };
+      const tf = timeframe as Timeframe;
+      const size = count ?? 100;
+
+      // Macro instruments always go to Twelve Data.
+      if (MACRO_ONLY.has(instrument.toUpperCase())) {
+        const candles = await fetchCandles(instrument, tf, size);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ source: 'twelve_data', candles }),
+          }],
+        };
+      }
+
+      // Try Capital.com first; fall back to Twelve Data on error.
+      try {
+        const resolution = timeframeToResolution(tf);
+        const candles = await capital.getCandles(instrument, resolution, size);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({ source: 'capital', candles }),
+          }],
+        };
+      } catch (capitalErr) {
+        const candles = await fetchCandles(instrument, tf, size);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              source: 'twelve_data_fallback',
+              fallback_reason: capitalErr instanceof Error ? capitalErr.message : 'capital_request_failed',
+              candles,
+            }),
+          }],
+        };
+      }
     })
   );
 
@@ -142,6 +207,22 @@ export function registerMarketDataTools(server: McpServer): void {
       const yields = await fetchYieldCurve();
       const spread_2y_10y = Math.round((yields.us10y - yields.us2y) * 100) / 100;
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ...yields, spread_2y_10y, inverted: spread_2y_10y < 0 }) }] };
+    })
+  );
+
+  server.registerTool(
+    'get_client_sentiment',
+    {
+      title: 'Get Client Sentiment',
+      description: 'Fetch Capital.com retail client sentiment (long vs short percentage) for one or more market IDs. Useful as a contrarian indicator.',
+      inputSchema: {
+        market_ids: z.array(z.string()).min(1).describe('Capital.com market IDs / epics to fetch sentiment for'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    wrapTool('get_client_sentiment', async ({ market_ids }) => {
+      const sentiment = await capital.getClientSentiment(market_ids);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(sentiment) }] };
     })
   );
 

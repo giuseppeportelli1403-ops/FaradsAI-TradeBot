@@ -21,31 +21,46 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   { name: 'get_correlation_matrix', description: 'Correlations with related assets', input_schema: { type: 'object' as const, properties: { instrument: { type: 'string' } }, required: ['instrument'] } },
   { name: 'get_sector_strength', description: 'Relative sector strength', input_schema: { type: 'object' as const, properties: {}, required: [] } },
   { name: 'get_lessons', description: 'Past lessons', input_schema: { type: 'object' as const, properties: { setup_type: { type: 'string' }, instrument_category: { type: 'string' }, strategy_tag: { type: 'string', enum: ['SWING'] } }, required: [] } },
-  { name: 'place_order', description: 'Place order on T212', input_schema: { type: 'object' as const, properties: { instrument: { type: 'string' }, direction: { type: 'string', enum: ['long', 'short'] }, size: { type: 'number' }, sl: { type: 'number' }, tp: { type: 'number' }, label: { type: 'string' } }, required: ['instrument', 'direction', 'size', 'sl', 'tp', 'label'] } },
+  { name: 'place_order', description: 'Place order on Capital.com', input_schema: { type: 'object' as const, properties: { epic: { type: 'string' }, direction: { type: 'string', enum: ['long', 'short'] }, size: { type: 'number' }, sl: { type: 'number' }, tp: { type: 'number' }, label: { type: 'string' } }, required: ['epic', 'direction', 'size', 'sl', 'tp', 'label'] } },
   { name: 'log_trade', description: 'Log trade to DB', input_schema: { type: 'object' as const, properties: { trade_data: { type: 'string' } }, required: ['trade_data'] } },
   { name: 'update_sl', description: 'Update SL in DB', input_schema: { type: 'object' as const, properties: { trade_id: { type: 'string' }, new_sl: { type: 'number' } }, required: ['trade_id', 'new_sl'] } },
-  { name: 'close_position', description: 'Close position on T212', input_schema: { type: 'object' as const, properties: { instrument: { type: 'string' }, quantity: { type: 'number' } }, required: ['instrument', 'quantity'] } },
+  { name: 'close_position', description: 'Close position on Capital.com', input_schema: { type: 'object' as const, properties: { dealId: { type: 'string' } }, required: ['dealId'] } },
 ];
 
 // Tool executor — reuses the same implementations as ICT agent
 import { fetchCandles, fetchNewsContext as fetchNewsRaw, fetchEconomicCalendar, fetchSectorStrength, computeCorrelation } from '../mcp-server/market-data.js';
 import { getRankedInstruments } from '../scanner/index.js';
 import { insertTrade, getLessons, getLessonWinRate, createSlTpOrder, updateSlPrice, getDailyPnl } from '../database/index.js';
-import { T212Client } from '../mcp-server/t212-client.js';
+import { CapitalClient } from '../mcp-server/capital-client.js';
 
-const t212 = new T212Client(process.env.T212_API_KEY || '', (process.env.T212_MODE as 'demo' | 'live') || 'demo');
+const capital = new CapitalClient({
+  apiKey: process.env.CAPITAL_API_KEY || '',
+  identifier: process.env.CAPITAL_IDENTIFIER || '',
+  password: process.env.CAPITAL_PASSWORD || '',
+  baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
+});
+
+async function getPreferredAccountBalance(): Promise<{ balance: number; deposit: number; profitLoss: number; available: number }> {
+  const accounts = await capital.getAccounts();
+  const preferred = accounts.find((a) => a.preferred) ?? accounts[0];
+  if (!preferred) {
+    throw new Error('No Capital.com account available');
+  }
+  return preferred.balance;
+}
 
 async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
   switch (name) {
     case 'get_daily_pnl': {
-      const balance = await t212.getBalance();
+      const balance = await getPreferredAccountBalance();
       const today = new Date().toISOString().split('T')[0];
       const daily = getDailyPnl(today);
-      const pnl = balance.ppl + (daily?.realised_pnl ?? 0);
-      const pct = balance.total ? (pnl / balance.total) * 100 : 0;
-      return JSON.stringify({ total_daily_pnl: pnl, equity: balance.total, daily_pnl_pct: Math.round(pct * 100) / 100, kill_switch_active: pct <= -4, open_positions: countOpenPositions() });
+      const pnl = balance.profitLoss + (daily?.realised_pnl ?? 0);
+      const equity = balance.balance;
+      const pct = equity ? (pnl / equity) * 100 : 0;
+      return JSON.stringify({ total_daily_pnl: pnl, equity, daily_pnl_pct: Math.round(pct * 100) / 100, kill_switch_active: pct <= -4, open_positions: countOpenPositions() });
     }
-    case 'get_portfolio': return JSON.stringify(await t212.getPortfolio());
+    case 'get_portfolio': return JSON.stringify(await capital.getOpenPositions());
     case 'get_ranked_instruments': return JSON.stringify(await getRankedInstruments(Number(input.limit) || 20));
     case 'get_prices': return JSON.stringify(await fetchCandles(input.instrument as string, input.timeframe as '15m' | '1h' | '4h' | '1d' | '1w', Number(input.count) || 100));
     case 'get_news_context': return JSON.stringify(await fetchNewsRaw(input.instrument as string));
@@ -57,8 +72,15 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       return JSON.stringify({ lessons, win_rate: getLessonWinRate({ strategy_tag: 'SWING' }) });
     }
     case 'place_order': {
-      const qty = input.direction === 'long' ? Number(input.size) : -Number(input.size);
-      return JSON.stringify(await t212.placeMarketOrder(input.instrument as string, qty));
+      const direction: 'BUY' | 'SELL' = input.direction === 'long' ? 'BUY' : 'SELL';
+      const confirmation = await capital.openPosition({
+        direction,
+        epic: input.epic as string,
+        size: Math.abs(Number(input.size)),
+        stopLevel: Number(input.sl),
+        profitLevel: Number(input.tp),
+      });
+      return JSON.stringify(confirmation);
     }
     case 'log_trade': {
       const trade = JSON.parse(input.trade_data as string);
@@ -68,7 +90,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       return JSON.stringify({ status: 'logged', trade_id: trade.id });
     }
     case 'update_sl': updateSlPrice(input.trade_id as string, 'B', Number(input.new_sl)); return JSON.stringify({ status: 'updated' });
-    case 'close_position': return JSON.stringify(await t212.closePosition(input.instrument as string, Number(input.quantity)));
+    case 'close_position': return JSON.stringify(await capital.closePosition(input.dealId as string));
     default: return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
 }

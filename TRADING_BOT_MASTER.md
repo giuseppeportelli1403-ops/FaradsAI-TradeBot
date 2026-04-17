@@ -7,7 +7,7 @@
 
 ## Project Overview
 
-An autonomous, self-learning AI trading bot that connects to Trading 212 via their official beta API through an MCP (Model Context Protocol) server. The bot uses ICT (Inner Circle Trader) methodology across 15-minute and 1-hour candlestick timeframes, reflects on every trade it makes using structured lessons, and improves its own strategy weekly — without human intervention.
+An autonomous, self-learning AI trading bot that connects to Capital.com via their REST API through an MCP (Model Context Protocol) server. The bot uses ICT (Inner Circle Trader) methodology across 15-minute and 1-hour candlestick timeframes, reflects on every trade it makes using structured lessons, and improves its own strategy weekly — without human intervention.
 
 ---
 
@@ -38,7 +38,7 @@ The longer the bot runs, the smarter it becomes.
 | Telegram Alerts | Telegraf |
 | Hosting | VPS (DigitalOcean or Hetzner) |
 | Dev Machine | Windows + Node.js + Claude Code |
-| Exchange | Trading 212 (Beta API) |
+| Broker | Capital.com (REST API, demo + live) |
 
 ---
 
@@ -122,19 +122,20 @@ VPS Server (Runs 24/7)
         ├── Kill switch activated alert
         └── Weekly performance report
 
-Trading 212 Beta API
-├── Live Price Data
+Capital.com REST API
+├── Live Price Data (OHLC candles native)
 ├── Account & Portfolio Data
-└── Order Execution
+├── Order Execution (SL/TP/trailing all server-side)
+└── Deal Confirmation (async via /confirms/:dealReference)
 ```
 
 ---
 
 ## Split-Position Execution Method
 
-Trading 212 does NOT support multiple take profit levels or automatic partial closes on a single position. Every position has exactly one TP and one SL. This is a hard platform limitation.
+Capital.com supports SL/TP/trailing natively per position, but every position still has exactly one TP. The split-position method remains a design choice — it gives us independent exit rules for each leg and enables the TP1 → move-B-to-break-even pattern which is core to the strategy.
 
-To implement the multi-TP strategy, every trade is opened as TWO separate positions simultaneously:
+Every trade is opened as TWO separate positions simultaneously:
 
 **Position A — "TP1 leg" (50% of total intended size)**
 - Size: 50% of calculated position size
@@ -257,10 +258,18 @@ trading-bot/
 ## Environment Variables (.env)
 
 ```
-T212_API_KEY=your_trading212_api_key
+CAPITAL_API_KEY=your_capital_com_api_key
+CAPITAL_IDENTIFIER=your_login_email
+CAPITAL_PASSWORD=your_password
+CAPITAL_API_URL=https://demo-api-capital.backend-capital.com
 ANTHROPIC_API_KEY=your_anthropic_api_key
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
+TWELVE_DATA_API_KEY=your_twelve_data_api_key
+FINNHUB_API_KEY=your_finnhub_api_key
+FMP_API_KEY=your_fmp_api_key
+FRED_API_KEY=your_fred_api_key
+ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key
 ```
 
 ---
@@ -269,9 +278,9 @@ TELEGRAM_CHAT_ID=your_chat_id
 
 | Step | Task | Method | Status |
 |------|------|--------|--------|
-| 1 | Get T212 API Key | Manual — Trading 212 Settings → API | Pending |
+| 1 | Get Capital.com demo credentials | Manual — Capital.com Settings → API | Complete |
 | 2 | Set up project folder + structure | Claude Code | Pending |
-| 3 | Build MCP Server + T212 tools (all 14) | Claude Code | Pending |
+| 3 | Build MCP Server + Capital.com tools (22 tools) | Claude Code | Complete |
 | 4 | Build SQLite database (split-leg trade schema + lessons table) | Claude Code | Pending |
 | 5 | Build Universe Scanner | Claude Code | Pending |
 | 6 | Build News Context System | Claude Code | Pending |
@@ -281,7 +290,7 @@ TELEGRAM_CHAT_ID=your_chat_id
 | 10 | Build Scheduler (candle close detection + position monitoring + agent triggers) | Claude Code | Pending |
 | 11 | Add Telegram Alerts (all alert types) | Claude Code | Pending |
 | 12 | Write strategy.md with trading team (scoring rubric, ICT rules, banned patterns) | Manual | Pending |
-| 13 | Test on T212 Practice Account — minimum 2 weeks | Manual monitoring | Pending |
+| 13 | Test on Capital.com Demo Account — minimum 2 weeks | Manual monitoring | Pending |
 | 14 | Deploy to VPS | Claude Code | Pending |
 | 15 | Monitor + tune | Manual | Pending |
 
@@ -296,10 +305,10 @@ TELEGRAM_CHAT_ID=your_chat_id
 | Trading methodology | ICT (Inner Circle Trader) | Order blocks, FVGs, liquidity sweeps, premium/discount |
 | Agent mode | Autonomous | No human approval needed |
 | Strategy approach | Single agent + single strategy file | Simplicity first |
-| Execution method | Split-position (2 legs per trade) | T212 only supports 1 TP per position |
+| Execution method | Split-position (2 legs per trade) | Enables independent TP1 / TP2 exits + move-B-to-BE pattern |
 | Risk per trade | 1.5% Tier 1, 1% Tier 2 | Tiered by composite score |
 | Daily loss limit | 4% of account equity | Kill switch — no new trades after this |
-| Max open positions | 3 | Split pair counts as 2 positions in T212 |
+| Max open positions | 3 | Split pair counts as 2 positions on Capital.com |
 | Scoring system | Composite 0–100 | 1H bias + ICT arrays + kill zone + news + historical win rate |
 | Minimum score to trade | 65 | Below this, skip instrument |
 | Trailing stop threshold | Score 80+ (Tier 1 only) | 1.5x SL distance, no major resistance within 2x SL |
@@ -308,7 +317,7 @@ TELEGRAM_CHAT_ID=your_chat_id
 | Strategy update rules | Min 10 trades per rule change | Small samples lie — Weekly Review Agent must cite exact stats |
 | Hosting | VPS | Local machine can't run 24/7 reliably |
 | Learning system | 3-layer (memory + reflection + weekly review) | Bot improves over time |
-| Testing approach | T212 Practice account first | Never risk real money before validation |
+| Testing approach | Capital.com Demo account first | Never risk real money before validation |
 
 ---
 
@@ -327,7 +336,7 @@ TELEGRAM_CHAT_ID=your_chat_id
 
 ## Decisions Pending
 
-- [ ] T212 API key — needs to be generated
+- [x] Capital.com demo credentials — generated and in .env
 - [ ] Strategy rules and scoring rubric — trading team to document and formalise
 - [ ] VPS provider choice — DigitalOcean vs Hetzner
 - [ ] Telegram bot setup — needs a bot token from @BotFather

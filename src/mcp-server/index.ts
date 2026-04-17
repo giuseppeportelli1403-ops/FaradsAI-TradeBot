@@ -17,16 +17,49 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { registerTradingTools } from './tools/trading-tools.js';
 import { registerMarketDataTools } from './tools/market-data-tools.js';
 import { registerDbTools } from './tools/db-tools.js';
+import { CapitalClient } from './capital-client.js';
 
 const server = new McpServer({
   name: 'betterops-trading-bot',
   version: '0.2.0',
 });
 
+// Initialise the Capital.com client singleton on boot. The session itself is
+// created lazily on the first request via ensureSession(), but we instantiate
+// the client here so the shutdown hook has a reference to call logout() on.
+const capital = new CapitalClient({
+  apiKey: process.env.CAPITAL_API_KEY || '',
+  identifier: process.env.CAPITAL_IDENTIFIER || '',
+  password: process.env.CAPITAL_PASSWORD || '',
+  baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
+});
+
 // Register all 21 tools
 registerTradingTools(server);
 registerMarketDataTools(server);
 registerDbTools(server);
+
+// ==================== GRACEFUL SHUTDOWN ====================
+// On SIGTERM/SIGINT, attempt a clean Capital.com logout before exiting so we
+// don't leak sessions (Capital rate-limits session creates). Errors are
+// swallowed — we're exiting anyway.
+
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.error(`[MCP Server] Received ${signal}, shutting down...`);
+  try {
+    await capital.logout();
+    console.error('[MCP Server] Capital.com session closed.');
+  } catch (error) {
+    console.error('[MCP Server] Capital.com logout failed (ignored):', error);
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.on('SIGINT', () => { void shutdown('SIGINT'); });
 
 // Start server
 async function main(): Promise<void> {

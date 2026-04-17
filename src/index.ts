@@ -12,7 +12,7 @@ async function main(): Promise<void> {
   console.log('='.repeat(50));
 
   // Step 0: Preflight environment checks
-  runPreflight();
+  await runPreflight();
   console.log('[OK] Preflight checks passed.');
 
   // Step 1: Initialise database

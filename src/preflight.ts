@@ -1,5 +1,12 @@
 // Preflight Checks — Validates environment before bot startup
 // Required keys cause startup failure. Optional keys warn and disable features.
+//
+// After env-var checks, unless `--skip-broker-check` is present in argv, this
+// file also validates Capital.com connectivity by creating a live session,
+// fetching the accounts list, asserting demo-account type if pointed at the
+// demo URL, and cleanly logging out.
+
+import { CapitalClient } from './mcp-server/capital-client.js';
 
 interface PreflightResult {
   canStart: boolean;
@@ -8,11 +15,14 @@ interface PreflightResult {
 }
 
 const REQUIRED_KEYS = [
-  'T212_API_KEY',
+  'CAPITAL_API_KEY',
+  'CAPITAL_IDENTIFIER',
+  'CAPITAL_PASSWORD',
   'ANTHROPIC_API_KEY',
 ] as const;
 
 const OPTIONAL_KEYS = [
+  { key: 'CAPITAL_API_URL', feature: 'Capital.com base URL (defaults to demo)' },
   { key: 'TELEGRAM_BOT_TOKEN', feature: 'Telegram alerts' },
   { key: 'TELEGRAM_CHAT_ID', feature: 'Telegram alerts' },
   { key: 'TWELVE_DATA_API_KEY', feature: 'Twelve Data candles/VIX/DXY' },
@@ -21,6 +31,8 @@ const OPTIONAL_KEYS = [
   { key: 'FRED_API_KEY', feature: 'Yield curve' },
   { key: 'ALPHA_VANTAGE_API_KEY', feature: 'News sentiment' },
 ] as const;
+
+const DEFAULT_CAPITAL_URL = 'https://demo-api-capital.backend-capital.com';
 
 export function checkEnvKeys(): PreflightResult {
   const errors: string[] = [];
@@ -45,7 +57,53 @@ export function checkEnvKeys(): PreflightResult {
   };
 }
 
-export function runPreflight(): void {
+/**
+ * Verifies Capital.com connectivity end-to-end:
+ *   1. Creates a session (login)
+ *   2. Fetches the account list
+ *   3. Asserts at least one DEMO account exists if pointed at the demo URL
+ *   4. Logs out cleanly
+ *
+ * Throws on any failure; the caller exits the process.
+ */
+async function verifyCapitalConnectivity(): Promise<void> {
+  const baseURL = process.env.CAPITAL_API_URL || DEFAULT_CAPITAL_URL;
+  const isDemo = baseURL.includes('demo-api-capital');
+
+  const capital = new CapitalClient({
+    apiKey: process.env.CAPITAL_API_KEY || '',
+    identifier: process.env.CAPITAL_IDENTIFIER || '',
+    password: process.env.CAPITAL_PASSWORD || '',
+    baseURL,
+  });
+
+  // getAccounts() implicitly triggers createSession() via ensureSession()
+  const accounts = await capital.getAccounts();
+
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    throw new Error('Capital.com returned no accounts for these credentials');
+  }
+
+  if (isDemo) {
+    const hasDemo = accounts.some((a) => a.accountType === 'DEMO');
+    if (!hasDemo) {
+      throw new Error(
+        `CAPITAL_API_URL points at demo but no account has accountType='DEMO'. ` +
+          `Accounts found: ${accounts.map((a) => a.accountType).join(', ')}`,
+      );
+    }
+  }
+
+  // Clean up the session we just opened. Swallow errors — the bot will open its
+  // own session on boot and we don't want preflight to fail on cleanup.
+  try {
+    await capital.logout();
+  } catch (error) {
+    console.warn('[Preflight] Capital.com logout during preflight failed (non-fatal):', error);
+  }
+}
+
+export async function runPreflight(): Promise<void> {
   console.log('[Preflight] Checking environment variables...');
   const result = checkEnvKeys();
 
@@ -62,5 +120,21 @@ export function runPreflight(): void {
     process.exit(1);
   }
 
-  console.log(`[Preflight] OK — ${result.warnings.length} warning(s), 0 errors.`);
+  console.log(`[Preflight] Env OK — ${result.warnings.length} warning(s), 0 errors.`);
+
+  // Broker connectivity check — skippable via CLI flag for unit tests / CI.
+  if (process.argv.includes('--skip-broker-check')) {
+    console.log('[Preflight] --skip-broker-check set; skipping Capital.com connectivity check.');
+    return;
+  }
+
+  console.log('[Preflight] Verifying Capital.com connectivity...');
+  try {
+    await verifyCapitalConnectivity();
+    console.log('[Preflight] Capital.com OK — session created, accounts verified, logged out.');
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[Preflight] FATAL: Capital.com connectivity check failed: ${msg}`);
+    process.exit(1);
+  }
 }

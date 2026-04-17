@@ -22,7 +22,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   },
   {
     name: 'get_portfolio',
-    description: 'Get current open positions from Trading 212',
+    description: 'Get current open positions from Capital.com',
     input_schema: { type: 'object' as const, properties: {}, required: [] },
   },
   {
@@ -72,18 +72,18 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   },
   {
     name: 'place_order',
-    description: 'Place a market order on Trading 212',
+    description: 'Place a market order on Capital.com',
     input_schema: {
       type: 'object' as const,
       properties: {
-        instrument: { type: 'string' },
+        epic: { type: 'string' },
         direction: { type: 'string', enum: ['long', 'short'] },
         size: { type: 'number' },
         sl: { type: 'number' },
         tp: { type: 'number' },
         label: { type: 'string' },
       },
-      required: ['instrument', 'direction', 'size', 'sl', 'tp', 'label'],
+      required: ['epic', 'direction', 'size', 'sl', 'tp', 'label'],
     },
   },
   {
@@ -106,11 +106,11 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   },
   {
     name: 'close_position',
-    description: 'Close a position on Trading 212',
+    description: 'Close a position on Capital.com',
     input_schema: {
       type: 'object' as const,
-      properties: { instrument: { type: 'string' }, quantity: { type: 'number' } },
-      required: ['instrument', 'quantity'],
+      properties: { dealId: { type: 'string' } },
+      required: ['dealId'],
     },
   },
 ];
@@ -126,30 +126,42 @@ import {
   insertTrade, getTradeHistory, getLessons, getLessonWinRate,
   createSlTpOrder, updateSlPrice, getDailyPnl, upsertDailyPnl,
 } from '../database/index.js';
-import { T212Client } from '../mcp-server/t212-client.js';
+import { CapitalClient } from '../mcp-server/capital-client.js';
 
-const t212 = new T212Client(
-  process.env.T212_API_KEY || '',
-  (process.env.T212_MODE as 'demo' | 'live') || 'demo'
-);
+const capital = new CapitalClient({
+  apiKey: process.env.CAPITAL_API_KEY || '',
+  identifier: process.env.CAPITAL_IDENTIFIER || '',
+  password: process.env.CAPITAL_PASSWORD || '',
+  baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
+});
+
+async function getPreferredAccountBalance(): Promise<{ balance: number; deposit: number; profitLoss: number; available: number }> {
+  const accounts = await capital.getAccounts();
+  const preferred = accounts.find((a) => a.preferred) ?? accounts[0];
+  if (!preferred) {
+    throw new Error('No Capital.com account available');
+  }
+  return preferred.balance;
+}
 
 async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
   switch (name) {
     case 'get_daily_pnl': {
-      const balance = await t212.getBalance();
+      const balance = await getPreferredAccountBalance();
       const today = new Date().toISOString().split('T')[0];
       const daily = getDailyPnl(today);
-      const pnl = balance.ppl + (daily?.realised_pnl ?? 0);
-      const pct = balance.total ? (pnl / balance.total) * 100 : 0;
+      const pnl = balance.profitLoss + (daily?.realised_pnl ?? 0);
+      const equity = balance.balance;
+      const pct = equity ? (pnl / equity) * 100 : 0;
       return JSON.stringify({
-        total_daily_pnl: pnl, equity: balance.total,
+        total_daily_pnl: pnl, equity,
         daily_pnl_pct: Math.round(pct * 100) / 100,
         kill_switch_active: pct <= -4,
         open_positions: countOpenPositions(),
       });
     }
     case 'get_portfolio':
-      return JSON.stringify(await t212.getPortfolio());
+      return JSON.stringify(await capital.getOpenPositions());
     case 'get_ranked_instruments':
       return JSON.stringify(await getRankedInstruments(Number(input.limit) || 20));
     case 'get_prices':
@@ -171,9 +183,15 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       return JSON.stringify({ lessons, win_rate: wr });
     }
     case 'place_order': {
-      const qty = input.direction === 'long' ? Number(input.size) : -Number(input.size);
-      const result = await t212.placeMarketOrder(input.instrument as string, qty);
-      return JSON.stringify({ t212_result: result, local: input });
+      const direction: 'BUY' | 'SELL' = input.direction === 'long' ? 'BUY' : 'SELL';
+      const confirmation = await capital.openPosition({
+        direction,
+        epic: input.epic as string,
+        size: Math.abs(Number(input.size)),
+        stopLevel: Number(input.sl),
+        profitLevel: Number(input.tp),
+      });
+      return JSON.stringify({ capital_result: confirmation, local: input });
     }
     case 'log_trade': {
       const trade = JSON.parse(input.trade_data as string);
@@ -187,7 +205,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       updateSlPrice(input.trade_id as string, 'B', Number(input.new_sl));
       return JSON.stringify({ status: 'updated' });
     case 'close_position':
-      return JSON.stringify(await t212.closePosition(input.instrument as string, Number(input.quantity)));
+      return JSON.stringify(await capital.closePosition(input.dealId as string));
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }

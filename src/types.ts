@@ -13,33 +13,182 @@ export interface Candle {
 
 export type Timeframe = '15m' | '1h' | '4h' | '1d' | '1w';
 
-// ==================== TRADING 212 ====================
+// ==================== CAPITAL.COM ====================
 
-export interface T212Position {
-  ticker: string;
-  quantity: number;
-  averagePrice: number;
-  currentPrice: number;
-  ppl: number;          // profit/loss
-  fxPpl: number;
-  initialFillDate: string;
+export type Resolution =
+  | 'MINUTE'
+  | 'MINUTE_5'
+  | 'MINUTE_15'
+  | 'MINUTE_30'
+  | 'HOUR'
+  | 'HOUR_4'
+  | 'DAY'
+  | 'WEEK';
+
+export interface CapitalAccount {
+  accountId: string;
+  accountName: string;
+  accountType: string;
+  preferred: boolean;
+  balance: {
+    balance: number;
+    deposit: number;
+    profitLoss: number;
+    available: number;
+  };
+  currency: string;
 }
 
-export interface T212Balance {
-  free: number;
-  total: number;
-  ppl: number;
-  result: number;
-  invested: number;
-  pieCash: number;
-  blocked: number;
+export interface CapitalPosition {
+  position: {
+    dealId: string;
+    dealReference: string;
+    direction: 'BUY' | 'SELL';
+    size: number;
+    openLevel: number;
+    stopLevel: number | null;
+    profitLevel: number | null;
+    trailingStop: boolean;
+    trailingStopDistance: number | null;
+    guaranteedStop: boolean;
+    createdDateUTC: string;
+    controlledRisk: boolean;
+  };
+  market: {
+    instrumentName: string;
+    epic: string;
+    bid: number;
+    offer: number;
+    marketStatus: string;
+  };
 }
 
-export interface T212Instrument {
-  ticker: string;
-  type: string;
-  currencyCode: string;
-  name: string;
+export interface OpenPositionParams {
+  direction: 'BUY' | 'SELL';
+  epic: string;
+  size: number;
+  stopLevel?: number;
+  profitLevel?: number;
+  stopDistance?: number;
+  profitDistance?: number;
+  trailingStop?: boolean;
+  guaranteedStop?: boolean;
+}
+
+export interface UpdatePositionParams {
+  stopLevel?: number;
+  profitLevel?: number;
+  stopDistance?: number;
+  profitDistance?: number;
+  trailingStop?: boolean;
+}
+
+export interface DealConfirmation {
+  dealId: string;
+  dealReference: string;
+  dealStatus: 'ACCEPTED' | 'REJECTED';
+  reason: string;
+  status: 'OPEN' | 'AMENDED' | 'DELETED' | 'FULLY_CLOSED' | 'PARTIALLY_CLOSED';
+  direction: 'BUY' | 'SELL';
+  epic: string;
+  size: number;
+  level: number;
+  stopLevel: number | null;
+  profitLevel: number | null;
+  affectedDeals: Array<{ dealId: string; status: string }>;
+}
+
+export interface CapitalCandle {
+  snapshotTime: string;
+  snapshotTimeUTC: string;
+  openPrice: { bid: number; ask: number };
+  highPrice: { bid: number; ask: number };
+  lowPrice: { bid: number; ask: number };
+  closePrice: { bid: number; ask: number };
+  lastTradedVolume: number;
+}
+
+export interface Market {
+  epic: string;
+  instrumentName: string;
+  instrumentType: string;
+  marketStatus: string;
+  bid: number;
+  offer: number;
+}
+
+export interface MarketDetail {
+  instrument: {
+    epic: string;
+    name: string;
+    type: string;
+    lotSize: number;
+    currency: string;
+  };
+  dealingRules: {
+    minDealSize: { value: number; unit: string };
+    maxDealSize?: { value: number; unit: string };
+    minStepDistance?: { value: number; unit: string };
+    minControlledRiskStopDistance?: { value: number; unit: string };
+    minNormalStopOrLimitDistance?: { value: number; unit: string };
+  };
+  snapshot: {
+    marketStatus: string;
+    bid: number;
+    offer: number;
+  };
+}
+
+export interface WorkingOrder {
+  workingOrderData: {
+    dealId: string;
+    direction: 'BUY' | 'SELL';
+    epic: string;
+    orderType: 'LIMIT' | 'STOP';
+    orderLevel: number;
+    size: number;
+    timeInForce: 'GOOD_TILL_CANCELLED' | 'GOOD_TILL_DATE';
+  };
+}
+
+export interface CreateWorkingOrderParams {
+  direction: 'BUY' | 'SELL';
+  epic: string;
+  size: number;
+  level: number;
+  type: 'LIMIT' | 'STOP';
+  stopLevel?: number;
+  profitLevel?: number;
+}
+
+export interface UpdateWorkingOrderParams {
+  level?: number;
+  stopLevel?: number;
+  profitLevel?: number;
+}
+
+export interface Activity {
+  date: string;
+  epic: string;
+  dealId: string;
+  activity: string;
+  status: string;
+  size: number;
+  level: number;
+}
+
+export interface Transaction {
+  date: string;
+  reference: string;
+  transactionType: string;
+  size: number;
+  currency: string;
+}
+
+export interface Sentiment {
+  marketId: string;
+  longPositionPercentage: number;
+  shortPositionPercentage: number;
 }
 
 // ==================== TRADE RECORDS ====================

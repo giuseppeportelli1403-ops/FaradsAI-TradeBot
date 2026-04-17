@@ -6,7 +6,7 @@
 //   lessons         — structured JSON lessons from Reflection Agent
 //   research_briefs — daily briefs from Market Researcher Agent
 //   analyst_log     — approval/rejection log from Trade Analyst
-//   sl_tp_orders    — active SL/TP levels monitored by scheduler (T212 doesn't support native SL/TP)
+//   sl_tp_orders    — audit of active split-position legs + deal_id for Capital.com position lookup
 //   daily_pnl_log   — daily P&L snapshots for kill switch tracking
 
 import initSqlJs, { type Database } from 'sql.js';
@@ -148,12 +148,24 @@ function createTables(): void {
       sl_price REAL,
       tp_price REAL,
       trailing_stop_distance REAL,
+      deal_id TEXT,
       is_active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       triggered_at TEXT,
       FOREIGN KEY (trade_id) REFERENCES trades(id)
     )
   `);
+
+  // Idempotent ALTER for pre-existing older DBs (sql.js has no
+  // real migrations). PRAGMA table_info() lists every column; if deal_id is
+  // missing, add it. Safe to run on every boot.
+  const colsResult = db.exec('PRAGMA table_info(sl_tp_orders)');
+  const existingCols = colsResult[0]
+    ? colsResult[0].values.map((row) => row[1] as string)
+    : [];
+  if (!existingCols.includes('deal_id')) {
+    db.run('ALTER TABLE sl_tp_orders ADD COLUMN deal_id TEXT');
+  }
 
   db.run(`
     CREATE TABLE IF NOT EXISTS daily_pnl_log (
@@ -382,14 +394,15 @@ export function createSlTpOrder(params: {
   sl_price?: number;
   tp_price?: number;
   trailing_stop_distance?: number;
+  deal_id?: string;
 }): void {
   db.run(`
-    INSERT INTO sl_tp_orders (trade_id, leg, instrument, direction, quantity, sl_price, tp_price, trailing_stop_distance)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO sl_tp_orders (trade_id, leg, instrument, direction, quantity, sl_price, tp_price, trailing_stop_distance, deal_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     params.trade_id, params.leg, params.instrument, params.direction,
     params.quantity, params.sl_price ?? null, params.tp_price ?? null,
-    params.trailing_stop_distance ?? null,
+    params.trailing_stop_distance ?? null, params.deal_id ?? null,
   ]);
   saveToFile();
 }
@@ -404,6 +417,7 @@ export function getActiveSlTpOrders(): Array<{
   sl_price: number | null;
   tp_price: number | null;
   trailing_stop_distance: number | null;
+  deal_id: string | null;
 }> {
   const result = db.exec('SELECT * FROM sl_tp_orders WHERE is_active = 1');
   return resultToObjects(result);

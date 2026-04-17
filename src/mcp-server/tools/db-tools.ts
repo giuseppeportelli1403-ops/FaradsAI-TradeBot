@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { T212Client } from '../t212-client.js';
+import { CapitalClient } from '../capital-client.js';
 import { wrapTool } from '../logger.js';
 import {
   getTradeHistory, getLessons, getLessonWinRate, countOpenPositions,
@@ -14,10 +14,21 @@ import {
 import { getRankedInstruments } from '../../scanner/index.js';
 import type { StrategyTag } from '../../types.js';
 
-const t212 = new T212Client(
-  process.env.T212_API_KEY || '',
-  (process.env.T212_MODE as 'demo' | 'live') || 'demo'
-);
+const capital = new CapitalClient({
+  apiKey: process.env.CAPITAL_API_KEY || '',
+  identifier: process.env.CAPITAL_IDENTIFIER || '',
+  password: process.env.CAPITAL_PASSWORD || '',
+  baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
+});
+
+async function getPreferredAccountBalance(): Promise<{ balance: number; deposit: number; profitLoss: number; available: number }> {
+  const accounts = await capital.getAccounts();
+  const preferred = accounts.find((a) => a.preferred) ?? accounts[0];
+  if (!preferred) {
+    throw new Error('No Capital.com account available');
+  }
+  return preferred.balance;
+}
 
 export function registerDbTools(server: McpServer): void {
 
@@ -25,12 +36,12 @@ export function registerDbTools(server: McpServer): void {
     'get_portfolio',
     {
       title: 'Get Open Positions',
-      description: 'Get all currently open positions from Trading 212 portfolio.',
+      description: 'Get all currently open positions from Capital.com portfolio.',
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('get_portfolio', async () => {
-      const positions = await t212.getPortfolio();
+      const positions = await capital.getOpenPositions();
       return { content: [{ type: 'text' as const, text: JSON.stringify(positions) }] };
     })
   );
@@ -39,12 +50,12 @@ export function registerDbTools(server: McpServer): void {
     'get_balance',
     {
       title: 'Get Account Balance',
-      description: 'Get account cash, equity, invested amount, and unrealised P&L from Trading 212.',
+      description: 'Get account balance, deposit, available funds, and unrealised P&L from Capital.com.',
       inputSchema: {},
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('get_balance', async () => {
-      const balance = await t212.getBalance();
+      const balance = await getPreferredAccountBalance();
       return { content: [{ type: 'text' as const, text: JSON.stringify(balance) }] };
     })
   );
@@ -58,17 +69,18 @@ export function registerDbTools(server: McpServer): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('get_daily_pnl', async () => {
-      const balance = await t212.getBalance();
+      const balance = await getPreferredAccountBalance();
       const today = new Date().toISOString().split('T')[0];
       const dailyRecord = getDailyPnl(today);
 
-      const unrealised = balance.ppl;
+      const unrealised = balance.profitLoss;
       const realised = dailyRecord?.realised_pnl ?? 0;
       const total = unrealised + realised;
-      const pct = balance.total ? (total / balance.total) * 100 : 0;
+      const equity = balance.balance;
+      const pct = equity ? (total / equity) * 100 : 0;
       const killSwitch = pct <= -4;
 
-      upsertDailyPnl(today, realised, unrealised, balance.total);
+      upsertDailyPnl(today, realised, unrealised, equity);
 
       return {
         content: [{
@@ -77,7 +89,7 @@ export function registerDbTools(server: McpServer): void {
             unrealised_pnl: unrealised,
             realised_pnl_today: realised,
             total_daily_pnl: total,
-            equity: balance.total,
+            equity,
             daily_pnl_pct: Math.round(pct * 100) / 100,
             kill_switch_active: killSwitch,
             open_positions: countOpenPositions(),

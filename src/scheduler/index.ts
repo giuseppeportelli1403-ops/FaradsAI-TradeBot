@@ -1,5 +1,12 @@
-// Scheduler — Candle Close Detection + Position Monitoring + Agent Triggers
-// The central nervous system that triggers all 6 agents at the right times
+// Scheduler — Candle Close Detection + Split-Position Monitoring + Agent Triggers
+// The central nervous system that triggers all 6 agents at the right times.
+//
+// Capital.com executes SL/TP and trailing stops server-side, so the local
+// monitoring loop is ONLY responsible for our custom split-position logic:
+//   "When Position A hits TP1, move Position B's SL to break-even."
+//
+// Every 8 minutes we ping the Capital.com session to keep it warm (their
+// tokens idle out around 10 minutes).
 
 import cron from 'node-cron';
 import { runTradingAgent } from '../agents/trading-agent.js';
@@ -7,14 +14,22 @@ import { runSwingAgent } from '../agents/swing-agent.js';
 import { runResearcherAgent } from '../agents/researcher-agent.js';
 import { runReflectionAgent } from '../agents/reflection-agent.js';
 import { runWeeklyReviewAgent } from '../agents/review-agent.js';
-import { getActiveSlTpOrders, deactivateSlTpOrder, updateTradeStatus, getTradeById } from '../database/index.js';
-import { fetchCandles } from '../mcp-server/market-data.js';
-import { T212Client } from '../mcp-server/t212-client.js';
+import {
+  getActiveSlTpOrders,
+  deactivateSlTpOrder,
+  updateTradeStatus,
+  getTradeById,
+} from '../database/index.js';
+import { CapitalClient } from '../mcp-server/capital-client.js';
+import { alertTp1Hit, alertTp2Hit, alertSlHit } from '../notifications/telegram.js';
+import type { CapitalPosition, Activity, TradeRecord } from '../types.js';
 
-const t212 = new T212Client(
-  process.env.T212_API_KEY || '',
-  (process.env.T212_MODE as 'demo' | 'live') || 'demo'
-);
+const capital = new CapitalClient({
+  apiKey: process.env.CAPITAL_API_KEY || '',
+  identifier: process.env.CAPITAL_IDENTIFIER || '',
+  password: process.env.CAPITAL_PASSWORD || '',
+  baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
+});
 
 // Track last processed candle timestamps to detect new closes
 let last15mCandle = '';
@@ -60,96 +75,165 @@ async function check1hCandleClose(): Promise<boolean> {
   return false;
 }
 
-// ==================== SL/TP MONITORING ====================
-// Since T212 doesn't support native SL/TP, we monitor and execute ourselves
+// ==================== SPLIT-POSITION MONITORING ====================
+// Capital.com handles SL/TP/trailing server-side. All we need to detect is:
+//   Position A (the TP1 leg) closed by Capital → if it was a TP hit, move
+//   Position B's SL to break-even (our custom split-position rule).
 
-async function monitorSlTpOrders(): Promise<void> {
-  const activeOrders = getActiveSlTpOrders();
-  if (activeOrders.length === 0) return;
+/** Classify why a Capital position closed. Looks up the most recent activity
+ *  record for `dealId` and returns 'TP', 'SL', or 'OTHER' based on the
+ *  activity/status fields. Exported for testing. */
+export function classifyCloseReason(
+  activities: Activity[],
+  dealId: string,
+): 'TP' | 'SL' | 'OTHER' {
+  const relevant = activities.filter((a) => a.dealId === dealId);
+  if (relevant.length === 0) return 'OTHER';
 
-  for (const order of activeOrders) {
-    try {
-      // Get current price
-      const candles = await fetchCandles(order.instrument, '15m', 1);
-      if (!candles[0]) continue;
-
-      const currentPrice = candles[0].close;
-      const isLong = order.direction === 'long';
-
-      // Check trailing stop first (dynamic SL)
-      if (order.trailing_stop_distance) {
-        const trailingSl = isLong
-          ? currentPrice - order.trailing_stop_distance
-          : currentPrice + order.trailing_stop_distance;
-
-        // Update SL if trailing stop moves in our favour
-        if (order.sl_price) {
-          if (isLong && trailingSl > order.sl_price) {
-            // Trailing stop moved up — update
-            const { updateSlPrice } = await import('../database/index.js');
-            updateSlPrice(order.trade_id, order.leg, trailingSl);
-          } else if (!isLong && trailingSl < order.sl_price) {
-            const { updateSlPrice } = await import('../database/index.js');
-            updateSlPrice(order.trade_id, order.leg, trailingSl);
-          }
-        }
-      }
-
-      // Check SL hit
-      if (order.sl_price) {
-        const slHit = isLong
-          ? currentPrice <= order.sl_price
-          : currentPrice >= order.sl_price;
-
-        if (slHit) {
-          console.log(`[SL HIT] ${order.instrument} leg ${order.leg} — closing at ${currentPrice}`);
-          await t212.partialClose(order.instrument, order.quantity);
-          deactivateSlTpOrder(order.trade_id, order.leg);
-
-          // Check if both legs are now closed
-          const trade = getTradeById(order.trade_id);
-          if (trade) {
-            updateTradeStatus(order.trade_id, 'sl_hit');
-            // Trigger reflection agent
-            setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
-          }
-          continue;
-        }
-      }
-
-      // Check TP hit
-      if (order.tp_price) {
-        const tpHit = isLong
-          ? currentPrice >= order.tp_price
-          : currentPrice <= order.tp_price;
-
-        if (tpHit) {
-          console.log(`[TP HIT] ${order.instrument} leg ${order.leg} — closing at ${currentPrice}`);
-          await t212.partialClose(order.instrument, order.quantity);
-          deactivateSlTpOrder(order.trade_id, order.leg);
-
-          const trade = getTradeById(order.trade_id);
-          if (trade) {
-            if (order.leg === 'A') {
-              // TP1 hit — move Position B SL to break even
-              updateTradeStatus(order.trade_id, 'tp1_hit');
-              const { updateSlPrice } = await import('../database/index.js');
-              updateSlPrice(order.trade_id, 'B', trade.entry);
-              console.log(`[TP1] ${order.instrument} — Position B SL moved to break even (${trade.entry})`);
-            } else {
-              // TP2 hit — trade complete
-              updateTradeStatus(order.trade_id, 'complete');
-              console.log(`[TP2] ${order.instrument} — Trade complete`);
-              setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
-            }
-          }
-          continue;
-        }
-      }
-    } catch (error) {
-      console.error(`[Monitor] Error checking ${order.instrument} leg ${order.leg}:`, error);
+  // Capital.com activity statuses include strings like 'PROFIT' or 'STOP'/'LIMIT'.
+  // We match on substring for robustness against casing / field naming.
+  for (const a of relevant) {
+    const blob = `${a.activity} ${a.status}`.toUpperCase();
+    if (blob.includes('PROFIT') || blob.includes('LIMIT') || blob.includes('TP')) {
+      return 'TP';
+    }
+    if (blob.includes('STOP') || blob.includes('SL')) {
+      return 'SL';
     }
   }
+  return 'OTHER';
+}
+
+async function monitorSplitPositions(): Promise<void> {
+  const activeOrders = getActiveSlTpOrders();
+  // We only act on leg A — leg B's SL is managed by Capital after we move it to BE.
+  const legAOrders = activeOrders.filter((o) => o.leg === 'A');
+  if (legAOrders.length === 0) return;
+
+  // Fetch open positions + activity history once per tick to avoid hammering the API.
+  let openPositions: CapitalPosition[];
+  let activities: Activity[];
+  try {
+    [openPositions, activities] = await Promise.all([
+      capital.getOpenPositions(),
+      capital.getActivityHistory(),
+    ]);
+  } catch (error) {
+    console.error('[Monitor] Failed to fetch Capital state this tick:', error);
+    return;
+  }
+
+  const openDealIds = new Set(openPositions.map((p) => p.position.dealId));
+
+  for (const order of legAOrders) {
+    if (!order.deal_id) {
+      // Legacy or malformed row — nothing we can do without a dealId.
+      continue;
+    }
+
+    try {
+      if (openDealIds.has(order.deal_id)) {
+        // Position A still open; nothing to do.
+        continue;
+      }
+
+      // Position A is no longer open — Capital closed it (SL or TP hit).
+      const reason = classifyCloseReason(activities, order.deal_id);
+      const trade = getTradeById(order.trade_id);
+      if (!trade) {
+        console.warn(`[Monitor] Trade ${order.trade_id} not found for closed leg A`);
+        deactivateSlTpOrder(order.trade_id, 'A');
+        continue;
+      }
+
+      if (reason === 'TP') {
+        await handleTp1Hit(trade, order.trade_id);
+      } else if (reason === 'SL') {
+        await handleLegAClosed(trade, order.trade_id, 'sl_hit');
+      } else {
+        // Unknown close reason — still mark leg A inactive so we don't loop on it.
+        // Do NOT touch trade status; a human/later tick can investigate.
+        console.warn(
+          `[Monitor] Leg A for trade ${order.trade_id} (deal ${order.deal_id}) ` +
+            `closed but reason could not be classified. Deactivating leg A only.`,
+        );
+        deactivateSlTpOrder(order.trade_id, 'A');
+      }
+    } catch (error) {
+      console.error(`[Monitor] Error processing leg A for trade ${order.trade_id}:`, error);
+    }
+  }
+
+  // Second pass: if leg B is still marked active in our DB but is no longer
+  // open on Capital, the trade is fully closed — promote to 'complete'.
+  const legBOrders = getActiveSlTpOrders().filter((o) => o.leg === 'B');
+  for (const order of legBOrders) {
+    if (!order.deal_id) continue;
+    if (openDealIds.has(order.deal_id)) continue;
+
+    const trade = getTradeById(order.trade_id);
+    if (!trade) {
+      deactivateSlTpOrder(order.trade_id, 'B');
+      continue;
+    }
+
+    const reason = classifyCloseReason(activities, order.deal_id);
+    const status = reason === 'TP' ? 'complete' : reason === 'SL' ? 'sl_hit' : 'complete';
+    updateTradeStatus(order.trade_id, status);
+    deactivateSlTpOrder(order.trade_id, 'B');
+
+    try {
+      if (status === 'complete') await alertTp2Hit(trade);
+      else await alertSlHit(trade);
+    } catch (e) {
+      console.error('[Monitor] Telegram alert for leg B close failed:', e);
+    }
+
+    // Trigger reflection once both legs are closed.
+    setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
+  }
+}
+
+async function handleTp1Hit(trade: TradeRecord, tradeId: string): Promise<void> {
+  updateTradeStatus(tradeId, 'tp1_hit');
+  deactivateSlTpOrder(tradeId, 'A');
+
+  // Move Position B's SL to break-even (the entry price).
+  if (trade.position_b_id) {
+    try {
+      await capital.updatePosition(trade.position_b_id, { stopLevel: trade.entry });
+      console.log(
+        `[TP1] ${trade.instrument} — Position B SL moved to break-even (${trade.entry})`,
+      );
+    } catch (error) {
+      console.error(`[TP1] Failed to move Position B SL to BE for ${tradeId}:`, error);
+    }
+  }
+
+  try {
+    await alertTp1Hit(trade);
+  } catch (e) {
+    console.error('[Monitor] Telegram TP1 alert failed:', e);
+  }
+}
+
+async function handleLegAClosed(
+  trade: TradeRecord,
+  tradeId: string,
+  status: 'sl_hit',
+): Promise<void> {
+  // Leg A SL-hit before TP1. Capital already closed it; we just record the state.
+  updateTradeStatus(tradeId, status);
+  deactivateSlTpOrder(tradeId, 'A');
+
+  try {
+    await alertSlHit(trade);
+  } catch (e) {
+    console.error('[Monitor] Telegram SL alert failed:', e);
+  }
+
+  // If Position B is also gone from open positions, reflection fires in the
+  // second pass above — nothing else to do here.
 }
 
 // ==================== AGENT RUNNERS WITH ERROR HANDLING ====================
@@ -169,17 +253,24 @@ async function safeRun(name: string, fn: () => Promise<unknown>): Promise<void> 
 export function startScheduler(): void {
   console.log('Starting scheduler...');
 
-  // Every 5 minutes: check candle closes + monitor SL/TP
+  // Every 5 minutes: split-position monitor + candle-close detection.
   cron.schedule('*/5 * * * *', async () => {
-    // Monitor SL/TP orders (most critical — runs every cycle)
-    await monitorSlTpOrders();
+    await monitorSplitPositions();
 
-    // Check for new candle closes
     const new15m = await check15mCandleClose();
     const new1h = await check1hCandleClose();
 
     if (new15m || new1h) {
       await safeRun('ICT Trading Agent', runTradingAgent);
+    }
+  });
+
+  // Every 8 minutes: Capital.com session keep-alive.
+  cron.schedule('*/8 * * * *', async () => {
+    try {
+      await capital.ping();
+    } catch (error) {
+      console.error('[Scheduler] Capital ping failed:', error);
     }
   });
 
@@ -214,7 +305,8 @@ export function startScheduler(): void {
   });
 
   console.log('Scheduler started. Cron jobs active:');
-  console.log('  */5 * * * *     — SL/TP monitor + candle detection → ICT Agent');
+  console.log('  */5 * * * *     — Split-position monitor + candle detection → ICT Agent');
+  console.log('  */8 * * * *     — Capital.com session keep-alive ping');
   console.log('  30 5 * * *      — Market Researcher (daily)');
   console.log('  0 22 * * 0      — Market Researcher (weekly)');
   console.log('  30 21 * * 1-5   — Swing Agent (daily)');

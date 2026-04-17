@@ -11,13 +11,19 @@
 //   - News catalyst presence
 //
 // The agents then take the top N and run their full analysis pipeline.
+//
+// IMPORTANT: These epics are STUBBED based on Capital.com naming conventions.
+// Run `npx tsx scripts/discover-epics.ts` with valid Capital credentials to
+// verify each epic against the live market catalog. Update this table before
+// going live on the practice account.
 
 import { fetchCandles } from '../mcp-server/market-data.js';
 import { getNewsScore } from '../news/index.js';
 import type { Candle, RankedInstrument } from '../types.js';
 
 // ==================== INSTRUMENT UNIVERSE ====================
-// Categorised for position concentration limits
+// Categorised for position concentration limits.
+// `ticker` holds the Capital.com `epic` used by the broker API.
 
 export const INSTRUMENT_UNIVERSE: Array<{
   ticker: string;
@@ -26,16 +32,16 @@ export const INSTRUMENT_UNIVERSE: Array<{
   spread_quality: 'tight' | 'medium' | 'wide';
 }> = [
   // Indices
-  { ticker: 'NAS100', name: 'Nasdaq 100', category: 'index', spread_quality: 'tight' },
-  { ticker: 'SPX500', name: 'S&P 500', category: 'index', spread_quality: 'tight' },
+  { ticker: 'US100', name: 'Nasdaq 100', category: 'index', spread_quality: 'tight' },
+  { ticker: 'US500', name: 'S&P 500', category: 'index', spread_quality: 'tight' },
   { ticker: 'US30', name: 'Dow Jones 30', category: 'index', spread_quality: 'tight' },
   { ticker: 'DE40', name: 'DAX 40', category: 'index', spread_quality: 'tight' },
   { ticker: 'UK100', name: 'FTSE 100', category: 'index', spread_quality: 'medium' },
 
   // Commodities
-  { ticker: 'XAUUSD', name: 'Gold', category: 'commodity', spread_quality: 'tight' },
-  { ticker: 'XAGUSD', name: 'Silver', category: 'commodity', spread_quality: 'medium' },
-  { ticker: 'USOIL', name: 'Crude Oil WTI', category: 'commodity', spread_quality: 'medium' },
+  { ticker: 'GOLD', name: 'Gold', category: 'commodity', spread_quality: 'tight' },
+  { ticker: 'SILVER', name: 'Silver', category: 'commodity', spread_quality: 'medium' },
+  { ticker: 'OIL_CRUDE', name: 'Crude Oil WTI', category: 'commodity', spread_quality: 'medium' },
 
   // FX Majors
   { ticker: 'EURUSD', name: 'EUR/USD', category: 'fx', spread_quality: 'tight' },

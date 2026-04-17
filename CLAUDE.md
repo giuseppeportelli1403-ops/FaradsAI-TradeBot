@@ -2,7 +2,7 @@
 
 ## Project Status: Feature-complete + Hardened. Awaiting API keys for testing.
 
-This is a self-learning autonomous AI trading bot built by BetterOpsAI. It runs TWO trading strategies (ICT Intraday + Swing) powered by 6 AI agents, connects to Trading 212 via their beta API through an MCP server with 21 tools, and improves itself over time through structured reflection and weekly strategy evolution.
+This is a self-learning autonomous AI trading bot built by BetterOpsAI. It runs TWO trading strategies (ICT Intraday + Swing) powered by 6 AI agents, connects to Capital.com via their REST API through an MCP server with 22 tools, and improves itself over time through structured reflection and weekly strategy evolution.
 
 **Built by:** Giuseppe Portelli (giuseppeportelli1403@gmail.com) + Claude Code
 **Codebase:** ~4,500 lines TypeScript, 43 tests, 22 commits
@@ -61,7 +61,7 @@ Server uses modern `registerTool()` API with annotations on all 21 tools.
 src/mcp-server/
 ├── index.ts                    (41 lines — entry point)
 ├── logger.ts                   (32 lines — wrapTool error boundaries + request logging)
-├── t212-client.ts              (107 lines — T212 API wrapper)
+├── capital-client.ts           (~680 lines — Capital.com REST client: session mgmt + deal confirmation polling)
 ├── market-data.ts              (274 lines — Twelve Data, Finnhub, FMP, FRED, Alpha Vantage)
 └── tools/
     ├── trading-tools.ts        (155 lines — 6 tools, destructiveHint: true on orders)
@@ -69,8 +69,8 @@ src/mcp-server/
     └── db-tools.ts             (145 lines — 6 tools, readOnlyHint: true)
 ```
 
-### CRITICAL: T212 API Limitations
-Trading 212 does NOT support: OHLC data, SL/TP on orders, trailing stops, labels, close endpoint, modify position. ALL risk management is local: `sl_tp_orders` DB table + scheduler monitoring loop.
+### Capital.com Notes
+Capital.com natively supports: OHLC candles, SL/TP on open, trailing stops, modify/close endpoints. Session auth uses `CST` + `X-SECURITY-TOKEN` with 10-min idle timeout — client handles auto re-auth + 8-min ping keep-alive. Deal confirmation is async: POST /positions returns `dealReference`, poll GET `/confirms/:ref` for `dealId` + status. Scheduler SL/TP loop is minimal: only detects TP1 hit → moves Position B SL to break-even (split-position method).
 
 ---
 
@@ -91,7 +91,7 @@ Trading 212 does NOT support: OHLC data, SL/TP on orders, trailing stops, labels
 
 | Step | Task | Status |
 |------|------|--------|
-| 1 | T212 API Key (CFD Practice account) | Pending — Giuseppe getting tonight |
+| 1 | Capital.com demo credentials (API key + identifier + password) | Complete — in .env |
 | 2 | Project structure | Complete |
 | 3 | MCP Server (21 tools) | Complete + Hardened |
 | 4 | SQLite Database (6 tables) | Complete + Tested |
@@ -106,7 +106,7 @@ Trading 212 does NOT support: OHLC data, SL/TP on orders, trailing stops, labels
 | 10 | Scheduler | Complete + Bug fixed (timezone) |
 | 11 | Telegram Alerts | Complete |
 | 12 | Strategy files | Pre-populated, needs trading team refinement |
-| 13 | Test on T212 Practice Account | Pending (2 weeks minimum) |
+| 13 | Test on Capital.com Demo Account | Pending (2 weeks minimum) |
 | 14 | Deploy to VPS | Pending |
 | 15 | Monitor + tune | Pending |
 
@@ -123,7 +123,10 @@ Trading 212 does NOT support: OHLC data, SL/TP on orders, trailing stops, labels
 
 | Key | Source | Status |
 |-----|--------|--------|
-| T212_API_KEY | Trading 212 Settings → API (CFD Practice) | Giuseppe getting tonight |
+| CAPITAL_API_KEY | Capital.com → Settings → API Keys | Complete |
+| CAPITAL_IDENTIFIER | Capital.com login email | Complete |
+| CAPITAL_PASSWORD | Capital.com account password | Complete |
+| CAPITAL_API_URL | `https://demo-api-capital.backend-capital.com` | Complete |
 | ANTHROPIC_API_KEY | console.anthropic.com | Pending |
 | TELEGRAM_BOT_TOKEN | @BotFather on Telegram | Pending |
 | TELEGRAM_CHAT_ID | Send /start to bot | Pending |
@@ -139,7 +142,7 @@ Trading 212 does NOT support: OHLC data, SL/TP on orders, trailing stops, labels
 
 1. Every trade = TWO positions (split-position method)
 2. Size per leg = (Total risk / 2) / (entry - SL)
-3. Max 3 ICT + 3 Swing positions. Combined max 5 trades (10 T212 positions)
+3. Max 3 ICT + 3 Swing positions. Combined max 5 trades (10 Capital.com positions)
 4. Daily loss kill switch: 4%. Weekly: 8%
 5. Minimum composite score 65 to trade
 6. Minimum R:R: 2:1 (ICT) / 3:1 (Swing)
@@ -162,7 +165,7 @@ trading-bot/
 │   ├── mcp-server/           ← 21 MCP tools (registerTool API + annotations)
 │   │   ├── index.ts          ← entry point (41 lines)
 │   │   ├── logger.ts         ← wrapTool error boundaries + logging
-│   │   ├── t212-client.ts    ← T212 API wrapper
+│   │   ├── capital-client.ts ← Capital.com REST client (session + dealing)
 │   │   ├── market-data.ts    ← 5 external API clients + cache
 │   │   └── tools/            ← 3 tool files by domain
 │   ├── agents/               ← 6 AI agents + load-prompt.ts utility
