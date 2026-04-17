@@ -337,7 +337,9 @@ export function getLessonWinRate(filters: {
   const totalResult = db.exec(`SELECT COUNT(*) FROM lessons ${where}`, params);
   const total = totalResult[0]?.values[0]?.[0] as number || 0;
 
-  const winsResult = db.exec(`SELECT COUNT(*) FROM lessons ${where} ${where ? 'AND' : 'WHERE'} pnl_total_r > 0`, params);
+  const winConditions = [...conditions, 'pnl_total_r > 0'];
+  const winWhere = `WHERE ${winConditions.join(' AND ')}`;
+  const winsResult = db.exec(`SELECT COUNT(*) FROM lessons ${winWhere}`, [...params]);
   const wins = winsResult[0]?.values[0]?.[0] as number || 0;
 
   return { total, wins, win_rate: total > 0 ? Math.round((wins / total) * 1000) / 10 : 0 };
