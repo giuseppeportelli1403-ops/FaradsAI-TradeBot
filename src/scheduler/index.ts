@@ -22,15 +22,27 @@ let last1hCandle = '';
 
 // ==================== CANDLE CLOSE DETECTION ====================
 
+/** Build a padded ISO-style candle key. Exported for testing. */
+export function makeCandleKey(date: Date, timeframe: '15m' | '1h'): string {
+  const y = date.getUTCFullYear();
+  const mo = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  const h = String(date.getUTCHours()).padStart(2, '0');
+
+  if (timeframe === '1h') {
+    return `${y}-${mo}-${d}T${h}:00`;
+  }
+
+  const candleMinute = Math.floor(date.getUTCMinutes() / 15) * 15;
+  const m = String(candleMinute).padStart(2, '0');
+  return `${y}-${mo}-${d}T${h}:${m}`;
+}
+
 async function check15mCandleClose(): Promise<boolean> {
   const now = new Date();
-  const minutes = now.getUTCMinutes();
-  // 15M candles close at :00, :15, :30, :45
-  const candleMinute = Math.floor(minutes / 15) * 15;
-  const candleKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}-${candleMinute}`;
+  const candleKey = makeCandleKey(now, '15m');
 
-  if (candleKey !== last15mCandle && minutes % 15 < 5) {
-    // New candle closed within the last 5 minutes
+  if (candleKey !== last15mCandle && now.getUTCMinutes() % 15 < 5) {
     last15mCandle = candleKey;
     return true;
   }
@@ -39,7 +51,7 @@ async function check15mCandleClose(): Promise<boolean> {
 
 async function check1hCandleClose(): Promise<boolean> {
   const now = new Date();
-  const candleKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}`;
+  const candleKey = makeCandleKey(now, '1h');
 
   if (candleKey !== last1hCandle && now.getUTCMinutes() < 5) {
     last1hCandle = candleKey;

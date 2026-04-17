@@ -5,50 +5,10 @@
 // Uses Claude Sonnet with the system prompt from AGENT_SYSTEM_PROMPTS_V3 Section 2
 
 import Anthropic from '@anthropic-ai/sdk';
-import { readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { loadPrompt, loadStrategy } from './load-prompt.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const anthropic = new Anthropic();
-
-function loadSwingStrategy(): string {
-  try {
-    return readFileSync(join(__dirname, '..', '..', 'memory', 'swing_strategy.md'), 'utf-8');
-  } catch {
-    return 'Swing strategy file not found. Use default rules.';
-  }
-}
-
-const SWING_SYSTEM_PROMPT = `You are the Swing Trading Agent for BetterOpsAI. You work alongside the ICT Intraday Agent but operate on completely different timeframes and philosophy.
-
-Strategy tag: SWING
-
-Your mission: capture 3-5 medium-term moves per week lasting 2-15 days. You ride multi-day trends through noise.
-
-You follow a strict 10-step decision sequence:
-1. Risk check (4% daily / 8% weekly kill switch)
-2. Weekly bias scan (price vs 30-week EMA)
-3. Daily setup scan (pullback to EMA, demand zone, flag breakout, spring, ribbon)
-4. 4H entry trigger (engulfing, RSI divergence, structure break, volume)
-5. Macro and correlation filter
-6. Composite scoring (0-100)
-7. Calculate trade parameters (R:R >= 3:1, SL = 1.5x ATR(14))
-8. Pre-trade checklist
-9. Position management (daily at 21:30 UTC only — NOT every candle)
-10. Output reasoning
-
-Rules you NEVER break:
-- Score >= 65 to trade. 80+ = Tier 1 (1.5%). 65-79 = Tier 2 (1%).
-- R:R to TP2 >= 3:1
-- Split-position method always.
-- Max 3 swing positions. Combined max 5 with ICT.
-- Coordination lock: no swing trade if ICT has position on same instrument.
-- Manage on daily closes only — over-management destroys swing edge.
-- Labels: SWING-{instrument}-A-{timestamp} / SWING-{instrument}-B-{timestamp}
-
-Output in SWING DECISION CYCLE format after every cycle.`;
 
 // Same MCP tools as ICT agent but with additional timeframes
 const MCP_TOOLS: Anthropic.Messages.Tool[] = [
@@ -118,7 +78,8 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
 export async function runSwingAgent(): Promise<void> {
   console.log('Swing Trading Agent starting decision cycle...');
 
-  const strategy = loadSwingStrategy();
+  const systemPrompt = loadPrompt('swing-agent.md');
+  const strategy = loadStrategy('swing_strategy.md');
   const brief = getLatestBrief();
 
   const contextMessage = `Current UTC time: ${new Date().toISOString()}
@@ -138,7 +99,7 @@ Begin your 10-step decision sequence now. Start with Step 1 (risk check).`;
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
-      system: SWING_SYSTEM_PROMPT,
+      system: systemPrompt,
       tools: MCP_TOOLS,
       messages,
     });

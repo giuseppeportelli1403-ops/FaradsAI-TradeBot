@@ -6,49 +6,10 @@
 // from AGENT_SYSTEM_PROMPTS_V3 Section 1 to guide its reasoning.
 
 import Anthropic from '@anthropic-ai/sdk';
-import { readFileSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { loadPrompt, loadStrategy } from './load-prompt.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
 const anthropic = new Anthropic();
-
-// Load the ICT strategy file for the agent's system prompt context
-function loadStrategy(): string {
-  try {
-    return readFileSync(join(__dirname, '..', '..', 'memory', 'strategy.md'), 'utf-8');
-  } catch {
-    return 'Strategy file not found. Use default ICT rules.';
-  }
-}
-
-// The full system prompt is loaded from AGENT_SYSTEM_PROMPTS_V3 Section 1.
-// For now we embed the core decision structure; the full prompt will be
-// injected at runtime from the reference doc.
-const ICT_SYSTEM_PROMPT = `You are an elite autonomous AI trading agent operating on behalf of BetterOpsAI.
-You make real financial decisions with real capital. Your mandate is to generate consistent,
-compounding profits through disciplined, high-probability ICT trading.
-
-Strategy tag: ICT_INTRADAY
-
-You follow a strict 5-step decision cycle on every trigger:
-1. Check daily risk status (4% kill switch)
-2. Get ranked instruments from scanner
-3. Full ICT analysis per candidate (1H bias → ICT arrays → kill zone → news → lessons → score → 15M trigger)
-4. Manage existing positions (TP1 hit → move SL to BE, trailing stops, early exits)
-5. Output structured reasoning log
-
-Rules you NEVER break:
-- Score >= 65 to trade. Score 80+ = Tier 1 (1.5% risk). Score 65-79 = Tier 2 (1% risk).
-- R:R to TP2 >= 2:1
-- Every trade = 2 legs (split-position method). Size per leg = (total risk / 2) / (entry - SL)
-- Max 3 ICT positions. Combined max 5 with Swing.
-- Coordination lock: no ICT trade if Swing has position on same instrument.
-- All trades must pass Analyst Agent approval.
-- No trading outside kill zones unless score remains >= 65 after -15 penalty.
-
-You must output your reasoning in the structured DECISION CYCLE format after every cycle.`;
 
 // ==================== MCP TOOL DEFINITIONS ====================
 // These are passed to Claude as tool schemas so it can call them
@@ -237,7 +198,8 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
 export async function runTradingAgent(): Promise<void> {
   console.log('ICT Trading Agent starting decision cycle...');
 
-  const strategy = loadStrategy();
+  const systemPrompt = loadPrompt('ict-agent.md');
+  const strategy = loadStrategy('strategy.md');
   const brief = getLatestBrief();
 
   const contextMessage = `Current UTC time: ${new Date().toISOString()}
@@ -261,7 +223,7 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
     const response = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
-      system: ICT_SYSTEM_PROMPT,
+      system: systemPrompt,
       tools: MCP_TOOLS,
       messages,
     });
