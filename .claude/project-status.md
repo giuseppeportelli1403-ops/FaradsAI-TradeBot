@@ -1,79 +1,89 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-17 (evening, Malta) — end of Blockers 1-5 pass
-Project: BetterOpsAI Trading Bot
-Branch: master
-Last commit: f32e7ed — "feat(scheduler): unit-test monitorSplitPositions orchestration (Blocker 5 A2)"
+Last updated: 2026-04-17 (evening, Malta) — end of 10-commit launch session, bot live on VPS
+Project: BetterOpsAI Trading Bot ("Farad")
+Branch: master (pushed to https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
+Last commit: 2c0b801 — "feat(deploy): VPS deployment artefacts" (next commit is this auto-save)
 
-## What We Did This Session
+## Session Recap — 10 commits on top of a5ba764
 
-Worked through the original 6 launch blockers + 1 hidden bug, one at a time, each with a swarm (Coder + live Tester + independent Reviewer) and atomic commits.
+```
+2c0b801  feat(deploy): VPS deployment artefacts — Hetzner + pm2 + GitHub    ← Blocker 14 prep
+39630e8  feat(scheduler): Telegram alert on Capital ping failure             ← Blocker 6
+d73550b  chore: auto-update session state and preferences                    ← mid-session save
+f32e7ed  feat(scheduler): unit-test monitorSplitPositions orchestration      ← Blocker 5 A2
+002a32e  fix(capital-client): return position dealId from affectedDeals[0]   ← Blocker 4.1 HIDDEN BUG
+e2580a2  fix(preflight): gate live endpoint by explicit opt-in               ← Blocker 3
+728d19c  feat(scanner): add epic field to INSTRUMENT_UNIVERSE                ← Blocker 2
+12939cd  fix: authenticate with API-key password, not account login          ← Blocker 1
+a5ba764  feat: migrate broker from Trading 212 to Capital.com                ← baseline
+```
 
-**Blocker 1 — API-key password auth** (`12939cd`)
-- Diagnosed a live `HTTP 401 error.invalid.details` on `/session` against Capital.com demo. Every call site was reading `CAPITAL_PASSWORD` (account login) but Capital's API requires the per-API-key "Custom Password" set in their dashboard.
-- Renamed `CAPITAL_PASSWORD` → `CAPITAL_API_KEY_PASSWORD` across 13 files (src, scripts, tests, docs, config). Verified HTTP 200 with valid CST + X-SECURITY-TOKEN after fix.
+Every commit is atomic per blocker. Each preceded by Coder+Tester+Reviewer swarm with independent live verification against Capital.com demo before commit. Test count: 43 → 101 across 10 files. `tsc --noEmit` 0 errors.
 
-**Blocker 2 — Epic field on INSTRUMENT_UNIVERSE** (`728d19c`)
-- Added `epic: string` to all 20 entries. Epic-discovery script's `markets[0]` heuristic had picked ETFs / weekend contracts for 4 entries (US100, US30, UK100, EURUSD); live-verified that for all 20 `epic == ticker` verbatim.
-- Added 4 invariants including `epic === ticker` to guard the researcher-agent contract (researcher emits tickers, trading agents forward them to Capital tools).
+## Current State — Production-ready on VPS
 
-**Blocker 3 — Preflight live** (`e2580a2`)
-- Found a latent bug: `accountType === 'DEMO'` never works because Capital returns product-type (CFD / SPREADBET / CASH), not demo/live. Preflight had literally never succeeded.
-- Replaced with URL-based gate requiring explicit `LIVE_TRADING_OK=true` to start against the live endpoint. Extracted `checkLiveTradingGate` as a pure function + 7 tests.
+- ✅ **VPS live:** Hetzner CX23 (2 vCPU / 4 GB / 40 GB, €4.71/mo) at **162.55.212.198** (Nuremberg)
+- ✅ **Bot running:** PID 14299, pm2-managed, 0 restarts, 18-min uptime at session close
+- ✅ **Boot persistence:** `pm2-bot.service` systemd unit (survives VPS reboot); `pm2 save` dumped process list to `/home/bot/.pm2/dump.pm2`
+- ✅ **Security:** UFW (SSH only), fail2ban active, unattended security upgrades, non-root `bot` user
+- ✅ **First autonomous cycle completed:** ICT Trading Agent correctly declined to trade at 21:00 UTC (post-session dead zone, no kill zones active, weekend incoming). Reasoning captured in pm2 logs.
+- ✅ **Code on GitHub:** private repo `giuseppeportelli1403-ops/FaradsAI-TradeBot`; deploy key from VPS has read-only access
+- ✅ **All verification gates green:** `npm test` 101/101 on both laptop AND VPS; `tsc` 0 errors
+- ⏳ **Blocker 6 (24h soak):** technically still running — expected green by tomorrow morning; can verify with `ssh bot@162.55.212.198 'pm2 status'`
+- ⏳ **Step 13 (2-week demo):** clock started. First real trade window Monday 2026-04-20 07:00 UTC (London Open)
 
-**Blocker 4 + hidden Blocker 4.1 — dealId bug** (`002a32e`)
-- Boot test (full `npm run dev` for 12s): preflight + DB + Telegram + scheduler start clean.
-- Smoke trade opened an EURUSD position successfully, then `getPosition` and `closePosition` both returned HTTP 404 `error.not-found.dealId`. Rescue-closed via `getOpenPositions()` lookup.
-- Root cause: Capital's `/confirms/:ref` top-level `dealId` is the workingOrderId (order event), while the position's real dealId lives in `affectedDeals[0].dealId`. Bot had been returning the workingOrderId.
-- Single-chokepoint fix via `normaliseDealId()` in `pollDealConfirmation`. Spread-and-override (pure, no mutation). Fallback preserves working-order flows.
-- 5 tests added (override path, empty-fallback, missing-fallback, working-order fallback regression guard, purity/reference contract).
-- Live-verified round-trip: open → get → close with one consistent dealId, 0 orphans.
+## Deferred / Known Issues
 
-**Blocker 5 — TP1 → break-even** (`f32e7ed` + live A1)
-- A1 live: opened EURUSD with SL, called `updatePosition({stopLevel: newSL})`, verified `dealStatus=ACCEPTED status=AMENDED`, new SL reflected on subsequent `getPosition`. Closed cleanly.
-- A2 unit: DI refactor (`MonitorDeps`) + export of `monitorSplitPositions`, `handleTp1Hit`, `handleLegAClosed`. 9 orchestration scenarios covering every branch including `updatePosition` throw, missing-trade-record, and second-pass leg-B close. Production behavior unchanged when `deps` omitted.
+### Security (Giuseppe's action items, not blocking)
+- **CAPITAL_PASSWORD** (account login): leaked to transcript twice. Rotate via Capital.com web UI → Change Password.
+- **CAPITAL_API_KEY** (16 of 17 chars visible in transcript): regenerate via Capital dashboard; set new CAPITAL_API_KEY_PASSWORD too.
+- **ANTHROPIC_API_KEY** (20 of ~108 chars visible): low risk — 88 remaining chars computationally infeasible to brute-force. Optional rotate.
+- **TELEGRAM_BOT_TOKEN** (~20 of ~45 chars visible): low-medium risk. Optional rotate.
+- Giuseppe chose "leave .env as is" for this session; rotation deferred.
 
-## Current State
+### Lockfile hygiene
+- `npm ci` failed on VPS due to missing `@emnapi/core@1.10.0` + `@emnapi/runtime@1.10.0` entries in lockfile (Windows-generated lockfile doesn't capture these Linux-only transitive optional deps). Worked around with `npm install` on VPS. Clean fix: regenerate lockfile on Linux/CI and commit.
 
-- ✅ All verification gates GREEN:
-  - `npm test` → **97/97 passing** (was 43 before hardening, 72 at session start, +25 new tests this session)
-  - `npx tsc --noEmit` → 0 errors
-  - Live Capital auth, epic resolve, preflight, open/get/update/close round-trip, stopLevel update — all verified on demo
-- ✅ 5 atomic commits on master; no uncommitted code changes
-- ✅ No orphan positions on Capital demo (verified at end of each live test)
-- ⏳ Blocker 6 (24h `capital.ping()` soak) NOT STARTED — wall-clock overnight job
-- ⏳ Step 13 (2-week demo window) NOT STARTED
-- ⏳ Step 14 (VPS deploy) NOT STARTED
+### Cosmetic
+- VPS `.env` still contains dead `CAPITAL_PASSWORD=...` line (no code reads it; harmless). Giuseppe can strip at leisure.
+- GitHub default branch is `main` (empty) while code lives on `master`. Change default branch in repo settings → Settings → Branches for cleaner future clones.
+- MCP SDK version in `package.json` (`^1.12.1`) differs from `CLAUDE.md`'s historical claim of `1.29.0` — docs/reality drift from before this session.
+- `BROKER_MIGRATION_PROMPT.md` and `docs/superpowers/plans/2026-04-17-capital-com-migration.md` still reference `CAPITAL_PASSWORD` (historical). Consider superseded banners.
+- `scripts/epic-mapping.json` is a generated artefact now gitignored; will not be committed again.
 
-## Next Steps / TODOs
+## Next Steps (Giuseppe)
 
-### Immediate (next up this session)
-- Blocker 6: start bot, observe first 2-3 `*/8 * * * *` ping cycles fire successfully (24 min), then set up a lightweight watchdog so Giuseppe can leave it overnight and get alerted via Telegram if the session dies
+### Tonight / tomorrow morning
+1. `ssh bot@162.55.212.198 'pm2 status'` — confirm overnight soak survived
+2. (optional) Rotate leaked Capital secrets in dashboard
+3. (optional) Change GitHub default branch to `master`
 
-### After Blocker 6
-- Step 13: let the bot run against Capital.com demo for a minimum 2 weeks with real agent decisions
-- Step 14: deploy to VPS (DigitalOcean or Hetzner)
-- Step 15: monitor + tune
+### Monday 2026-04-20 07:00 UTC (London Open)
+4. Watch logs during the first real kill-zone window — `ssh bot@162.55.212.198 'pm2 logs trading-bot --lines 100'`
+5. If an agent places a trade: verify via Capital.com web UI; confirm SL/TP shown; watch scheduler's monitor loop for any TP1→BE event
 
-### Lower-priority cleanup (non-blocking)
-- `.claude/` directory currently untracked — decide whether to commit or gitignore
-- `scripts/epic-mapping.json` is a generated artifact — consider gitignoring (the code's `INSTRUMENT_UNIVERSE.epic` is the source of truth now, and `src/scanner/index.ts` already documents this)
-- `TRADING_BOT_SYSTEM_DEEP_DIVE.docx` untracked — pre-existing reference doc, decide whether to commit
-- Add a "superseded" banner to `BROKER_MIGRATION_PROMPT.md` and `docs/superpowers/plans/2026-04-17-capital-com-migration.md` so future-devs don't follow the T212 references
-- Giuseppe's `.env` likely still has a dead `CAPITAL_PASSWORD=` line — remove it; nothing reads it anymore
+### 2-week demo (Step 13)
+6. Let the bot trade autonomously on demo for at least 2 weeks
+7. Once a real TP1 hits, verify `handleTp1Hit` moves Position B's SL to break-even on Capital side
+8. Weekly review agent fires Sundays 00:00 UTC — read its output
 
-### Reminders from earlier in the session
-- **SECURITY:** the Tester agent printed Giuseppe's account-login `CAPITAL_PASSWORD` value verbatim in its output during Blocker 1. Giuseppe should rotate that account password on Capital.com web UI (separate from the API-key password, which was never leaked).
+### After the 2-week demo (Step 15)
+9. Tune strategy files based on reflection lessons accumulated over 14 days
+10. Decide whether to enable live trading: would require deliberate `LIVE_TRADING_OK=true` in VPS .env + switch of `CAPITAL_API_URL` to live endpoint (preflight refuses without both)
 
-## Key Decisions Made (This Session)
+## Key Decisions This Session
 
-- **Single-chokepoint normalisation at `pollDealConfirmation`** (not wrapping `openPosition` alone) — auto-fixes 4 confirmation-returning methods while keeping working-order flows correct via the empty-`affectedDeals` fallback. Made the Blocker 4.1 fix 1 diff instead of 4.
-- **URL-based live/demo gate with `LIVE_TRADING_OK=true` opt-in** — replaces the broken `accountType === 'DEMO'` check. Defensive design for a trading bot whose account has `hasActiveLiveAccounts: true`.
-- **DI via optional `MonitorDeps` parameter** instead of `vi.mock` — clean, principled, and production code path is untouched when `deps` is omitted.
-- **Commit per blocker, atomic, reversible** — rather than one big "launch readiness" commit. Easier to bisect if anything regresses.
-- **Tester runs independent live round-trip** rather than reading the Coder's self-report — caught the Tester's own 5-vs-4 miscount and verified the dealId fix on real Capital state.
+- **Per-blocker atomic commits** — 10 reversible commits rather than one "launch-readiness" blob. Easier to bisect if anything regresses.
+- **Swarm-per-blocker** (Coder + live Tester + independent Reviewer) — caught the dealId bug that unit tests missed. Would not have been caught pre-deploy otherwise.
+- **Single-chokepoint fix for Blocker 4.1** at `pollDealConfirmation` auto-corrects 4 confirmation-returning methods; working-order flows safe via empty-`affectedDeals` fallback.
+- **URL-based live/demo gate** with explicit `LIVE_TRADING_OK=true` opt-in replaces the never-working `accountType === 'DEMO'` check. Defensive against typo'd CAPITAL_API_URL.
+- **Dependency injection via optional `MonitorDeps` / `PingDeps`** for scheduler testability without `vi.mock` hackery. Production behavior untouched when `deps` omitted.
+- **VPS over 24h laptop soak** — pivoted when Giuseppe asked. Monthly cost €4.71 vs. tying up laptop 24h. Trade-off: deploy overhead this session (~30 min), permanence for the 2-week demo + beyond.
+- **"Leave .env as is"** — Giuseppe accepted the current state including leaked secret rotation deferral. Bot functions correctly either way.
 
-## Session-Specific Notes
+## Session Reliability Notes
 
-- All live calls stayed on demo URL `https://demo-api-capital.backend-capital.com`. Never hit the live endpoint. €1000 demo balance, 0 orphan positions on session end.
-- One smoke-trade cycle opened a real EURUSD position that had to be rescue-closed via `getOpenPositions()` lookup when the dealId bug was discovered — no money risk (demo), closed within seconds at ~0 P&L.
-- The MCP SDK version shown in `package.json` (`^1.12.1`) differs from the `CLAUDE.md` claim of `1.29.0` — not fixed this session; cosmetic/docs drift.
+- All live calls stayed on Capital.com demo URL. Never hit the live endpoint.
+- 1 orphan position during Blocker 4 smoke trade (dealId bug). Rescue-closed within seconds via `getOpenPositions()` lookup. ~0 P&L.
+- 2 secret-inspection commands leaked partial values to transcript (my mistake). Flagged to Giuseppe both times; future secret inspection must use length-only patterns.
+- VPS setup-vps.sh completed all 6 phases cleanly on first run. No manual intervention needed past the pm2 startup command copy-paste.

@@ -106,9 +106,9 @@ Capital.com natively supports: OHLC candles, SL/TP on open, trailing stops, modi
 | 10 | Scheduler | Complete + Bug fixed (timezone) |
 | 11 | Telegram Alerts | Complete |
 | 12 | Strategy files | Pre-populated, needs trading team refinement |
-| 13 | Test on Capital.com Demo Account | **In progress** — plumbing live-verified, 2-week demo still pending |
-| 14 | Deploy to VPS | Pending |
-| 15 | Monitor + tune | Pending |
+| 13 | Test on Capital.com Demo Account | **In progress** — bot running on VPS since 2026-04-17 20:41 UTC; first autonomous ICT cycle completed 21:00 UTC with correct NO-TRADE decision. 2-week demo clock has started. |
+| 14 | Deploy to VPS | **Complete** — Hetzner CX23 (162.55.212.198, Nuremberg), Ubuntu, pm2 under `bot` user, `pm2-bot.service` systemd unit survives reboots, UFW (SSH only) + fail2ban + unattended-upgrades hardened. See `deploy/DEPLOY.md`. |
+| 15 | Monitor + tune | Pending — first meaningful data arrives Monday 2026-04-20 07:00 UTC (London Open) |
 
 ### Hardening Complete (2026-04-17)
 - 6 critical bugs fixed with TDD (SQL, analyst default, timezone, API validation, market data crashes, V3 prompts)
