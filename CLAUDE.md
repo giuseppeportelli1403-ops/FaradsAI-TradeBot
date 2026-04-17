@@ -1,165 +1,199 @@
 # BetterOpsAI — Self-Learning AI Trading Bot
 
-## Project Context
+## Project Status: Feature-complete + Hardened. Awaiting API keys for testing.
 
 This is a self-learning autonomous AI trading bot built by BetterOpsAI. It runs TWO trading strategies (ICT Intraday + Swing) powered by 6 AI agents, connects to Trading 212 via their beta API through an MCP server with 21 tools, and improves itself over time through structured reflection and weekly strategy evolution.
 
-## Reference Documents — READ THESE FIRST
+**Built by:** Giuseppe Portelli (giuseppeportelli1403@gmail.com) + Claude Code
+**Codebase:** ~4,500 lines TypeScript, 43 tests, 22 commits
+**Test command:** `npm test` (vitest, all 43 should pass)
+**Type check:** `npx tsc --noEmit` (should be 0 errors)
 
-Before building anything, read these files. They are the source of truth for all architecture decisions, agent behaviour, MCP tools, database schema, and risk management rules.
+---
 
-1. **TRADING_BOT_MASTER.md** — Full project overview, architecture diagram, build order, all key decisions, risk management rules, folder structure. (Being updated to V3)
-2. **AGENT_SYSTEM_PROMPTS_V3.docx.pdf** — **PRIMARY** — Complete system prompts for all 6 agents (V3). Contains ICT Agent, Swing Agent, Market Researcher, Trade Analyst, Reflection Agent, and Weekly Review Agent.
-3. **AGENT_SYSTEM_PROMPTS_2.md.txt** — V2 agent prompts (superseded by V3 but kept for reference)
-4. **AGENT_SYSTEM_PROMPTS.md** — V1 agent prompts (superseded)
+## Reference Documents
 
-Do not guess any architecture or design decisions. Everything is documented in those files. **V3 is the source of truth for agent behaviour.**
+1. **AGENT_SYSTEM_PROMPTS_V3.docx.pdf** — **PRIMARY** — Complete system prompts for all 6 agents (V3)
+2. **TRADING_BOT_MASTER.md** — Project overview, architecture, build order, decisions
+3. **prompts/*.md** — 6 extracted V3 system prompts loaded by agents at runtime
+4. **docs/superpowers/specs/2026-04-17-hardening-v2-design.md** — Hardening design spec
+5. **docs/superpowers/plans/2026-04-17-hardening-v2.md** — TDD implementation plan
+
+---
 
 ## Tech Stack
 
-- Language: TypeScript
-- AI Model: Claude Sonnet (Anthropic API)
-- MCP Framework: @modelcontextprotocol/sdk
+- Language: TypeScript (strict mode)
+- AI Models: Claude Opus 4.6 (trading agents) + Claude Sonnet 4.6 (support agents)
+- AI Features: Adaptive thinking, prompt caching, effort levels (high/max/medium)
+- Anthropic SDK: v0.90.0
+- MCP Framework: @modelcontextprotocol/sdk v1.29.0 (registerTool API + annotations)
 - HTTP Client: axios
-- Database: SQLite via sql.js (WASM — no native compilation needed on Windows; switch to better-sqlite3 on Linux VPS if needed)
+- Database: SQLite via sql.js (WASM)
 - Scheduler: node-cron
 - Telegram Alerts: Telegraf
-- Hosting: VPS (DigitalOcean or Hetzner)
+- Testing: Vitest (43 tests, 8 files)
+- Hosting: VPS (DigitalOcean or Hetzner) — not yet deployed
+
+---
 
 ## Agent Architecture (V3 — 6 Agents)
 
-| # | Agent | File | Role | Schedule |
-|---|-------|------|------|----------|
-| 1 | ICT Intraday Agent | trading-agent.ts | 5-step ICT decision cycle, 15M/1H | Every 15M/1H candle close |
-| 2 | Swing Trading Agent | swing-agent.ts | 4-layer trend pullback, Daily/4H/Weekly | Daily 21:30 UTC, Mon 06:00 UTC, every 4H |
-| 3 | Market Researcher | researcher-agent.ts | Regime, themes, instrument shortlists | Daily 05:30 UTC, Sun 22:00 UTC |
-| 4 | Trade Analyst | analyst-agent.ts | Pre-trade approval gate (APPROVE/REJECT/MODIFY) | On demand (before every trade) |
-| 5 | Reflection Agent | reflection-agent.ts | Post-trade structured lessons | After every trade closes |
-| 6 | Weekly Review Agent | review-agent.ts | Performance report + strategy updates | Sunday 00:00 UTC |
+| # | Agent | File | Model | Effort | Schedule |
+|---|-------|------|-------|--------|----------|
+| 1 | ICT Intraday | trading-agent.ts | claude-opus-4-6 | high | Every 15M/1H candle close |
+| 2 | Swing Trading | swing-agent.ts | claude-opus-4-6 | high | Daily 21:30 UTC, Mon 06:00, every 4H |
+| 3 | Market Researcher | researcher-agent.ts | claude-sonnet-4-6 | medium | Daily 05:30 UTC, Sun 22:00 |
+| 4 | Trade Analyst | analyst-agent.ts | claude-sonnet-4-6 | medium | Before every trade |
+| 5 | Reflection | reflection-agent.ts | claude-sonnet-4-6 | high | After every trade closes |
+| 6 | Weekly Review | review-agent.ts | claude-opus-4-6 | max | Sunday 00:00 UTC |
 
-## MCP Tools (21 total)
+All agents load V3 prompts from `prompts/` directory via `src/agents/load-prompt.ts`.
+All agents use adaptive thinking and prompt caching.
 
-### Trading 212 Tools (14)
-get_prices, get_portfolio, get_balance, place_order, partial_close, close_position, set_trailing_stop, update_sl, log_trade, get_lessons, get_ranked_instruments, get_news_context, get_daily_pnl, get_trade_history
+---
 
-### Market Data Tools (7 — new in V3)
-get_economic_calendar, get_correlation_matrix, get_sector_strength, get_vix, get_dxy, get_yield_curve, write_research_brief
+## MCP Server Architecture
 
-## Build Order
+Server uses modern `registerTool()` API with annotations on all 21 tools.
+
+```
+src/mcp-server/
+├── index.ts                    (41 lines — entry point)
+├── logger.ts                   (32 lines — wrapTool error boundaries + request logging)
+├── t212-client.ts              (107 lines — T212 API wrapper)
+├── market-data.ts              (274 lines — Twelve Data, Finnhub, FMP, FRED, Alpha Vantage)
+└── tools/
+    ├── trading-tools.ts        (155 lines — 6 tools, destructiveHint: true on orders)
+    ├── market-data-tools.ts    (155 lines — 9 tools, readOnlyHint: true)
+    └── db-tools.ts             (145 lines — 6 tools, readOnlyHint: true)
+```
+
+### CRITICAL: T212 API Limitations
+Trading 212 does NOT support: OHLC data, SL/TP on orders, trailing stops, labels, close endpoint, modify position. ALL risk management is local: `sl_tp_orders` DB table + scheduler monitoring loop.
+
+---
+
+## Database (6 tables)
+
+| Table | Purpose |
+|-------|---------|
+| trades | Split-leg trade records with strategy_tag |
+| lessons | Structured JSON lessons from Reflection Agent |
+| research_briefs | Daily briefs from Market Researcher |
+| analyst_log | Pre-trade approval/rejection decisions |
+| sl_tp_orders | Active SL/TP levels monitored by scheduler (CRITICAL) |
+| daily_pnl_log | Daily P&L snapshots for kill switch tracking |
+
+---
+
+## Build Status
 
 | Step | Task | Status |
 |------|------|--------|
-| 1 | Get T212 API Key (manual) | Pending |
-| 2 | Set up project folder + structure | Complete |
-| 3 | Build MCP Server with all 21 tools | Complete |
-| 4 | Build SQLite database (split-leg schema + lessons table + research briefs) | Complete |
-| 5 | Build Universe Scanner | Complete |
-| 6a | Build News Context System | Complete |
-| 6b | Build Market Researcher Agent | Complete |
-| 7a | Build ICT Intraday Trading Agent (5-step decision cycle) | Complete |
-| 7b | Build Swing Trading Agent (10-step decision sequence) | Complete |
-| 7c | Build Trade Analyst Agent (6-check approval gate) | Complete |
-| 8 | Build Reflection Agent (structured JSON lessons — both strategies) | Complete |
-| 9 | Build Weekly Review Agent (dual strategy report + updates) | Complete |
-| 10 | Build Scheduler (all triggers for 6 agents) | Complete |
-| 11 | Add Telegram Alerts (all alert types) | Complete |
-| 12 | Write strategy.md + swing_strategy.md with trading team (manual) | Pending |
-| 13 | Test on T212 Practice Account — minimum 2 weeks | Pending |
+| 1 | T212 API Key (CFD Practice account) | Pending — Giuseppe getting tonight |
+| 2 | Project structure | Complete |
+| 3 | MCP Server (21 tools) | Complete + Hardened |
+| 4 | SQLite Database (6 tables) | Complete + Tested |
+| 5 | Universe Scanner | Complete + Tested |
+| 6a | News Context System | Complete + Tested |
+| 6b | Market Researcher Agent | Complete |
+| 7a | ICT Trading Agent | Complete |
+| 7b | Swing Trading Agent | Complete |
+| 7c | Trade Analyst Agent | Complete + Bug fixed (REJECT default) |
+| 8 | Reflection Agent | Complete |
+| 9 | Weekly Review Agent | Complete |
+| 10 | Scheduler | Complete + Bug fixed (timezone) |
+| 11 | Telegram Alerts | Complete |
+| 12 | Strategy files | Pre-populated, needs trading team refinement |
+| 13 | Test on T212 Practice Account | Pending (2 weeks minimum) |
 | 14 | Deploy to VPS | Pending |
 | 15 | Monitor + tune | Pending |
 
-Update the Status column in this table as each step is completed.
+### Hardening Complete (2026-04-17)
+- 6 critical bugs fixed with TDD (SQL, analyst default, timezone, API validation, market data crashes, V3 prompts)
+- 43 tests across 8 files
+- V3 system prompts extracted and injected into all 6 agents
+- Claude API upgraded: Opus 4.6 + Sonnet 4.6, adaptive thinking, prompt caching
+- MCP server refactored: registerTool API, annotations, error boundaries, logging
+
+---
+
+## API Keys Needed (9 total)
+
+| Key | Source | Status |
+|-----|--------|--------|
+| T212_API_KEY | Trading 212 Settings → API (CFD Practice) | Giuseppe getting tonight |
+| ANTHROPIC_API_KEY | console.anthropic.com | Pending |
+| TELEGRAM_BOT_TOKEN | @BotFather on Telegram | Pending |
+| TELEGRAM_CHAT_ID | Send /start to bot | Pending |
+| TWELVE_DATA_API_KEY | twelvedata.com (free: 800 req/day) | Pending |
+| FINNHUB_API_KEY | finnhub.io (free: 60 req/min) | Pending |
+| FMP_API_KEY | financialmodelingprep.com (free: 250 req/day) | Pending |
+| FRED_API_KEY | fred.stlouisfed.org (free, unlimited) | Pending |
+| ALPHA_VANTAGE_API_KEY | alphavantage.co (free: 25 req/day) | Pending |
+
+---
 
 ## Key Rules — Never Break These
 
-1. Every trade opens as TWO positions (split-position method). Never open a single position.
-2. Size per leg = (Total risk / 2) / (entry - SL). Never size each leg at the full risk%.
-3. Max 3 open ICT positions. Max 3 open Swing positions. Combined max 5 total trades (10 T212 positions).
-4. Daily loss kill switch at 4%. Weekly loss kill switch at 8%. No new trades after either.
-5. Minimum composite score 65 to enter any trade (both strategies).
-6. Minimum R:R to TP2: 2:1 (ICT) / 3:1 (Swing). No exceptions.
-7. Trailing stops only on Tier 1 (score 80+) setups.
-8. Weekly Review Agent cannot remove core risk management rules or kill switches.
-9. Never change a strategy rule based on fewer than 10 trades. Small samples lie.
-10. Never commit the .env file. API keys stay out of version control.
-11. Coordination lock: one strategy per instrument at a time. Never stack ICT + Swing.
-12. All trades must pass Trade Analyst Agent approval before execution.
-13. VIX > 30 → Swing stands down, ICT Tier 1 only. VIX 20-30 → reduce size 25%.
-14. Separate lesson pools for ICT and Swing. Never mix rules across strategies.
+1. Every trade = TWO positions (split-position method)
+2. Size per leg = (Total risk / 2) / (entry - SL)
+3. Max 3 ICT + 3 Swing positions. Combined max 5 trades (10 T212 positions)
+4. Daily loss kill switch: 4%. Weekly: 8%
+5. Minimum composite score 65 to trade
+6. Minimum R:R: 2:1 (ICT) / 3:1 (Swing)
+7. Trailing stops only on Tier 1 (score 80+)
+8. Weekly Review cannot remove core risk rules or kill switches
+9. Min 10 trades per rule change
+10. Never commit .env
+11. Coordination lock: one strategy per instrument
+12. All trades must pass Trade Analyst approval
+13. VIX > 30 → Swing stands down, ICT Tier 1 only
+14. Separate lesson pools for ICT and Swing
+
+---
 
 ## Folder Structure
 
 ```
 trading-bot/
 ├── src/
-│   ├── mcp-server/
-│   │   └── index.ts              ← MCP server + all 21 tools
-│   ├── agents/
-│   │   ├── trading-agent.ts      ← ICT intraday agent (5-step cycle)
-│   │   ├── swing-agent.ts        ← Swing trading agent (10-step sequence) — NEW
-│   │   ├── researcher-agent.ts   ← Market researcher (regime + briefs) — NEW
-│   │   ├── analyst-agent.ts      ← Trade analyst (pre-trade approval) — NEW
-│   │   ├── reflection-agent.ts   ← post-trade structured lesson writer (both strategies)
-│   │   └── review-agent.ts       ← weekly strategy improver (both strategies)
-│   ├── scheduler/
-│   │   └── index.ts              ← all cron jobs + candle detection + agent triggers
-│   ├── scanner/
-│   │   └── index.ts              ← universe scanner — ranks instruments
-│   ├── news/
-│   │   └── index.ts              ← news context fetcher and scorer
-│   └── database/
-│       └── index.ts              ← SQLite setup + queries (split-leg trade schema)
-├── memory/
-│   ├── strategy.md               ← ICT intraday strategy — updated weekly
-│   └── swing_strategy.md         ← Swing strategy — updated weekly — NEW
-├── .env                          ← API keys (never committed)
-├── .gitignore
-├── CLAUDE.md                     ← this file
-├── TRADING_BOT_MASTER.md         ← master planning document
-├── AGENT_SYSTEM_PROMPTS_V3.docx.pdf ← V3 agent prompts (source of truth)
-└── package.json
+│   ├── mcp-server/           ← 21 MCP tools (registerTool API + annotations)
+│   │   ├── index.ts          ← entry point (41 lines)
+│   │   ├── logger.ts         ← wrapTool error boundaries + logging
+│   │   ├── t212-client.ts    ← T212 API wrapper
+│   │   ├── market-data.ts    ← 5 external API clients + cache
+│   │   └── tools/            ← 3 tool files by domain
+│   ├── agents/               ← 6 AI agents + load-prompt.ts utility
+│   ├── scheduler/            ← cron jobs + SL/TP monitoring
+│   ├── scanner/              ← 20 instruments + bias detection
+│   ├── news/                 ← Cat A/B/C scoring
+│   ├── database/             ← SQLite 6 tables + 30 queries
+│   ├── notifications/        ← Telegram 8 alert types
+│   ├── preflight.ts          ← startup API key validation
+│   └── types.ts              ← shared TypeScript interfaces
+├── prompts/                  ← 6 V3 system prompts (loaded at runtime)
+├── memory/                   ← strategy.md + swing_strategy.md
+├── tests/                    ← 8 test files, 43 tests (vitest)
+├── docs/superpowers/         ← design specs + implementation plans
+├── .env.example              ← template with all 9 keys
+└── vitest.config.ts
 ```
-
-## Obsidian Progress Logging
-
-After completing any build step, write a progress note to the Obsidian vault at:
-`C:\Users\user\Desktop\Brain`
-
-Create a folder called `Trading Bot` inside the vault if it does not exist.
-
-For each completed step, create or update a file called `Trading Bot/Build Progress.md` with this format:
-
-```markdown
-# Trading Bot — Build Progress
-
-## Step [N]: [Step Name]
-**Date:** [YYYY-MM-DD]
-**Status:** Complete
-
-### What was built
-- [Brief description of what was created]
-
-### Files created or modified
-- [List of files]
-
-### Key decisions made during build
-- [Any decisions or deviations from the plan]
-
-### Notes
-- [Anything worth remembering]
 
 ---
-```
 
-Append each new step to the bottom of the file so it becomes a running log.
+## Obsidian Progress Log
 
-Also update the Build Order table in this CLAUDE.md file — change the status from "Pending" to "Complete" for the finished step.
+Full build history at: `C:\Users\user\Desktop\Brain\Trading Bot\Build Progress.md`
+
+---
 
 ## How to Work With Me
 
-- I am Giuseppe from BetterOpsAI. Always ask clarifying questions before building anything. Never guess.
-- Build one step at a time from the build order. Do not skip ahead.
-- After completing a step, update both the CLAUDE.md build order table and the Obsidian progress log.
-- If a step has blockers (e.g. API key not available), scaffold the code with placeholder/mock data and note what needs to be plugged in later.
-- When writing TypeScript, use strict types. This is a financial system — type safety matters.
-- Test each component before moving to the next step.
+- I am Giuseppe from BetterOpsAI, based in Malta
+- Always ask before building. Never guess architecture decisions.
+- Run `npm test` and `npx tsc --noEmit` after any changes
+- Update this CLAUDE.md and the Obsidian log after completing work
+- This is a financial system — type safety and test coverage matter
+- Use the superpowers skills pipeline for major changes
