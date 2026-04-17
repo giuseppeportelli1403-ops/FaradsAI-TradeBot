@@ -15,6 +15,7 @@ import {
   makeCandleKey,
   classifyCloseReason,
   monitorSplitPositions,
+  pingKeepAlive,
   type MonitorDeps,
 } from '../src/scheduler/index.js';
 import type { Activity, CapitalPosition, TradeRecord } from '../src/types.js';
@@ -562,5 +563,78 @@ describe('monitorSplitPositions', () => {
     expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('trade-1', 'B');
     expect(deps._mocks.alertSlHit).toHaveBeenCalledTimes(1);
     expect(deps._mocks.alertTp2Hit).not.toHaveBeenCalled();
+  });
+});
+
+// ==================== pingKeepAlive (Blocker 6) ====================
+
+describe('pingKeepAlive', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('happy path: calls capital.ping() and does NOT fire a Telegram alert', async () => {
+    const ping = vi.fn().mockResolvedValue(undefined);
+    const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
+
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning });
+
+    expect(ping).toHaveBeenCalledTimes(1);
+    expect(alertSystemWarning).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it('on ping failure: logs, fires alertSystemWarning with the error message, and does NOT re-throw', async () => {
+    const pingError = new Error('HTTP 401 error.invalid.session');
+    const ping = vi.fn().mockRejectedValue(pingError);
+    const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
+
+    // Must not throw — cron wrapper assumes this is safe to await.
+    await expect(
+      pingKeepAlive({ capital: { ping }, alertSystemWarning }),
+    ).resolves.toBeUndefined();
+
+    expect(ping).toHaveBeenCalledTimes(1);
+    expect(alertSystemWarning).toHaveBeenCalledTimes(1);
+    expect(alertSystemWarning).toHaveBeenCalledWith(
+      expect.stringContaining('HTTP 401 error.invalid.session'),
+    );
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      '[Scheduler] Capital ping failed:',
+      pingError,
+    );
+  });
+
+  it('if BOTH ping and alertSystemWarning fail, swallows both and logs each — never re-throws', async () => {
+    const ping = vi.fn().mockRejectedValue(new Error('ping died'));
+    const alertSystemWarning = vi.fn().mockRejectedValue(new Error('telegram died'));
+
+    await expect(
+      pingKeepAlive({ capital: { ping }, alertSystemWarning }),
+    ).resolves.toBeUndefined();
+
+    expect(ping).toHaveBeenCalledTimes(1);
+    expect(alertSystemWarning).toHaveBeenCalledTimes(1);
+    // One log for ping failure, one for the cascaded alert failure.
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles non-Error thrown values (e.g. string) without crashing', async () => {
+    const ping = vi.fn().mockRejectedValue('some string not-an-Error');
+    const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      pingKeepAlive({ capital: { ping }, alertSystemWarning }),
+    ).resolves.toBeUndefined();
+
+    expect(alertSystemWarning).toHaveBeenCalledWith(
+      expect.stringContaining('some string not-an-Error'),
+    );
   });
 });

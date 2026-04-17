@@ -25,6 +25,7 @@ import {
   alertTp1Hit as realAlertTp1Hit,
   alertTp2Hit as realAlertTp2Hit,
   alertSlHit as realAlertSlHit,
+  alertSystemWarning as realAlertSystemWarning,
 } from '../notifications/telegram.js';
 import type { CapitalPosition, Activity, TradeRecord } from '../types.js';
 
@@ -290,6 +291,39 @@ export async function handleLegAClosed(
   // second pass above — nothing else to do here.
 }
 
+// ==================== KEEP-ALIVE ====================
+
+export interface PingDeps {
+  capital: Pick<CapitalClient, 'ping'>;
+  alertSystemWarning: (message: string) => Promise<void>;
+}
+
+/**
+ * Blocker-6 keep-alive. Fires capital.ping() and surfaces any failure through
+ * Telegram so Giuseppe learns about a dead session without having to watch
+ * logs. Swallows the thrown error so cron doesn't crash the scheduler on a
+ * transient Capital outage.
+ *
+ * Exported + dependency-injected so the alert path can be unit-tested.
+ */
+export async function pingKeepAlive(deps?: PingDeps): Promise<void> {
+  const d: PingDeps = deps ?? {
+    capital: capital,
+    alertSystemWarning: realAlertSystemWarning,
+  };
+  try {
+    await d.capital.ping();
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('[Scheduler] Capital ping failed:', error);
+    try {
+      await d.alertSystemWarning(`Capital.com ping failed: ${msg}`);
+    } catch (alertError) {
+      console.error('[Scheduler] Telegram alert for ping failure also failed:', alertError);
+    }
+  }
+}
+
 // ==================== AGENT RUNNERS WITH ERROR HANDLING ====================
 
 async function safeRun(name: string, fn: () => Promise<unknown>): Promise<void> {
@@ -320,13 +354,7 @@ export function startScheduler(): void {
   });
 
   // Every 8 minutes: Capital.com session keep-alive.
-  cron.schedule('*/8 * * * *', async () => {
-    try {
-      await capital.ping();
-    } catch (error) {
-      console.error('[Scheduler] Capital ping failed:', error);
-    }
-  });
+  cron.schedule('*/8 * * * *', () => pingKeepAlive());
 
   // Daily at 05:30 UTC: Market Researcher (before London open)
   cron.schedule('30 5 * * *', async () => {
