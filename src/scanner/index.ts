@@ -64,7 +64,7 @@ interface BiasResult {
   atr: number;
 }
 
-function detectBias(candles: Candle[]): BiasResult {
+export function detectBias(candles: Candle[]): BiasResult {
   if (candles.length < 20) {
     return { bias: 'neutral', clarity: 0, recent_high: 0, recent_low: 0, atr: 0 };
   }
@@ -129,7 +129,7 @@ function detectBias(candles: Candle[]): BiasResult {
 
 // ==================== KILL ZONE CHECK ====================
 
-function getCurrentKillZone(): { inKillZone: boolean; zone: string } {
+export function getCurrentKillZone(): { inKillZone: boolean; zone: string } {
   const now = new Date();
   const utcHour = now.getUTCHours();
   const utcMinute = now.getUTCMinutes();
