@@ -20,9 +20,11 @@ export async function runReflectionAgent(tradeId: string): Promise<void> {
   }
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 1500,
-    system: systemPrompt,
+    model: 'claude-sonnet-4-6',
+    max_tokens: 4000,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'high' },
+    system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
     messages: [{
       role: 'user',
       content: `Analyse this completed trade and generate a structured lesson JSON:

@@ -55,9 +55,11 @@ async function extractThemes(
 
   // Use Claude to synthesise themes from raw data
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 300,
-    system: 'You are a market research analyst. Given market data, produce 3-5 concise theme statements for today/this week. Each theme is one sentence. No filler. Factual and actionable.',
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1000,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'medium' },
+    system: [{ type: 'text', text: 'You are a market research analyst. Given market data, produce 3-5 concise theme statements for today/this week. Each theme is one sentence. No filler. Factual and actionable.', cache_control: { type: 'ephemeral' } }],
     messages: [{
       role: 'user',
       content: `Regime: VIX ${regime.vix} (${regime.vix_regime}), DXY ${regime.dxy} (${regime.dxy_direction}), 10Y yield ${regime.yields.us10y}%

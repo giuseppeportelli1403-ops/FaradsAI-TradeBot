@@ -47,9 +47,11 @@ export async function runWeeklyReviewAgent(): Promise<string> {
   }
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 4096,
-    system: systemPrompt,
+    model: 'claude-opus-4-6',
+    max_tokens: 16000,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'max' },
+    system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
     messages: [{
       role: 'user',
       content: `WEEK: ${weekStartStr.split('T')[0]} to ${weekEndStr.split('T')[0]}

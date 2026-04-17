@@ -97,9 +97,11 @@ Begin your 10-step decision sequence now. Start with Step 1 (risk check).`;
 
   for (let i = 0; i < 15; i++) {
     const response = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
-      system: systemPrompt,
+      model: 'claude-opus-4-6',
+      max_tokens: 16000,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       tools: MCP_TOOLS,
       messages,
     });

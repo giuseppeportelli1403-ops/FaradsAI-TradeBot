@@ -78,9 +78,11 @@ ${strategy.split('## Section 6')[1]?.split('## Section 7')[0] || 'No banned patt
 Run your 6-check sequence and respond with your decision JSON.`;
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 500,
-    system: systemPrompt,
+    model: 'claude-sonnet-4-6',
+    max_tokens: 2000,
+    thinking: { type: 'adaptive' },
+    output_config: { effort: 'medium' },
+    system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
     messages: [{ role: 'user', content: contextMessage }],
   });
 
