@@ -313,6 +313,215 @@ describe('CapitalClient — openPosition deal confirmation polling', () => {
     expect(confirmCall.url).toBe('/api/v1/confirms/REF-1');
   });
 
+  it('overrides top-level dealId with affectedDeals[0].dealId when affectedDeals is non-empty (fixes workingOrderId-vs-positionDealId bug)', async () => {
+    // This mirrors the exact shape captured live from Capital.com:
+    //   - top-level dealId is actually the workingOrderId
+    //   - affectedDeals[0].dealId is the real position dealId
+    // After the fix, the returned confirmation.dealId must be the position one.
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'o_910f02e5' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: '00005552-0000-0000-0000-00000000-9fca', // workingOrderId
+          dealReference: 'o_910f02e5',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'OPEN',
+          direction: 'BUY',
+          epic: 'EURUSD',
+          size: 1,
+          level: 1.085,
+          stopLevel: 1.08,
+          profitLevel: 1.09,
+          affectedDeals: [
+            {
+              dealId: '00005552-0000-0000-0000-00000000-9fcb', // real position dealId
+              status: 'OPENED',
+            },
+          ],
+        }),
+      );
+
+    const client = makeClient();
+    const confirmation = await client.openPosition({
+      direction: 'BUY',
+      epic: 'EURUSD',
+      size: 1,
+      stopLevel: 1.08,
+      profitLevel: 1.09,
+    });
+
+    // dealId must be the position dealId from affectedDeals, NOT the top-level workingOrderId.
+    expect(confirmation.dealId).toBe('00005552-0000-0000-0000-00000000-9fcb');
+    // All other fields preserved unchanged.
+    expect(confirmation.dealStatus).toBe('ACCEPTED');
+    expect(confirmation.status).toBe('OPEN');
+    expect(confirmation.reason).toBe('SUCCESS');
+    expect(confirmation.direction).toBe('BUY');
+    expect(confirmation.epic).toBe('EURUSD');
+    expect(confirmation.size).toBe(1);
+    expect(confirmation.level).toBe(1.085);
+    expect(confirmation.stopLevel).toBe(1.08);
+    expect(confirmation.profitLevel).toBe(1.09);
+    expect(confirmation.dealReference).toBe('o_910f02e5');
+    expect(confirmation.affectedDeals).toEqual([
+      { dealId: '00005552-0000-0000-0000-00000000-9fcb', status: 'OPENED' },
+    ]);
+  });
+
+  it('falls back to top-level dealId when affectedDeals is empty', async () => {
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'REF-EMPTY' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'TOP-LEVEL-ID',
+          dealReference: 'REF-EMPTY',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'OPEN',
+          direction: 'BUY',
+          epic: 'US100',
+          size: 1,
+          level: 15000,
+          stopLevel: null,
+          profitLevel: null,
+          affectedDeals: [], // explicit empty
+        }),
+      );
+
+    const client = makeClient();
+    const confirmation = await client.openPosition({
+      direction: 'BUY',
+      epic: 'US100',
+      size: 1,
+    });
+
+    expect(confirmation.dealId).toBe('TOP-LEVEL-ID');
+    expect(confirmation.dealStatus).toBe('ACCEPTED');
+  });
+
+  it('falls back to top-level dealId when affectedDeals is missing entirely (undefined)', async () => {
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'REF-MISSING' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'TOP-ONLY-ID',
+          dealReference: 'REF-MISSING',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'OPEN',
+          direction: 'SELL',
+          epic: 'GOLD',
+          size: 0.5,
+          level: 2400,
+          stopLevel: null,
+          profitLevel: null,
+          // affectedDeals omitted from the response entirely
+        }),
+      );
+
+    const client = makeClient();
+    const confirmation = await client.openPosition({
+      direction: 'SELL',
+      epic: 'GOLD',
+      size: 0.5,
+    });
+
+    expect(confirmation.dealId).toBe('TOP-ONLY-ID');
+    expect(confirmation.direction).toBe('SELL');
+    expect(confirmation.epic).toBe('GOLD');
+    expect(confirmation.size).toBe(0.5);
+    expect(confirmation.level).toBe(2400);
+  });
+
+  it('createWorkingOrder preserves workingOrderId as dealId when affectedDeals is empty (fallback path)', async () => {
+    // Working-order creation returns a confirmation whose top-level dealId IS
+    // the workingOrderId (correct — it's what updateWorkingOrder /
+    // deleteWorkingOrder need to reference the pending order). Capital sends
+    // affectedDeals: [] at this stage because no position exists yet; the
+    // order only opens a position later on fill. The fix's fallback MUST
+    // preserve the workingOrderId here, otherwise update/delete break.
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'o_wo_abcdef' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'WORKING-ORDER-ID-42',
+          dealReference: 'o_wo_abcdef',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'OPEN',
+          direction: 'BUY',
+          epic: 'EURUSD',
+          size: 1,
+          level: 1.08,
+          stopLevel: 1.07,
+          profitLevel: 1.1,
+          affectedDeals: [],
+        }),
+      );
+
+    const client = makeClient();
+    const confirmation = await client.createWorkingOrder({
+      direction: 'BUY',
+      epic: 'EURUSD',
+      size: 1,
+      level: 1.08,
+      type: 'LIMIT',
+      stopLevel: 1.07,
+      profitLevel: 1.1,
+    });
+
+    expect(confirmation.dealId).toBe('WORKING-ORDER-ID-42');
+    expect(confirmation.dealStatus).toBe('ACCEPTED');
+    expect(confirmation.affectedDeals).toEqual([]);
+  });
+
+  it('normaliseDealId is pure — returned object is a distinct reference from the raw /confirms response', async () => {
+    // Locks the pure-function contract: the fix must never mutate the raw
+    // Capital response. A spread-and-override was chosen precisely to avoid
+    // sharing reference identity with the input. If a future refactor ever
+    // switches to in-place mutation, this test catches it.
+    const rawConfirmPayload = {
+      dealId: 'TOP-LEVEL-WORKING-ORDER-ID',
+      dealReference: 'o_purity_test',
+      dealStatus: 'ACCEPTED' as const,
+      reason: 'SUCCESS',
+      status: 'OPEN' as const,
+      direction: 'BUY' as const,
+      epic: 'EURUSD',
+      size: 1,
+      level: 1.18,
+      stopLevel: null,
+      profitLevel: null,
+      affectedDeals: [{ dealId: 'REAL-POSITION-ID', status: 'OPENED' }],
+    };
+
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'o_purity_test' }))
+      .mockResolvedValueOnce(okJson(rawConfirmPayload));
+
+    const client = makeClient();
+    const confirmation = await client.openPosition({
+      direction: 'BUY',
+      epic: 'EURUSD',
+      size: 1,
+    });
+
+    // The returned object must be a distinct reference so callers cannot
+    // inadvertently mutate what appears to be "the response" and affect
+    // other consumers of the same payload.
+    expect(confirmation).not.toBe(rawConfirmPayload);
+    // But the raw payload itself must remain untouched (no side-effects).
+    expect(rawConfirmPayload.dealId).toBe('TOP-LEVEL-WORKING-ORDER-ID');
+    // And the override did happen on the returned copy.
+    expect(confirmation.dealId).toBe('REAL-POSITION-ID');
+  });
+
   it('throws CapitalDealError when Capital returns dealStatus REJECTED', async () => {
     requestMock
       .mockResolvedValueOnce(sessionOkResponse())

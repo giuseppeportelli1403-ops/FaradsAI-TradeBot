@@ -565,6 +565,19 @@ export class CapitalClient {
   /**
    * Poll /confirms/:dealReference every 200ms, up to 10 attempts (2s total).
    * Throws CapitalDealError on REJECTED status or on timeout.
+   *
+   * IMPORTANT: Capital.com's /confirms/ body returns a top-level `dealId` that
+   * is actually the **workingOrderId** (the order/deal event ID), NOT the
+   * resulting position's dealId. The position's real dealId lives in
+   * `affectedDeals[0].dealId`. Every downstream lookup (GET/DELETE
+   * /positions/:id) requires the position dealId, so we normalise here:
+   *   - If `affectedDeals` is present and non-empty, override the top-level
+   *     `dealId` with `affectedDeals[0].dealId`.
+   *   - Otherwise, preserve the top-level `dealId` (e.g. working-order
+   *     creations, which use the workingOrderId for subsequent
+   *     update/delete calls).
+   * All other fields (status, dealStatus, reason, level, size, direction,
+   * epic, dealReference, affectedDeals itself) are preserved unchanged.
    */
   private async pollDealConfirmation(
     dealReference: string
@@ -585,7 +598,7 @@ export class CapitalClient {
         }
 
         if (confirmation.dealStatus === 'ACCEPTED') {
-          return confirmation;
+          return this.normaliseDealId(confirmation);
         }
         // Any other status → keep polling.
       } catch (e) {
@@ -606,6 +619,26 @@ export class CapitalClient {
       `Deal confirmation timed out after ${DEAL_CONFIRM_MAX_ATTEMPTS} attempts`,
       dealReference
     );
+  }
+
+  /**
+   * Normalise a raw /confirms/ response so `dealId` is the position's real
+   * dealId rather than Capital's workingOrderId (see pollDealConfirmation
+   * docstring for the full explanation of the bug this fixes).
+   *
+   * Returns a shallow copy with `dealId` overridden to
+   * `affectedDeals[0].dealId` when `affectedDeals` is non-empty; otherwise
+   * returns the input unchanged. All other fields are preserved as-is.
+   */
+  private normaliseDealId(confirmation: DealConfirmation): DealConfirmation {
+    const affected = confirmation.affectedDeals;
+    if (Array.isArray(affected) && affected.length > 0) {
+      const positionDealId = affected[0]?.dealId;
+      if (typeof positionDealId === 'string' && positionDealId.length > 0) {
+        return { ...confirmation, dealId: positionDealId };
+      }
+    }
+    return confirmation;
   }
 
   private authHeaders(): Record<string, string> {
