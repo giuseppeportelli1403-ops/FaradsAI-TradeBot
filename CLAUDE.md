@@ -106,7 +106,7 @@ Capital.com natively supports: OHLC candles, SL/TP on open, trailing stops, modi
 | 10 | Scheduler | Complete + Bug fixed (timezone) |
 | 11 | Telegram Alerts | Complete |
 | 12 | Strategy files | Pre-populated, needs trading team refinement |
-| 13 | Test on Capital.com Demo Account | Pending (2 weeks minimum) |
+| 13 | Test on Capital.com Demo Account | **In progress** — plumbing live-verified, 2-week demo still pending |
 | 14 | Deploy to VPS | Pending |
 | 15 | Monitor + tune | Pending |
 
@@ -116,6 +116,25 @@ Capital.com natively supports: OHLC candles, SL/TP on open, trailing stops, modi
 - V3 system prompts extracted and injected into all 6 agents
 - Claude API upgraded: Opus 4.6 + Sonnet 4.6, adaptive thinking, prompt caching
 - MCP server refactored: registerTool API, annotations, error boundaries, logging
+
+### Launch-Readiness Pass (2026-04-17 evening)
+5 commits on top of `a5ba764`:
+- `12939cd` — fix: authenticate with API-key password, not account login. Code was sending the account password in Capital's `/session` body, which Capital rejects with HTTP 401 `invalid.details`. Renamed `CAPITAL_PASSWORD` → `CAPITAL_API_KEY_PASSWORD` across the codebase (13 files).
+- `728d19c` — feat(scanner): add `epic` field to `INSTRUMENT_UNIVERSE`. For this universe epic == ticker; invariant locked by a test because `researcher-agent` emits tickers and the trading agents forward them verbatim to Capital tools.
+- `e2580a2` — fix(preflight): the old `accountType === 'DEMO'` assertion never worked (Capital returns product-type CFD/SPREADBET/CASH; demo-vs-live is URL-only). Replaced with a `LIVE_TRADING_OK=true` gate so a typo in `CAPITAL_API_URL` can't silently route to live.
+- `002a32e` — fix(capital-client): `pollDealConfirmation` now overrides `dealId` with `affectedDeals[0].dealId`. Capital's `/confirms/` top-level dealId is actually the workingOrderId; the real position dealId lives in `affectedDeals`. Every trade the bot would place was orphaned on first lookup. Single-chokepoint patch fixes `openPosition` / `updatePosition` / `closePosition` / `partialClosePosition`; working-order flows safe via fallback when `affectedDeals` is empty.
+- `f32e7ed` — feat(scheduler): unit-test `monitorSplitPositions` orchestration. DI refactor (optional `MonitorDeps`) + 9 scenarios covering TP1→BE happy path, SL close, OTHER classify, missing trade record, `updatePosition` throw, second-pass leg-B close.
+
+Live-verified against Capital.com demo (2026-04-17):
+- Auth with `CAPITAL_API_KEY_PASSWORD` → HTTP 200, CST + X-SECURITY-TOKEN returned
+- 20/20 `INSTRUMENT_UNIVERSE` epics resolve to TRADEABLE on demo
+- Preflight passes end-to-end (demo URL, no LIVE_TRADING_OK required)
+- Full round-trip smoke: open EURUSD → get → close with one consistent dealId, 0 orphans
+- `updatePosition({stopLevel})` accepted, AMENDED, new SL reflected on subsequent `getPosition`
+
+Test count: 43 → 97 across 10 files. `tsc --noEmit` 0 errors.
+
+Still pending: Blocker 6 (24h `capital.ping()` keep-alive soak) and the broader Step 13 2-week demo window.
 
 ---
 
