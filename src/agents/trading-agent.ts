@@ -270,7 +270,14 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
       for (const block of response.content) {
         if (block.type === 'tool_use') {
           console.log(`[ICT Agent] Calling tool: ${block.name}`);
-          const result = await executeTool(block.name, block.input as Record<string, unknown>);
+          let result: string;
+          try {
+            result = await executeTool(block.name, block.input as Record<string, unknown>);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[ICT Agent] Tool ${block.name} failed: ${message}`);
+            result = JSON.stringify({ error: message, tool: block.name });
+          }
           toolResults.push({
             type: 'tool_result',
             tool_use_id: block.id,

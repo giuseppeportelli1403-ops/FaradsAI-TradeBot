@@ -14,6 +14,10 @@ import type {
   Candle, Timeframe, NewsItem, EconomicEvent,
   SectorStrength, CorrelationPair,
 } from '../types.js';
+import { TokenBucket } from './rate-limiter.js';
+import { CandleCache, TIMEFRAME_INTERVAL } from './candle-cache.js';
+
+export { RateLimitQueuedError } from './rate-limiter.js';
 
 // ==================== RESILIENCE UTILITIES ====================
 
@@ -48,13 +52,16 @@ export async function withFallback<T>(fetcher: () => Promise<T>, fallback: T): P
 
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 
-const TIMEFRAME_MAP: Record<Timeframe, string> = {
-  '15m': '15min',
-  '1h': '1h',
-  '4h': '4h',
-  '1d': '1day',
-  '1w': '1week',
-};
+// Free tier: 8 credits/min. One /time_series call = 1 credit. Module-level
+// singletons so all callers share the same bucket and cache (pm2 fork mode =
+// single process, so no cross-process concerns).
+const twelveDataBucket = new TokenBucket(8, 60_000);
+const candleCache = new CandleCache();
+
+/** Exposed for tests and agents that want to warm/inspect the cache. */
+export function _getCandleCache(): CandleCache {
+  return candleCache;
+}
 
 export async function fetchCandles(
   symbol: string,
@@ -64,10 +71,24 @@ export async function fetchCandles(
   const apiKey = process.env.TWELVE_DATA_API_KEY;
   if (!apiKey) { console.error('[Market Data] TWELVE_DATA_API_KEY not set'); return []; }
 
+  const interval = TIMEFRAME_INTERVAL[timeframe];
+  const cacheKey = CandleCache.key(symbol, interval, outputSize);
+
+  // 1. Cache first — if we already fetched this (symbol,interval,size) inside
+  //    the TTL window, serve it without burning a credit.
+  const cached = candleCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  // 2. Await a rate-limit token. Throws RateLimitQueuedError if the 60s wait
+  //    expires; callers decide whether to surface the error or skip the step.
+  await twelveDataBucket.acquire(60_000);
+
   const { data } = await axios.get(`${TWELVE_DATA_BASE}/time_series`, {
     params: {
       symbol,
-      interval: TIMEFRAME_MAP[timeframe],
+      interval,
       outputsize: outputSize,
       apikey: apiKey,
     },
@@ -77,7 +98,7 @@ export async function fetchCandles(
     throw new Error(`Twelve Data error: ${data.message}`);
   }
 
-  return (data.values || []).map((v: Record<string, string>) => ({
+  const candles: Candle[] = (data.values || []).map((v: Record<string, string>) => ({
     datetime: v.datetime,
     open: parseFloat(v.open),
     high: parseFloat(v.high),
@@ -85,6 +106,9 @@ export async function fetchCandles(
     close: parseFloat(v.close),
     volume: parseFloat(v.volume || '0'),
   }));
+
+  candleCache.set(cacheKey, candles, CandleCache.ttlFor(interval));
+  return candles;
 }
 
 export async function fetchVix(): Promise<{ vix: number; vix_30d_avg: number }> {

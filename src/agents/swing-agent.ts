@@ -139,7 +139,15 @@ Begin your 10-step decision sequence now. Start with Step 1 (risk check).`;
       for (const block of response.content) {
         if (block.type === 'tool_use') {
           console.log(`[Swing Agent] Calling tool: ${block.name}`);
-          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: await executeTool(block.name, block.input as Record<string, unknown>) });
+          let content: string;
+          try {
+            content = await executeTool(block.name, block.input as Record<string, unknown>);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[Swing Agent] Tool ${block.name} failed: ${message}`);
+            content = JSON.stringify({ error: message, tool: block.name });
+          }
+          toolResults.push({ type: 'tool_result', tool_use_id: block.id, content });
         }
       }
       messages.push({ role: 'assistant', content: response.content });
