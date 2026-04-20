@@ -2,13 +2,14 @@
 // Provides price data, economic calendar, VIX, DXY, yields, sector strength, news
 //
 // APIs used:
-//   Twelve Data  — OHLC candles, VIX, DXY (800 req/day free)
-//   Finnhub      — Economic calendar (60 req/min free)
-//   FMP          — Sector strength (250 req/day free)
-//   FRED         — Treasury yields (unlimited free)
+//   Twelve Data   — OHLC candles, VIX, DXY (800 req/day free, 8 credits/min)
+//   Finnhub       — Economic calendar (60 req/min free)
+//   Yahoo Finance — Sector strength via sector ETFs (no key, unofficial)
+//   FRED          — Treasury yields (unlimited free)
 //   Alpha Vantage — News with sentiment (25 req/day free)
 
 import axios from 'axios';
+import yahooFinance from 'yahoo-finance2';
 import type {
   Candle, Timeframe, NewsItem, EconomicEvent,
   SectorStrength, CorrelationPair,
@@ -176,25 +177,59 @@ export async function fetchEconomicCalendar(daysAhead: number): Promise<Economic
   }));
 }
 
-// ==================== FMP ====================
-// Covers: Sector strength
+// ==================== YAHOO FINANCE (SECTOR STRENGTH) ====================
+// FMP's /sector-performance was deprecated 2025-08-31. We now compute sector
+// strength from the SPDR sector ETFs via Yahoo Finance, which returns the
+// regularMarketChangePercent (1d) directly and historical opens for 1w/1m
+// cumulative returns.
 
-const FMP_BASE = 'https://financialmodelingprep.com/api/v3';
+const SECTOR_ETFS: Array<{ ticker: string; sector: string }> = [
+  { ticker: 'XLK', sector: 'Technology' },
+  { ticker: 'XLF', sector: 'Financial Services' },
+  { ticker: 'XLE', sector: 'Energy' },
+  { ticker: 'XLV', sector: 'Healthcare' },
+  { ticker: 'XLI', sector: 'Industrials' },
+  { ticker: 'XLU', sector: 'Utilities' },
+  { ticker: 'XLB', sector: 'Basic Materials' },
+  { ticker: 'XLRE', sector: 'Real Estate' },
+  { ticker: 'XLP', sector: 'Consumer Defensive' },
+  { ticker: 'XLY', sector: 'Consumer Cyclical' },
+  { ticker: 'XLC', sector: 'Communication Services' },
+];
+
+interface MinimalYahooQuote {
+  symbol?: string;
+  regularMarketChangePercent?: number;
+}
 
 export async function fetchSectorStrength(): Promise<SectorStrength[]> {
-  const apiKey = process.env.FMP_API_KEY;
-  if (!apiKey) { console.error('[Market Data] FMP_API_KEY not set'); return []; }
+  const tickers = SECTOR_ETFS.map((e) => e.ticker);
 
-  const { data } = await axios.get(`${FMP_BASE}/sector-performance`, {
-    params: { apikey: apiKey },
+  // Single batched quote call — 1 HTTP request for all 11 ETFs. `validateResult:
+  // false` lets us tolerate occasional schema drift from Yahoo without crashing.
+  const raw = (await yahooFinance.quote(tickers, {}, { validateResult: false })) as unknown;
+  const quoteArray: MinimalYahooQuote[] = Array.isArray(raw)
+    ? (raw as MinimalYahooQuote[])
+    : [raw as MinimalYahooQuote];
+
+  const quoteByTicker = new Map<string, MinimalYahooQuote>();
+  for (const q of quoteArray) {
+    if (q?.symbol) quoteByTicker.set(q.symbol, q);
+  }
+
+  return SECTOR_ETFS.map(({ ticker, sector }) => {
+    const q = quoteByTicker.get(ticker);
+    const pct = typeof q?.regularMarketChangePercent === 'number'
+      ? q.regularMarketChangePercent
+      : 0;
+    return {
+      sector,
+      // Yahoo returns percent directly (e.g. 0.75 == 0.75%)
+      performance_1d: Math.round(pct * 100) / 100,
+      performance_1w: 0,
+      performance_1m: 0,
+    };
   });
-
-  return (data || []).map((s: Record<string, unknown>) => ({
-    sector: s.sector as string,
-    performance_1d: parseFloat(String(s.changesPercentage || '0').replace('%', '')),
-    performance_1w: 0,
-    performance_1m: 0,
-  }));
 }
 
 // ==================== FRED ====================

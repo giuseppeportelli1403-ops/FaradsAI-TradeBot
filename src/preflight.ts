@@ -27,7 +27,6 @@ const OPTIONAL_KEYS = [
   { key: 'TELEGRAM_CHAT_ID', feature: 'Telegram alerts' },
   { key: 'TWELVE_DATA_API_KEY', feature: 'Twelve Data candles/VIX/DXY' },
   { key: 'FINNHUB_API_KEY', feature: 'Economic calendar' },
-  { key: 'FMP_API_KEY', feature: 'Sector strength' },
   { key: 'FRED_API_KEY', feature: 'Yield curve' },
   { key: 'ALPHA_VANTAGE_API_KEY', feature: 'News sentiment' },
 ] as const;
