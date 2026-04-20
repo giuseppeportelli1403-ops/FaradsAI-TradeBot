@@ -1,124 +1,131 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-20 (morning, Malta) — end of blocker-fix session, bot trading on VPS
+Last updated: 2026-04-21 (post-midnight Malta time) — end of demo-day-1 debrief + two further fixes deployed
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: master (pushed to https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
-Last commit: e094240 — "feat(market-data): throttle + cache Twelve Data calls to fit 8 credits/min"
+Last commit: 073d04f — "feat(notifications): fire Telegram alert when a trade is opened"
 
 ## What We Did This Session
 
-Two production blockers surfaced on the 2-week demo's first real trade window
-(Monday 2026-04-20 07:00 UTC London Open). Both fixed, deployed, live-verified.
+Giuseppe returned to a bot that had spent demo-day-1 (2026-04-20) producing
+no trades because of two data-source problems + a structural budget problem
+with the Twelve Data free tier. We diagnosed, fixed, and deployed four
+commits — the bot is now overnight-ready for demo day 2.
 
-### Blocker A — FMP deprecated endpoint (403)
-- `/api/v3/sector-performance` dead since 2025-08-31 (legacy endpoint)
-- Swapped to `yahoo-finance2` npm package with SPDR sector ETFs
-  (XLK/XLF/XLE/XLV/XLI/XLU/XLB/XLRE/XLP/XLY/XLC)
-- Single batched `quote()` call returns regularMarketChangePercent for all 11 sectors
-- `SectorStrength[]` contract preserved — no downstream call-site changes needed
-- Removed `FMP_API_KEY` from preflight OPTIONAL_KEYS
-- Commit: **d421f03** `fix(market-data): migrate sector strength from FMP to Yahoo Finance`
+### Fix 1 — yahoo-finance2 v3 instantiation bug
+- VPS had `yahoo-finance2@3.14.0` installed; v3 dropped the singleton default
+  export. Sector-strength calls were throwing `Call const yahooFinance = new YahooFinance() first`.
+- Migrated `src/mcp-server/market-data.ts:12` to `import YahooFinance` + module-
+  level `const yahooFinance = new YahooFinance()`.
+- Side-effect: v3 warns about Node ≥22 (VPS is 20.20.2). Advisory only;
+  library works. Saved to memory as a "watch if sector data gets weird" signal.
+- Commit: **478a104** `fix(market-data): migrate yahoo-finance2 to v3 instantiation`
 
-### Blocker B — Twelve Data rate limit (8 credits/min vs 21-41 burned per cycle)
-- New `TokenBucket` in `src/mcp-server/rate-limiter.ts` — 8 tokens / 60s refill,
-  FIFO `acquire()` with `RateLimitQueuedError` on deadline miss
-- New `CandleCache` in `src/mcp-server/candle-cache.ts` — in-memory TTL Map
-  keyed by `symbol:interval:outputsize`, TTLs 60s (15m) → 4h (1w)
-- `fetchCandles()` now wraps cache-first → token-second. Public signature
-  unchanged so scanner/agents need no adaptation
-- Agent `executeTool` sites in `trading-agent.ts` + `swing-agent.ts` wrapped
-  in try/catch — any tool failure now returns structured error JSON instead
-  of crashing the decision cycle
-- Commit: **e094240** `feat(market-data): throttle + cache Twelve Data calls`
+### Fix 2 — Twelve Data daily-cap circuit breaker
+- Root cause: Twelve Data signals credit exhaustion via HTTP 200 +
+  `{status:'error', message:'...out of API credits...'}` — TokenBucket caught
+  nothing because nothing looked wrong at the transport layer. Each retry still
+  incremented TD's counter, burning 1,089 post-cap credits on day 1.
+- Added module-level breaker state + `isDailyCapTripped()` short-circuit at
+  top of `fetchCandles()`. Trips on regex match against error message or real
+  HTTP 429 (defensive). Auto-resets at UTC midnight (TD's reset boundary).
+- Added 4 vitest cases covering the exact production error string, short-
+  circuit behaviour, non-triggering on unrelated errors, and HTTP 429 fallback.
+- **Verified in production at 22:00:17 UTC** — breaker fired against the
+  still-exhausted counter and successfully blocked further network hits.
+- Commit: **3dc2da7** `feat(market-data): add Twelve Data daily-cap circuit breaker`
 
-### Test coverage
-- +12 tests (113 total): `tests/rate-limiter.test.ts` (refill rate, capacity
-  cap, queued wait, deadline timeout) + `tests/candle-cache.test.ts` (hit/miss,
-  TTL expiry, eviction, key shape)
-- `npm test`: 113/113 passing on laptop and VPS
-- `tsc --noEmit`: 0 errors
+### Root-cause analysis — why 800 credits evaporated by 14:00 UTC
+- Two Explore agents in parallel mapped the scanner + agent call chain.
+- Smoking gun: `getRankedInstruments()` in `src/scanner/index.ts` fanning out
+  20 × `fetchCandles('1h', 30)` per call = 20 TD credits × every ICT cycle
+  (~every 15 min during market hours) = 480–1,200 credits/day from ranking alone.
+- Full budget: ~1,400–1,600 credits/day vs 800 cap. Cap was always going to blow.
 
-## Current State — Fixes deployed & live-verified
+### Fix 3 — Scanner hourly caching (Option 1, demo-time throttle)
+- Added module-level ranking cache, keyed by `(at, zone, results)`.
+- TTL: 60 min. Invalidates early on kill-zone transitions (07/10/13/15/16/17 UTC)
+  so killZone score bonus stays accurate.
+- Expected burn: ~100–160 credits/day from ranking (~75% reduction).
+- Giuseppe's explicit framing: "we will do no 1 [hourly scanner] when the bot
+  leaves the demo i want you to remind about this change so then i will pay the 80".
+  Memory flag added: `project_farad_demo_end_todo.md` — raise scanner revert +
+  Twelve Data Grow decision proactively at demo end (~2026-05-04).
+- Commit: **42e4215** `perf(scanner): cache rankings hourly to fit Twelve Data free tier`
 
-- ✅ **VPS updated:** pulled master, `npm install`, `npm run build`, `pm2 restart`
-  at 08:07:34 UTC; bot now at PID 35957
-- ✅ **Preflight clean:** 0 warnings (down from 1 — FMP_API_KEY dropped),
-  0 errors, Capital.com session OK
-- ✅ **First post-fix cycle (08:15:00 UTC) SUCCEEDED end-to-end:**
-    - Scanner returned 4 real candidates: NVDA 85, META 85, TSLA 80, GOLD 75
-      (was empty all morning pre-fix)
-    - Rate limiter queued the ~25 credits across 90s without a single 429
-    - 8 parallel `get_prices` calls for 4 candidates × 2 timeframes completed
-    - ICT Agent ran full 5-step cycle in 7m 26s
-    - Decision: `NO TRADE — No confirmed trigger on any instrument`
-    - Zero errors in pm2-err.log after 08:07:34 restart
-- ✅ **GitHub remote:** master up-to-date, both commits pushed
-- ⏳ **2-week demo (Step 13):** now properly running. Clock effectively
-  restarted 2026-04-20 as today is the first day the bot can actually
-  evaluate real instruments
+### Fix 4 — Telegram alert on trade-open
+- Gap discovered by Explore agent: `alertTradePlaced()` existed in
+  `src/notifications/telegram.ts:43` but was never called. Both agents logged
+  trades to DB silently. User's phone only buzzed on position *close* events.
+- Wired `await alertTradePlaced(trade)` into both ICT and Swing agents'
+  `log_trade` case (`trading-agent.ts:200`, `swing-agent.ts:89`).
+- Motivation: Giuseppe is going to sleep; he wants his phone to buzz the
+  moment the bot opens a position overnight.
+- Commit: **073d04f** `feat(notifications): fire Telegram alert when a trade is opened`
+
+## Current State — All four fixes deployed & live
+- ✅ **VPS:** PID 41463, pm2 restart counter at 3, uptime clean, 12.9mb→99mb
+  on startup (normal), preflight + Capital.com + DB + Telegram + Scheduler ✓
+- ✅ **Tests:** 117/117 green (was 113 + 4 new breaker tests)
+- ✅ **Build:** `tsc` clean on laptop and VPS
+- ✅ **GitHub:** origin/master up-to-date (4 commits ahead of start of session)
+- ✅ **Breaker verified in production** (fired at 22:00:17 UTC)
+- ⏳ **Demo day 2 (2026-04-21):** starts fresh at UTC midnight. London Open
+  07:00 UTC, NY Open 13:00 UTC. Scanner will burn ~160 credits/day max.
+
+## Decisions Made This Session
+
+- **Option 1 over Option 3 for demo phase.** Chose scanner throttling (free)
+  over paid Twelve Data plan ($79/mo Grow). Giuseppe's reasoning: test on free
+  infra first; pay only when demo proves the bot trades well.
+- **Proactive reminder pattern.** New workflow: when Giuseppe defers a decision
+  to a future event (demo end, live flip), save a project-type memory with
+  trigger conditions so the next session can raise it without being asked.
+- **Atomic commits per logical unit** — four commits this session, each
+  independently green for bisect. Same pattern as the prior session.
+- **Mid-demo fix posture** — "research first, show proposed diffs, then touch
+  live-path code." Used Explore agents for mapping before edits on both rounds.
+
+## Next Steps — for Giuseppe on return
+
+### Immediate (morning debrief)
+1. Check Telegram — if the bot opened any positions overnight, the 🟢 alert
+   will be in your chat history with full entry/SL/TP details.
+2. When you open Claude Code, ask: **"what did the bot do overnight?"** — I'll
+   pull VPS logs, count cycles, show decisions, report any trade activity.
+3. If no trade fired during London or NY Open, dig into the agent reasoning
+   to see if it's being too risk-averse for demo pace.
+
+### This week (demo continues through 2026-05-04)
+4. Let the scheduler run. Cached scanner should keep credit burn well under 800/day.
+5. Watch for the first real TP1 event — needed to verify `handleTp1Hit` moves
+   Position B's SL to break-even on Capital's side (gate #2 for going live).
+6. Weekly Review Agent fires Sunday 00:00 UTC — read its output Monday morning.
+
+### At demo end (~2026-05-04)
+7. Claude will proactively raise (per `project_farad_demo_end_todo.md`):
+   - Revert scanner throttle if Twelve Data Grow is purchased
+   - Consider Node 22 VPS upgrade if sector data has drifted
+8. Decide on live trading: requires deliberate `LIVE_TRADING_OK=true` +
+   live URL swap. Preflight refuses without both.
 
 ## Deferred / Known Issues
+
+### Introduced this session
+- VPS runs Node 20.20.2 but `yahoo-finance2@3.14.0` prefers Node ≥22.
+  Library works with a warning; flagged as watch-item in memory.
+- Scanner cache is a demo-time compromise, not a permanent design — revert
+  flagged in memory for post-demo.
 
 ### Unchanged from previous session (still valid)
 - Secret rotation (Capital API creds) deferred per Giuseppe's call
 - VPS `.env` still has dead `CAPITAL_PASSWORD` line (harmless)
 - GitHub default branch still `main` (code on `master`)
-- MCP SDK version drift in package.json vs historical CLAUDE.md claim
-- `BROKER_MIGRATION_PROMPT.md` etc. reference historical CAPITAL_PASSWORD
+- `BROKER_MIGRATION_PROMPT.md` references historical CAPITAL_PASSWORD
 - `scripts/epic-mapping.json` gitignored artefact
 
-### Introduced this session
-- VPS lockfile re-diverged from Windows-generated one (ran `npm install`
-  on VPS to satisfy Linux transitive deps). Old Linux lockfile stashed in
-  VPS's git stash stack as "vps-linux-lockfile" — can be dropped next visit.
-- Yahoo Finance is an unofficial/scraped endpoint. If it ever rate-limits
-  or breaks shape, swap path: Alpha Vantage `SECTOR` endpoint or compute
-  from cached 1d ETF candles. Not urgent.
-
-## Next Steps (Giuseppe)
-
-### Today / this week
-1. Let the bot run autonomously during kill zones:
-   - London Open 07:00–10:00 UTC
-   - NY Open 12:00–15:00 UTC (today)
-   - NY PM 15:00–17:00 UTC (today)
-   Each 15m candle close within those windows triggers an ICT cycle.
-2. Monitor with `ssh bot@162.55.212.198 'pm2 logs trading-bot --lines 100'`
-3. If an agent places a trade: verify on Capital.com web UI; confirm SL/TP
-   shown; watch scheduler's monitor loop for any TP1→BE event
-
-### 2-week demo window (now Apr 20 → May 4)
-4. Let demo accumulate trades, reflections, lessons
-5. Once a real TP1 hits, verify `handleTp1Hit` moves Position B's SL to
-   break-even on Capital side
-6. Weekly review agent fires Sundays 00:00 UTC
-
-### After the 2-week demo (Step 15)
-7. Tune strategy files from accumulated reflection lessons
-8. Decide whether to enable live trading (requires explicit
-   `LIVE_TRADING_OK=true` + live URL swap; preflight refuses without both)
-
-## Key Decisions This Session
-
-- **Yahoo Finance over paid FMP tier** — zero cost, zero API key, same data
-  shape via sector ETFs. `yahoo-finance2` npm package is stable and widely used.
-- **Token bucket + TTL cache over Twelve Data tier upgrade** — stays on
-  free tier (8 credits/min). Cache removes duplicate fetches inside a cycle;
-  bucket paces what remains. 60s deadline before RateLimitQueuedError gives
-  the agent a clean signal to skip rather than hang indefinitely.
-- **Structured error returns over crash** — wrapped `executeTool` in try/catch
-  so any tool failure is surfaced to Claude as JSON the agent can reason
-  about, instead of unwinding the cycle.
-- **Two atomic commits instead of one** — used selective `git stash --keep-index`
-  to isolate each fix into its own commit, keeping both independently green
-  for bisect. Slight process cost, large debugging benefit.
-
 ## Session Reliability Notes
-
-- All live verification stayed on Capital.com demo URL (no live trades possible
-  — preflight gate intact).
-- One 08:07:34 restart counted against the "uptime" stat but was the deliberate
-  deploy restart; zero unplanned restarts since.
-- Rate limiter behavior observed live: scanner's internal get_ranked_instruments
-  call (20 instruments × 1 candle) took ~1m 45s to serve (about 8 credits/min
-  pacing), proving the queue is working as designed. First `get_prices` call
-  after the scanner was served instantly — cache hit from the scanner's fetches.
+- Four atomic commits, each independently green (`npm run build && npm test`).
+- Deploy pipeline held: `git pull --ff-only && npm run build && pm2 restart` —
+  each restart ≤3s downtime. Three restarts this session (deploy round 1, then
+  re-deploy round 2). Capital.com session maintained throughout via keep-alive.
+- All verification stayed on Capital.com demo URL. Live-trading gate intact.
