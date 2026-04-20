@@ -1,89 +1,124 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-17 (evening, Malta) — end of 10-commit launch session, bot live on VPS
+Last updated: 2026-04-20 (morning, Malta) — end of blocker-fix session, bot trading on VPS
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: master (pushed to https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
-Last commit: 2c0b801 — "feat(deploy): VPS deployment artefacts" (next commit is this auto-save)
+Last commit: e094240 — "feat(market-data): throttle + cache Twelve Data calls to fit 8 credits/min"
 
-## Session Recap — 10 commits on top of a5ba764
+## What We Did This Session
 
-```
-2c0b801  feat(deploy): VPS deployment artefacts — Hetzner + pm2 + GitHub    ← Blocker 14 prep
-39630e8  feat(scheduler): Telegram alert on Capital ping failure             ← Blocker 6
-d73550b  chore: auto-update session state and preferences                    ← mid-session save
-f32e7ed  feat(scheduler): unit-test monitorSplitPositions orchestration      ← Blocker 5 A2
-002a32e  fix(capital-client): return position dealId from affectedDeals[0]   ← Blocker 4.1 HIDDEN BUG
-e2580a2  fix(preflight): gate live endpoint by explicit opt-in               ← Blocker 3
-728d19c  feat(scanner): add epic field to INSTRUMENT_UNIVERSE                ← Blocker 2
-12939cd  fix: authenticate with API-key password, not account login          ← Blocker 1
-a5ba764  feat: migrate broker from Trading 212 to Capital.com                ← baseline
-```
+Two production blockers surfaced on the 2-week demo's first real trade window
+(Monday 2026-04-20 07:00 UTC London Open). Both fixed, deployed, live-verified.
 
-Every commit is atomic per blocker. Each preceded by Coder+Tester+Reviewer swarm with independent live verification against Capital.com demo before commit. Test count: 43 → 101 across 10 files. `tsc --noEmit` 0 errors.
+### Blocker A — FMP deprecated endpoint (403)
+- `/api/v3/sector-performance` dead since 2025-08-31 (legacy endpoint)
+- Swapped to `yahoo-finance2` npm package with SPDR sector ETFs
+  (XLK/XLF/XLE/XLV/XLI/XLU/XLB/XLRE/XLP/XLY/XLC)
+- Single batched `quote()` call returns regularMarketChangePercent for all 11 sectors
+- `SectorStrength[]` contract preserved — no downstream call-site changes needed
+- Removed `FMP_API_KEY` from preflight OPTIONAL_KEYS
+- Commit: **d421f03** `fix(market-data): migrate sector strength from FMP to Yahoo Finance`
 
-## Current State — Production-ready on VPS
+### Blocker B — Twelve Data rate limit (8 credits/min vs 21-41 burned per cycle)
+- New `TokenBucket` in `src/mcp-server/rate-limiter.ts` — 8 tokens / 60s refill,
+  FIFO `acquire()` with `RateLimitQueuedError` on deadline miss
+- New `CandleCache` in `src/mcp-server/candle-cache.ts` — in-memory TTL Map
+  keyed by `symbol:interval:outputsize`, TTLs 60s (15m) → 4h (1w)
+- `fetchCandles()` now wraps cache-first → token-second. Public signature
+  unchanged so scanner/agents need no adaptation
+- Agent `executeTool` sites in `trading-agent.ts` + `swing-agent.ts` wrapped
+  in try/catch — any tool failure now returns structured error JSON instead
+  of crashing the decision cycle
+- Commit: **e094240** `feat(market-data): throttle + cache Twelve Data calls`
 
-- ✅ **VPS live:** Hetzner CX23 (2 vCPU / 4 GB / 40 GB, €4.71/mo) at **162.55.212.198** (Nuremberg)
-- ✅ **Bot running:** PID 14299, pm2-managed, 0 restarts, 18-min uptime at session close
-- ✅ **Boot persistence:** `pm2-bot.service` systemd unit (survives VPS reboot); `pm2 save` dumped process list to `/home/bot/.pm2/dump.pm2`
-- ✅ **Security:** UFW (SSH only), fail2ban active, unattended security upgrades, non-root `bot` user
-- ✅ **First autonomous cycle completed:** ICT Trading Agent correctly declined to trade at 21:00 UTC (post-session dead zone, no kill zones active, weekend incoming). Reasoning captured in pm2 logs.
-- ✅ **Code on GitHub:** private repo `giuseppeportelli1403-ops/FaradsAI-TradeBot`; deploy key from VPS has read-only access
-- ✅ **All verification gates green:** `npm test` 101/101 on both laptop AND VPS; `tsc` 0 errors
-- ⏳ **Blocker 6 (24h soak):** technically still running — expected green by tomorrow morning; can verify with `ssh bot@162.55.212.198 'pm2 status'`
-- ⏳ **Step 13 (2-week demo):** clock started. First real trade window Monday 2026-04-20 07:00 UTC (London Open)
+### Test coverage
+- +12 tests (113 total): `tests/rate-limiter.test.ts` (refill rate, capacity
+  cap, queued wait, deadline timeout) + `tests/candle-cache.test.ts` (hit/miss,
+  TTL expiry, eviction, key shape)
+- `npm test`: 113/113 passing on laptop and VPS
+- `tsc --noEmit`: 0 errors
+
+## Current State — Fixes deployed & live-verified
+
+- ✅ **VPS updated:** pulled master, `npm install`, `npm run build`, `pm2 restart`
+  at 08:07:34 UTC; bot now at PID 35957
+- ✅ **Preflight clean:** 0 warnings (down from 1 — FMP_API_KEY dropped),
+  0 errors, Capital.com session OK
+- ✅ **First post-fix cycle (08:15:00 UTC) SUCCEEDED end-to-end:**
+    - Scanner returned 4 real candidates: NVDA 85, META 85, TSLA 80, GOLD 75
+      (was empty all morning pre-fix)
+    - Rate limiter queued the ~25 credits across 90s without a single 429
+    - 8 parallel `get_prices` calls for 4 candidates × 2 timeframes completed
+    - ICT Agent ran full 5-step cycle in 7m 26s
+    - Decision: `NO TRADE — No confirmed trigger on any instrument`
+    - Zero errors in pm2-err.log after 08:07:34 restart
+- ✅ **GitHub remote:** master up-to-date, both commits pushed
+- ⏳ **2-week demo (Step 13):** now properly running. Clock effectively
+  restarted 2026-04-20 as today is the first day the bot can actually
+  evaluate real instruments
 
 ## Deferred / Known Issues
 
-### Security (Giuseppe's action items, not blocking)
-- **CAPITAL_PASSWORD** (account login): leaked to transcript twice. Rotate via Capital.com web UI → Change Password.
-- **CAPITAL_API_KEY** (16 of 17 chars visible in transcript): regenerate via Capital dashboard; set new CAPITAL_API_KEY_PASSWORD too.
-- **ANTHROPIC_API_KEY** (20 of ~108 chars visible): low risk — 88 remaining chars computationally infeasible to brute-force. Optional rotate.
-- **TELEGRAM_BOT_TOKEN** (~20 of ~45 chars visible): low-medium risk. Optional rotate.
-- Giuseppe chose "leave .env as is" for this session; rotation deferred.
+### Unchanged from previous session (still valid)
+- Secret rotation (Capital API creds) deferred per Giuseppe's call
+- VPS `.env` still has dead `CAPITAL_PASSWORD` line (harmless)
+- GitHub default branch still `main` (code on `master`)
+- MCP SDK version drift in package.json vs historical CLAUDE.md claim
+- `BROKER_MIGRATION_PROMPT.md` etc. reference historical CAPITAL_PASSWORD
+- `scripts/epic-mapping.json` gitignored artefact
 
-### Lockfile hygiene
-- `npm ci` failed on VPS due to missing `@emnapi/core@1.10.0` + `@emnapi/runtime@1.10.0` entries in lockfile (Windows-generated lockfile doesn't capture these Linux-only transitive optional deps). Worked around with `npm install` on VPS. Clean fix: regenerate lockfile on Linux/CI and commit.
-
-### Cosmetic
-- VPS `.env` still contains dead `CAPITAL_PASSWORD=...` line (no code reads it; harmless). Giuseppe can strip at leisure.
-- GitHub default branch is `main` (empty) while code lives on `master`. Change default branch in repo settings → Settings → Branches for cleaner future clones.
-- MCP SDK version in `package.json` (`^1.12.1`) differs from `CLAUDE.md`'s historical claim of `1.29.0` — docs/reality drift from before this session.
-- `BROKER_MIGRATION_PROMPT.md` and `docs/superpowers/plans/2026-04-17-capital-com-migration.md` still reference `CAPITAL_PASSWORD` (historical). Consider superseded banners.
-- `scripts/epic-mapping.json` is a generated artefact now gitignored; will not be committed again.
+### Introduced this session
+- VPS lockfile re-diverged from Windows-generated one (ran `npm install`
+  on VPS to satisfy Linux transitive deps). Old Linux lockfile stashed in
+  VPS's git stash stack as "vps-linux-lockfile" — can be dropped next visit.
+- Yahoo Finance is an unofficial/scraped endpoint. If it ever rate-limits
+  or breaks shape, swap path: Alpha Vantage `SECTOR` endpoint or compute
+  from cached 1d ETF candles. Not urgent.
 
 ## Next Steps (Giuseppe)
 
-### Tonight / tomorrow morning
-1. `ssh bot@162.55.212.198 'pm2 status'` — confirm overnight soak survived
-2. (optional) Rotate leaked Capital secrets in dashboard
-3. (optional) Change GitHub default branch to `master`
+### Today / this week
+1. Let the bot run autonomously during kill zones:
+   - London Open 07:00–10:00 UTC
+   - NY Open 12:00–15:00 UTC (today)
+   - NY PM 15:00–17:00 UTC (today)
+   Each 15m candle close within those windows triggers an ICT cycle.
+2. Monitor with `ssh bot@162.55.212.198 'pm2 logs trading-bot --lines 100'`
+3. If an agent places a trade: verify on Capital.com web UI; confirm SL/TP
+   shown; watch scheduler's monitor loop for any TP1→BE event
 
-### Monday 2026-04-20 07:00 UTC (London Open)
-4. Watch logs during the first real kill-zone window — `ssh bot@162.55.212.198 'pm2 logs trading-bot --lines 100'`
-5. If an agent places a trade: verify via Capital.com web UI; confirm SL/TP shown; watch scheduler's monitor loop for any TP1→BE event
-
-### 2-week demo (Step 13)
-6. Let the bot trade autonomously on demo for at least 2 weeks
-7. Once a real TP1 hits, verify `handleTp1Hit` moves Position B's SL to break-even on Capital side
-8. Weekly review agent fires Sundays 00:00 UTC — read its output
+### 2-week demo window (now Apr 20 → May 4)
+4. Let demo accumulate trades, reflections, lessons
+5. Once a real TP1 hits, verify `handleTp1Hit` moves Position B's SL to
+   break-even on Capital side
+6. Weekly review agent fires Sundays 00:00 UTC
 
 ### After the 2-week demo (Step 15)
-9. Tune strategy files based on reflection lessons accumulated over 14 days
-10. Decide whether to enable live trading: would require deliberate `LIVE_TRADING_OK=true` in VPS .env + switch of `CAPITAL_API_URL` to live endpoint (preflight refuses without both)
+7. Tune strategy files from accumulated reflection lessons
+8. Decide whether to enable live trading (requires explicit
+   `LIVE_TRADING_OK=true` + live URL swap; preflight refuses without both)
 
 ## Key Decisions This Session
 
-- **Per-blocker atomic commits** — 10 reversible commits rather than one "launch-readiness" blob. Easier to bisect if anything regresses.
-- **Swarm-per-blocker** (Coder + live Tester + independent Reviewer) — caught the dealId bug that unit tests missed. Would not have been caught pre-deploy otherwise.
-- **Single-chokepoint fix for Blocker 4.1** at `pollDealConfirmation` auto-corrects 4 confirmation-returning methods; working-order flows safe via empty-`affectedDeals` fallback.
-- **URL-based live/demo gate** with explicit `LIVE_TRADING_OK=true` opt-in replaces the never-working `accountType === 'DEMO'` check. Defensive against typo'd CAPITAL_API_URL.
-- **Dependency injection via optional `MonitorDeps` / `PingDeps`** for scheduler testability without `vi.mock` hackery. Production behavior untouched when `deps` omitted.
-- **VPS over 24h laptop soak** — pivoted when Giuseppe asked. Monthly cost €4.71 vs. tying up laptop 24h. Trade-off: deploy overhead this session (~30 min), permanence for the 2-week demo + beyond.
-- **"Leave .env as is"** — Giuseppe accepted the current state including leaked secret rotation deferral. Bot functions correctly either way.
+- **Yahoo Finance over paid FMP tier** — zero cost, zero API key, same data
+  shape via sector ETFs. `yahoo-finance2` npm package is stable and widely used.
+- **Token bucket + TTL cache over Twelve Data tier upgrade** — stays on
+  free tier (8 credits/min). Cache removes duplicate fetches inside a cycle;
+  bucket paces what remains. 60s deadline before RateLimitQueuedError gives
+  the agent a clean signal to skip rather than hang indefinitely.
+- **Structured error returns over crash** — wrapped `executeTool` in try/catch
+  so any tool failure is surfaced to Claude as JSON the agent can reason
+  about, instead of unwinding the cycle.
+- **Two atomic commits instead of one** — used selective `git stash --keep-index`
+  to isolate each fix into its own commit, keeping both independently green
+  for bisect. Slight process cost, large debugging benefit.
 
 ## Session Reliability Notes
 
-- All live calls stayed on Capital.com demo URL. Never hit the live endpoint.
-- 1 orphan position during Blocker 4 smoke trade (dealId bug). Rescue-closed within seconds via `getOpenPositions()` lookup. ~0 P&L.
-- 2 secret-inspection commands leaked partial values to transcript (my mistake). Flagged to Giuseppe both times; future secret inspection must use length-only patterns.
-- VPS setup-vps.sh completed all 6 phases cleanly on first run. No manual intervention needed past the pm2 startup command copy-paste.
+- All live verification stayed on Capital.com demo URL (no live trades possible
+  — preflight gate intact).
+- One 08:07:34 restart counted against the "uptime" stat but was the deliberate
+  deploy restart; zero unplanned restarts since.
+- Rate limiter behavior observed live: scanner's internal get_ranked_instruments
+  call (20 instruments × 1 candle) took ~1m 45s to serve (about 8 credits/min
+  pacing), proving the queue is working as designed. First `get_prices` call
+  after the scanner was served instantly — cache hit from the scanner's fetches.
