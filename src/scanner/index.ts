@@ -164,8 +164,40 @@ export function getCurrentKillZone(): { inKillZone: boolean; zone: string } {
 
 // ==================== MAIN SCANNER ====================
 
+// Hourly ranking cache. During the free-tier demo window, the scanner's full
+// fan-out (20 × fetchCandles('1h', 30) = 20 Twelve Data credits per call) ran
+// every ICT cycle (~every 15 min), burning the daily cap by mid-session.
+// Cache the full ranked list for 60 min, invalidating early on kill-zone
+// transitions so the killZone score bonus stays accurate. Post-demo, once
+// Twelve Data Grow is active, drop RANKING_TTL_MS to 0 to restore per-cycle
+// freshness (memory note: reference_farad_scanner_throttle.md).
+let rankingCache: { at: number; zone: string; results: RankedInstrument[] } | null = null;
+const RANKING_TTL_MS = 60 * 60_000;
+
+/** Exposed for tests — clear the ranking cache. */
+export function _resetRankingCache(): void {
+  rankingCache = null;
+}
+
+/** Exposed for tests/monitoring — current cache state. */
+export function _getRankingCache(): { at: number; zone: string; results: RankedInstrument[] } | null {
+  return rankingCache;
+}
+
 export async function getRankedInstruments(limit: number = 20): Promise<RankedInstrument[]> {
   const killZone = getCurrentKillZone();
+
+  // Serve from cache if within TTL AND kill zone hasn't transitioned. A zone
+  // change flips the killZone bonus baked into composite_score, so we must
+  // re-rank when it does.
+  if (
+    rankingCache &&
+    Date.now() - rankingCache.at < RANKING_TTL_MS &&
+    rankingCache.zone === killZone.zone
+  ) {
+    return rankingCache.results.slice(0, limit);
+  }
+
   const results: RankedInstrument[] = [];
 
   // Scan all instruments in parallel (batched to respect rate limits)
@@ -216,7 +248,8 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
     }
   }
 
-  // Sort by score descending, return top N
+  // Sort by score descending, then cache the full list (slice on read).
   results.sort((a, b) => b.composite_score - a.composite_score);
+  rankingCache = { at: Date.now(), zone: killZone.zone, results };
   return results.slice(0, limit);
 }
