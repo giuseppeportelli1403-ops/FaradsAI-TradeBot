@@ -8,6 +8,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPrompt, loadStrategy } from './load-prompt.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
+import { alertTradePlaced } from '../notifications/telegram.js';
 
 const anthropic = new Anthropic();
 
@@ -198,6 +199,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       insertTrade(trade);
       createSlTpOrder({ trade_id: trade.id, leg: 'A', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_a, sl_price: trade.sl, tp_price: trade.tp1 });
       createSlTpOrder({ trade_id: trade.id, leg: 'B', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_b, sl_price: trade.sl, tp_price: trade.tp2 });
+      await alertTradePlaced(trade);
       return JSON.stringify({ status: 'logged', trade_id: trade.id });
     }
     case 'update_sl':

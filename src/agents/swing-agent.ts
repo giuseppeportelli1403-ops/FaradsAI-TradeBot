@@ -31,6 +31,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
 import { fetchCandles, fetchNewsContext as fetchNewsRaw, fetchEconomicCalendar, fetchSectorStrength, computeCorrelation } from '../mcp-server/market-data.js';
 import { getRankedInstruments } from '../scanner/index.js';
 import { insertTrade, getLessons, getLessonWinRate, createSlTpOrder, updateSlPrice, getDailyPnl } from '../database/index.js';
+import { alertTradePlaced } from '../notifications/telegram.js';
 import { CapitalClient } from '../mcp-server/capital-client.js';
 
 const capital = new CapitalClient({
@@ -87,6 +88,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       insertTrade(trade);
       createSlTpOrder({ trade_id: trade.id, leg: 'A', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_a, sl_price: trade.sl, tp_price: trade.tp1 });
       createSlTpOrder({ trade_id: trade.id, leg: 'B', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_b, sl_price: trade.sl, tp_price: trade.tp2 });
+      await alertTradePlaced(trade);
       return JSON.stringify({ status: 'logged', trade_id: trade.id });
     }
     case 'update_sl': updateSlPrice(input.trade_id as string, 'B', Number(input.new_sl)); return JSON.stringify({ status: 'updated' });
