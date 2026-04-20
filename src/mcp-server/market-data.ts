@@ -58,9 +58,48 @@ const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const twelveDataBucket = new TokenBucket(8, 60_000);
 const candleCache = new CandleCache();
 
+// Daily-cap circuit breaker. Twelve Data signals exhaustion with HTTP 200 +
+// {status:'error', message:'...out of API credits...'}, so neither axios nor
+// the TokenBucket catches it — and each post-exhaustion call STILL counts
+// toward the daily counter. Once tripped, fetchCandles short-circuits without
+// hitting the network; auto-resets at Twelve Data's daily boundary (UTC 00:00).
+let twelveDataDailyCap: { resetsAt: number } | null = null;
+
+function nextUtcMidnight(): number {
+  const d = new Date();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
+}
+
+function isDailyCapTripped(): boolean {
+  if (!twelveDataDailyCap) return false;
+  if (Date.now() >= twelveDataDailyCap.resetsAt) {
+    twelveDataDailyCap = null;
+    return false;
+  }
+  return true;
+}
+
+function tripDailyCap(): void {
+  if (twelveDataDailyCap) return;
+  twelveDataDailyCap = { resetsAt: nextUtcMidnight() };
+  console.warn(
+    `[Market Data] Twelve Data daily cap tripped — short-circuiting until ${new Date(twelveDataDailyCap.resetsAt).toISOString()}`
+  );
+}
+
 /** Exposed for tests and agents that want to warm/inspect the cache. */
 export function _getCandleCache(): CandleCache {
   return candleCache;
+}
+
+/** Exposed for tests — reset the daily-cap breaker. */
+export function _resetTwelveDataDailyCap(): void {
+  twelveDataDailyCap = null;
+}
+
+/** Exposed for tests/monitoring — current breaker state. */
+export function _getTwelveDataDailyCap(): { resetsAt: number } | null {
+  return twelveDataDailyCap;
 }
 
 export async function fetchCandles(
@@ -81,20 +120,43 @@ export async function fetchCandles(
     return cached;
   }
 
-  // 2. Await a rate-limit token. Throws RateLimitQueuedError if the 60s wait
+  // 2. Circuit-breaker: skip the network call entirely if we've already hit
+  //    the daily cap. Twelve Data still counts post-exhaustion calls, so this
+  //    is how we stop bleeding credits (and log noise) until UTC midnight.
+  if (isDailyCapTripped()) {
+    throw new Error(
+      `Twelve Data daily cap reached — resets at ${new Date(twelveDataDailyCap!.resetsAt).toISOString()}`
+    );
+  }
+
+  // 3. Await a rate-limit token. Throws RateLimitQueuedError if the 60s wait
   //    expires; callers decide whether to surface the error or skip the step.
   await twelveDataBucket.acquire(60_000);
 
-  const { data } = await axios.get(`${TWELVE_DATA_BASE}/time_series`, {
-    params: {
-      symbol,
-      interval,
-      outputsize: outputSize,
-      apikey: apiKey,
-    },
-  });
+  let data: { status?: string; message?: string; values?: Array<Record<string, string>> };
+  try {
+    ({ data } = await axios.get(`${TWELVE_DATA_BASE}/time_series`, {
+      params: {
+        symbol,
+        interval,
+        outputsize: outputSize,
+        apikey: apiKey,
+      },
+    }));
+  } catch (err) {
+    // Defensive: if Twelve Data ever switches to real HTTP 429s, trip too.
+    if (axios.isAxiosError(err) && err.response?.status === 429) {
+      tripDailyCap();
+    }
+    throw err;
+  }
 
   if (data.status === 'error') {
+    // Daily credit exhaustion comes back as HTTP 200 + status:'error'. Detect
+    // by message content and trip the breaker so we stop hitting the API.
+    if (/out of api credits/i.test(data.message ?? '')) {
+      tripDailyCap();
+    }
     throw new Error(`Twelve Data error: ${data.message}`);
   }
 
