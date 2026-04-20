@@ -9,7 +9,7 @@
 //   Alpha Vantage — News with sentiment (25 req/day free)
 
 import axios from 'axios';
-import yahooFinance from 'yahoo-finance2';
+import YahooFinance from 'yahoo-finance2';
 import type {
   Candle, Timeframe, NewsItem, EconomicEvent,
   SectorStrength, CorrelationPair,
@@ -206,6 +206,10 @@ export async function fetchEconomicCalendar(daysAhead: number): Promise<Economic
 // strength from the SPDR sector ETFs via Yahoo Finance, which returns the
 // regularMarketChangePercent (1d) directly and historical opens for 1w/1m
 // cumulative returns.
+//
+// yahoo-finance2 v3 dropped the singleton default export — callers must now
+// instantiate YahooFinance. Singleton is safe: no per-call state, no auth.
+const yahooFinance = new YahooFinance();
 
 const SECTOR_ETFS: Array<{ ticker: string; sector: string }> = [
   { ticker: 'XLK', sector: 'Technology' },
