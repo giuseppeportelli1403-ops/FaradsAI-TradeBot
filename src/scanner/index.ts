@@ -160,7 +160,6 @@ export function getCurrentKillZone(): { inKillZone: boolean; zone: string } {
   const utcMinute = now.getUTCMinutes();
   const timeDecimal = utcHour + utcMinute / 60;
 
-  if (timeDecimal >= 0 && timeDecimal < 3) return { inKillZone: true, zone: 'Asian Open' };
   if (timeDecimal >= 7 && timeDecimal < 10) return { inKillZone: true, zone: 'London Open' };
   if (timeDecimal >= 13 && timeDecimal < 16) return { inKillZone: true, zone: 'NY Open' };
   if (timeDecimal >= 15 && timeDecimal < 17) return { inKillZone: true, zone: 'London Close' };

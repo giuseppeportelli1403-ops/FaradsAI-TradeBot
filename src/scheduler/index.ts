@@ -487,11 +487,6 @@ export function startScheduler(): void {
   // Every 8 minutes: Capital.com session keep-alive.
   cron.schedule('*/8 * * * *', () => pingKeepAlive());
 
-  // Daily at 02:30 UTC: Market Researcher (before Asian close + ahead of London open)
-  cron.schedule('30 2 * * *', async () => {
-    await safeRun('Market Researcher (Asian session)', runResearcherAgent);
-  });
-
   // Daily at 05:30 UTC: Market Researcher (before London open)
   cron.schedule('30 5 * * *', async () => {
     await safeRun('Market Researcher (daily)', runResearcherAgent);
@@ -532,7 +527,6 @@ export function startScheduler(): void {
   console.log('Scheduler started. Cron jobs active:');
   console.log('  */5 * * * *           — Split-position monitor + candle detection → ICT Agent');
   console.log('  */8 * * * *           — Capital.com session keep-alive ping');
-  console.log('  30 2 * * *            — Market Researcher (Asian session)');
   console.log('  30 5 * * *            — Market Researcher (daily pre-London)');
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
   console.log('  0 4,8,12,16,20 * * 1-5 — ICT Agent (4H candle close trigger)');
