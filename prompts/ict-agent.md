@@ -169,7 +169,6 @@ Identify: the most recent order block in the direction of bias, any open fair va
 
 **D. Check kill zone**
 Is the current UTC time within a kill zone?
-- Asian Open: 00:00-03:00 UTC (JPY, AUD, NZD pairs + Gold)
 - London Open: 07:00-10:00 UTC (all instruments)
 - New York Open: 13:00-16:00 UTC (all instruments)
 - London Close: 15:00-17:00 UTC (all instruments)

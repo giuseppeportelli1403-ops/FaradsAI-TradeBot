@@ -52,7 +52,6 @@ export interface BacktestResult {
 function getKillZone(datetime: string): { inKillZone: boolean; zone: string } {
   const d = new Date(datetime);
   const h = d.getUTCHours();
-  if (h >= 0 && h < 3) return { inKillZone: true, zone: 'Asian Open' };
   if (h >= 7 && h < 10) return { inKillZone: true, zone: 'London Open' };
   if (h >= 13 && h < 16) return { inKillZone: true, zone: 'NY Open' };
   if (h >= 15 && h < 17) return { inKillZone: true, zone: 'London Close' };
