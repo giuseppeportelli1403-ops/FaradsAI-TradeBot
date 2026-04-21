@@ -1,0 +1,31 @@
+{
+  "name": "betterops-trading-bot",
+  "version": "0.1.0",
+  "description": "Self-learning autonomous AI trading bot by BetterOpsAI — ICT methodology, Trading 212 API, Claude-powered agents",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "mcp": "tsx src/mcp-server/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "axios": "^1.7.9",
+    "node-cron": "^3.0.3",
+    "sql.js": "^1.11.0",
+    "telegraf": "^4.16.3",
+    "yahoo-finance2": "^3.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/node-cron": "^3.0.11",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.4"
+  }
+}

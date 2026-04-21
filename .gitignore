@@ -1,0 +1,24 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite
+~$*
+.DS_Store
+Thumbs.db
+
+# Generated / local-only artefacts
+scripts/epic-mapping.json
+data/soak-*.log
+data/*.log
+
+# pm2 & deployment local state
+.pm2/
+ecosystem.local.config.cjs
+
+# IDE / tooling
+.vscode/
+.idea/
+*.swp
