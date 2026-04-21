@@ -5,6 +5,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import {
   initDatabaseAsync,
   insertLesson,
+  insertTrade,
+  getTradeById,
   getLessonWinRate,
   createSlTpOrder,
   getActiveSlTpOrders,
@@ -139,5 +141,109 @@ describe('sl_tp_orders.deal_id column (Capital.com migration)', () => {
     const row = active.find((o) => o.trade_id === tradeId);
     expect(row).toBeDefined();
     expect(row?.deal_id).toBeNull();
+  });
+});
+
+describe('insertTrade defensive normalization (regression for 2026-04-21 log_trade crash)', () => {
+  // On 2026-04-21 12:58 UTC the bot placed its first real trade (GBPUSD SHORT
+  // split-pair on Capital.com demo). But `log_trade` crashed 3 times with
+  //   "Wrong API use : tried to bind a value of an unknown type (undefined)"
+  // because the Claude agent's JSON payload omitted optional fields. The
+  // trade went to Capital.com but never made it to the local DB — orphan
+  // state. insertTrade now normalises undefined → null/default before bind.
+  beforeAll(async () => {
+    await initDatabaseAsync();
+  });
+
+  function makeMinimalTrade(overrides: Record<string, unknown> = {}) {
+    const uid = `t-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    return {
+      id: uid,
+      strategy_tag: 'ICT_INTRADAY' as const,
+      instrument: 'GBPUSD',
+      direction: 'short' as const,
+      entry: 1.35146,
+      sl: 1.3526,
+      tp1: 1.34844,
+      tp2: 1.34700,
+      size_a: 1700,
+      size_b: 1700,
+      position_a_id: 'DEAL-A-1',
+      position_b_id: 'DEAL-B-1',
+      composite_score: 65,
+      ...overrides,
+    };
+  }
+
+  it('accepts a trade with every optional string field omitted (the exact 2026-04-21 failure mode)', () => {
+    const trade = makeMinimalTrade();
+    // Explicitly don't set: instrument_category, setup_type, status, kill_zone,
+    //                      news_category, analyst_decision, reasoning, opened_at
+    expect(() => insertTrade(trade as never)).not.toThrow();
+
+    const row = getTradeById(trade.id);
+    expect(row).not.toBeNull();
+    expect(row?.instrument).toBe('GBPUSD');
+    expect(row?.direction).toBe('short');
+    expect(row?.kill_zone).toBeNull();        // was undefined → null
+    expect(row?.news_category).toBeNull();    // was undefined → null
+    expect(row?.analyst_decision).toBeNull(); // was undefined → null
+    expect(row?.reasoning).toBeNull();        // was undefined → null
+    expect(row?.status).toBe('open');         // default
+    expect(row?.instrument_category).toBe('unknown');  // default sentinel
+    expect(row?.setup_type).toBe('unspecified');       // default sentinel
+    expect(row?.opened_at).toBeTruthy();               // auto-set to now
+  });
+
+  it('preserves provided values and does NOT override them with defaults', () => {
+    const trade = makeMinimalTrade({
+      instrument_category: 'forex',
+      setup_type: 'FVG',
+      kill_zone: 'NY Open',
+      news_category: 'A',
+      analyst_decision: 'APPROVE',
+      reasoning: 'bearish OB mitigation',
+      composite_score: 75,
+      status: 'open',
+      opened_at: '2026-04-21T12:58:42.000Z',
+    });
+    insertTrade(trade as never);
+    const row = getTradeById(trade.id);
+    expect(row?.instrument_category).toBe('forex');
+    expect(row?.setup_type).toBe('FVG');
+    expect(row?.kill_zone).toBe('NY Open');
+    expect(row?.news_category).toBe('A');
+    expect(row?.analyst_decision).toBe('APPROVE');
+    expect(row?.reasoning).toBe('bearish OB mitigation');
+    expect(row?.composite_score).toBe(75);
+    expect(row?.opened_at).toBe('2026-04-21T12:58:42.000Z');
+  });
+
+  it('throws a clear, actionable error when required fields are missing', () => {
+    const broken = { instrument: 'EURUSD', direction: 'long' } as never;
+    expect(() => insertTrade(broken)).toThrowError(/required field\(s\) missing: id, strategy_tag/);
+  });
+
+  it('null-coerces undefined position_a_id / position_b_id (nullable columns)', () => {
+    const trade = makeMinimalTrade({ position_a_id: undefined, position_b_id: undefined });
+    expect(() => insertTrade(trade as never)).not.toThrow();
+    const row = getTradeById(trade.id);
+    expect(row?.position_a_id).toBeNull();
+    expect(row?.position_b_id).toBeNull();
+  });
+
+  it('defaults numeric NOT-NULL columns to 0 rather than throwing bind-undefined', () => {
+    const trade = makeMinimalTrade({
+      entry: undefined,  // these would be 0 in DB — weird but inspectable
+      sl: undefined,
+      tp1: undefined,
+      tp2: undefined,
+      composite_score: undefined,
+    });
+    expect(() => insertTrade(trade as never)).not.toThrow();
+    const row = getTradeById(trade.id);
+    expect(row?.entry).toBe(0);
+    expect(row?.sl).toBe(0);
+    expect(row?.composite_score).toBe(0);
   });
 });

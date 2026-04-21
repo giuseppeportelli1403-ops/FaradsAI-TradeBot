@@ -198,18 +198,72 @@ function createTables(): void {
 
 // ==================== TRADES ====================
 
-export function insertTrade(trade: Omit<TradeRecord, 'closed_at'>): void {
+export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): void {
+  // Defensive normalization: the Claude agent's trade JSON payload to the
+  // `log_trade` MCP tool may omit fields that the schema requires. sql.js
+  // rejects `undefined` bind parameters with
+  //   "Wrong API use: tried to bind a value of an unknown type (undefined)"
+  // — a cryptic error that orphaned Farad's first live trade on 2026-04-21
+  // 12:58 UTC (trade executed on Capital but local DB insert failed).
+  //
+  // We normalize before binding:
+  //   - Required keys throw a clear error naming the missing field.
+  //   - NOT-NULL aux text columns default to sentinel strings.
+  //   - NOT-NULL numeric columns default to 0 (weird-but-inspectable).
+  //   - Nullable columns null-coerce.
+  //   - opened_at defaults to now().
+
+  const missing: string[] = [];
+  if (!trade.id) missing.push('id');
+  if (!trade.strategy_tag) missing.push('strategy_tag');
+  if (!trade.instrument) missing.push('instrument');
+  if (!trade.direction) missing.push('direction');
+  if (missing.length > 0) {
+    throw new Error(
+      `insertTrade: required field(s) missing: ${missing.join(', ')}. Payload: ${JSON.stringify(trade)}`
+    );
+  }
+
+  const asNum = (v: unknown, fallback: number): number =>
+    typeof v === 'number' && !isNaN(v) ? v : fallback;
+  const asStrOrNull = (v: unknown): string | null =>
+    v === undefined || v === null ? null : String(v);
+
+  const row = {
+    id: String(trade.id),
+    strategy_tag: trade.strategy_tag!,
+    instrument: String(trade.instrument),
+    instrument_category: String(trade.instrument_category ?? 'unknown'),
+    direction: trade.direction!,
+    setup_type: String(trade.setup_type ?? 'unspecified'),
+    entry: asNum(trade.entry, 0),
+    sl: asNum(trade.sl, 0),
+    tp1: asNum(trade.tp1, 0),
+    tp2: asNum(trade.tp2, 0),
+    position_a_id: asStrOrNull(trade.position_a_id),
+    position_b_id: asStrOrNull(trade.position_b_id),
+    size_a: asNum(trade.size_a, 0),
+    size_b: asNum(trade.size_b, 0),
+    status: trade.status ?? 'open',
+    composite_score: asNum(trade.composite_score, 0),
+    kill_zone: asStrOrNull(trade.kill_zone),
+    news_category: asStrOrNull(trade.news_category),
+    analyst_decision: asStrOrNull(trade.analyst_decision),
+    reasoning: asStrOrNull(trade.reasoning),
+    opened_at: String(trade.opened_at ?? new Date().toISOString()),
+  };
+
   db.run(`
     INSERT INTO trades (id, strategy_tag, instrument, instrument_category, direction,
       setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b,
       status, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
-    trade.id, trade.strategy_tag, trade.instrument, trade.instrument_category,
-    trade.direction, trade.setup_type, trade.entry, trade.sl, trade.tp1, trade.tp2,
-    trade.position_a_id, trade.position_b_id, trade.size_a, trade.size_b,
-    trade.status, trade.composite_score, trade.kill_zone, trade.news_category,
-    trade.analyst_decision, trade.reasoning, trade.opened_at,
+    row.id, row.strategy_tag, row.instrument, row.instrument_category,
+    row.direction, row.setup_type, row.entry, row.sl, row.tp1, row.tp2,
+    row.position_a_id, row.position_b_id, row.size_a, row.size_b,
+    row.status, row.composite_score, row.kill_zone, row.news_category,
+    row.analyst_decision, row.reasoning, row.opened_at,
   ]);
   saveToFile();
 }
