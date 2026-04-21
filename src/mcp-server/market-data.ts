@@ -223,33 +223,52 @@ export async function fetchCandles(
   return candles;
 }
 
+// Each external-data wrapper below uses withFallback so that when an
+// upstream failure occurs (circuit breaker tripped, rate-limit queue
+// timeout, network error, API returns error, unavailable symbol on current
+// tier), the caller gets a sensible default instead of a thrown exception.
+//
+// This is load-bearing for the Market Researcher (daily 05:30 UTC cron),
+// which calls these in `Promise.all`; one rejection would otherwise tear
+// down the whole research cycle. Observed failure on 2026-04-21 05:30 UTC
+// when the Twelve Data daily cap was tripped — Researcher crashed before
+// reaching Finnhub/FRED/Yahoo stages.
+//
+// The fallback log (`[Market Data] Fallback triggered: ...`) is intentionally
+// loud so ops notices. If a brief is generated with multiple fallbacks,
+// treat its macro inputs as UNRELIABLE for that cycle.
+
 export async function fetchVix(): Promise<{ vix: number; vix_30d_avg: number }> {
-  const candles = await fetchCandles('VIX', '1d', 30);
-  if (candles.length === 0) {
-    // VIX is Pro-tier-only on Twelve Data; Grow returns empty. Degrade gracefully
-    // rather than crashing the Market Researcher (which fetches this at 05:30 UTC).
-    return { vix: 0, vix_30d_avg: 0 };
-  }
-  const current = candles[0]?.close ?? 0;
-  const avg = candles.reduce((sum, c) => sum + c.close, 0) / candles.length;
-  return { vix: current, vix_30d_avg: Math.round(avg * 100) / 100 };
+  return withFallback(async () => {
+    const candles = await fetchCandles('VIX', '1d', 30);
+    if (candles.length === 0) {
+      // VIX is Pro-tier-only on Twelve Data; Grow returns empty. Degrade gracefully
+      // rather than crashing the Market Researcher (which fetches this at 05:30 UTC).
+      return { vix: 0, vix_30d_avg: 0 };
+    }
+    const current = candles[0]?.close ?? 0;
+    const avg = candles.reduce((sum, c) => sum + c.close, 0) / candles.length;
+    return { vix: current, vix_30d_avg: Math.round(avg * 100) / 100 };
+  }, { vix: 0, vix_30d_avg: 0 });
 }
 
 export async function fetchDxy(): Promise<{ dxy: number; direction: 'rising' | 'falling' | 'flat' }> {
-  const candles = await fetchCandles('DXY', '1d', 10);
-  if (candles.length === 0) {
-    return { dxy: 0, direction: 'flat' };
-  }
-  const current = candles[0]?.close ?? 0;
-  const fiveDaysAgo = candles[4]?.close ?? current;
-  const change = fiveDaysAgo === 0 ? 0 : ((current - fiveDaysAgo) / fiveDaysAgo) * 100;
+  return withFallback(async () => {
+    const candles = await fetchCandles('DXY', '1d', 10);
+    if (candles.length === 0) {
+      return { dxy: 0 as number, direction: 'flat' as const };
+    }
+    const current = candles[0]?.close ?? 0;
+    const fiveDaysAgo = candles[4]?.close ?? current;
+    const change = fiveDaysAgo === 0 ? 0 : ((current - fiveDaysAgo) / fiveDaysAgo) * 100;
 
-  let direction: 'rising' | 'falling' | 'flat';
-  if (change > 0.3) direction = 'rising';
-  else if (change < -0.3) direction = 'falling';
-  else direction = 'flat';
+    let direction: 'rising' | 'falling' | 'flat';
+    if (change > 0.3) direction = 'rising';
+    else if (change < -0.3) direction = 'falling';
+    else direction = 'flat';
 
-  return { dxy: current, direction };
+    return { dxy: current, direction };
+  }, { dxy: 0, direction: 'flat' as const });
 }
 
 export async function computeCorrelation(
@@ -257,39 +276,56 @@ export async function computeCorrelation(
   instrumentB: string,
   days: number = 30
 ): Promise<CorrelationPair> {
-  const [candlesA, candlesB] = await Promise.all([
-    fetchCandles(instrumentA, '1d', days),
-    fetchCandles(instrumentB, '1d', days),
-  ]);
+  return withFallback(async () => {
+    const [candlesA, candlesB] = await Promise.all([
+      fetchCandles(instrumentA, '1d', days),
+      fetchCandles(instrumentB, '1d', days),
+    ]);
 
-  const returnsA = candlesA.slice(0, -1).map((c, i) =>
-    (c.close - candlesA[i + 1].close) / candlesA[i + 1].close
-  );
-  const returnsB = candlesB.slice(0, -1).map((c, i) =>
-    (c.close - candlesB[i + 1].close) / candlesB[i + 1].close
-  );
+    if (candlesA.length < 2 || candlesB.length < 2) {
+      // Not enough data for correlation — return neutral.
+      return {
+        instrument_a: instrumentA,
+        instrument_b: instrumentB,
+        correlation_30d: 0,
+        correlation_90d: 0,
+      };
+    }
 
-  const n = Math.min(returnsA.length, returnsB.length);
-  const meanA = returnsA.slice(0, n).reduce((s, v) => s + v, 0) / n;
-  const meanB = returnsB.slice(0, n).reduce((s, v) => s + v, 0) / n;
+    const returnsA = candlesA.slice(0, -1).map((c, i) =>
+      (c.close - candlesA[i + 1].close) / candlesA[i + 1].close
+    );
+    const returnsB = candlesB.slice(0, -1).map((c, i) =>
+      (c.close - candlesB[i + 1].close) / candlesB[i + 1].close
+    );
 
-  let cov = 0, varA = 0, varB = 0;
-  for (let i = 0; i < n; i++) {
-    const dA = returnsA[i] - meanA;
-    const dB = returnsB[i] - meanB;
-    cov += dA * dB;
-    varA += dA * dA;
-    varB += dB * dB;
-  }
+    const n = Math.min(returnsA.length, returnsB.length);
+    const meanA = returnsA.slice(0, n).reduce((s, v) => s + v, 0) / n;
+    const meanB = returnsB.slice(0, n).reduce((s, v) => s + v, 0) / n;
 
-  const correlation = varA && varB ? cov / Math.sqrt(varA * varB) : 0;
+    let cov = 0, varA = 0, varB = 0;
+    for (let i = 0; i < n; i++) {
+      const dA = returnsA[i] - meanA;
+      const dB = returnsB[i] - meanB;
+      cov += dA * dB;
+      varA += dA * dA;
+      varB += dB * dB;
+    }
 
-  return {
+    const correlation = varA && varB ? cov / Math.sqrt(varA * varB) : 0;
+
+    return {
+      instrument_a: instrumentA,
+      instrument_b: instrumentB,
+      correlation_30d: Math.round(correlation * 1000) / 1000,
+      correlation_90d: 0, // Would need 90 days of data
+    };
+  }, {
     instrument_a: instrumentA,
     instrument_b: instrumentB,
-    correlation_30d: Math.round(correlation * 1000) / 1000,
-    correlation_90d: 0, // Would need 90 days of data
-  };
+    correlation_30d: 0,
+    correlation_90d: 0,
+  });
 }
 
 // ==================== FINNHUB ====================
@@ -298,27 +334,29 @@ export async function computeCorrelation(
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
 export async function fetchEconomicCalendar(daysAhead: number): Promise<EconomicEvent[]> {
-  const apiKey = process.env.FINNHUB_API_KEY;
-  if (!apiKey) { console.error('[Market Data] FINNHUB_API_KEY not set'); return []; }
+  return withFallback(async () => {
+    const apiKey = process.env.FINNHUB_API_KEY;
+    if (!apiKey) { console.error('[Market Data] FINNHUB_API_KEY not set'); return []; }
 
-  const from = new Date().toISOString().split('T')[0];
-  const to = new Date(Date.now() + daysAhead * 86400000).toISOString().split('T')[0];
+    const from = new Date().toISOString().split('T')[0];
+    const to = new Date(Date.now() + daysAhead * 86400000).toISOString().split('T')[0];
 
-  const { data } = await axios.get(`${FINNHUB_BASE}/calendar/economic`, {
-    params: { from, to, token: apiKey },
-  });
+    const { data } = await axios.get(`${FINNHUB_BASE}/calendar/economic`, {
+      params: { from, to, token: apiKey },
+    });
 
-  return (data.economicCalendar || []).map((e: Record<string, unknown>) => ({
-    date: e.date as string,
-    time: e.time as string || '',
-    event: e.event as string,
-    country: e.country as string,
-    impact: e.impact as 'high' | 'medium' | 'low',
-    actual: e.actual as string | null,
-    estimate: e.estimate as string | null,
-    previous: e.prev as string | null,
-    affected_instruments: [],
-  }));
+    return (data.economicCalendar || []).map((e: Record<string, unknown>) => ({
+      date: e.date as string,
+      time: e.time as string || '',
+      event: e.event as string,
+      country: e.country as string,
+      impact: e.impact as 'high' | 'medium' | 'low',
+      actual: e.actual as string | null,
+      estimate: e.estimate as string | null,
+      previous: e.prev as string | null,
+      affected_instruments: [] as string[],
+    })) as EconomicEvent[];
+  }, [] as EconomicEvent[]);
 }
 
 // ==================== YAHOO FINANCE (SECTOR STRENGTH) ====================
@@ -351,33 +389,40 @@ interface MinimalYahooQuote {
 }
 
 export async function fetchSectorStrength(): Promise<SectorStrength[]> {
-  const tickers = SECTOR_ETFS.map((e) => e.ticker);
+  return withFallback(async () => {
+    const tickers = SECTOR_ETFS.map((e) => e.ticker);
 
-  // Single batched quote call — 1 HTTP request for all 11 ETFs. `validateResult:
-  // false` lets us tolerate occasional schema drift from Yahoo without crashing.
-  const raw = (await yahooFinance.quote(tickers, {}, { validateResult: false })) as unknown;
-  const quoteArray: MinimalYahooQuote[] = Array.isArray(raw)
-    ? (raw as MinimalYahooQuote[])
-    : [raw as MinimalYahooQuote];
+    // Single batched quote call — 1 HTTP request for all 11 ETFs. `validateResult:
+    // false` lets us tolerate occasional schema drift from Yahoo without crashing.
+    const raw = (await yahooFinance.quote(tickers, {}, { validateResult: false })) as unknown;
+    const quoteArray: MinimalYahooQuote[] = Array.isArray(raw)
+      ? (raw as MinimalYahooQuote[])
+      : [raw as MinimalYahooQuote];
 
-  const quoteByTicker = new Map<string, MinimalYahooQuote>();
-  for (const q of quoteArray) {
-    if (q?.symbol) quoteByTicker.set(q.symbol, q);
-  }
+    const quoteByTicker = new Map<string, MinimalYahooQuote>();
+    for (const q of quoteArray) {
+      if (q?.symbol) quoteByTicker.set(q.symbol, q);
+    }
 
-  return SECTOR_ETFS.map(({ ticker, sector }) => {
-    const q = quoteByTicker.get(ticker);
-    const pct = typeof q?.regularMarketChangePercent === 'number'
-      ? q.regularMarketChangePercent
-      : 0;
-    return {
-      sector,
-      // Yahoo returns percent directly (e.g. 0.75 == 0.75%)
-      performance_1d: Math.round(pct * 100) / 100,
-      performance_1w: 0,
-      performance_1m: 0,
-    };
-  });
+    return SECTOR_ETFS.map(({ ticker, sector }) => {
+      const q = quoteByTicker.get(ticker);
+      const pct = typeof q?.regularMarketChangePercent === 'number'
+        ? q.regularMarketChangePercent
+        : 0;
+      return {
+        sector,
+        // Yahoo returns percent directly (e.g. 0.75 == 0.75%)
+        performance_1d: Math.round(pct * 100) / 100,
+        performance_1w: 0,
+        performance_1m: 0,
+      };
+    });
+  }, SECTOR_ETFS.map(({ sector }) => ({
+    sector,
+    performance_1d: 0,
+    performance_1w: 0,
+    performance_1m: 0,
+  })));
 }
 
 // ==================== FRED ====================
@@ -404,12 +449,21 @@ async function fetchFredSeries(seriesId: string): Promise<number> {
 }
 
 export async function fetchYieldCurve(): Promise<{ us2y: number; us10y: number; us30y: number }> {
-  const [us2y, us10y, us30y] = await Promise.all([
-    fetchFredSeries('DGS2'),
-    fetchFredSeries('DGS10'),
-    fetchFredSeries('DGS30'),
-  ]);
-  return { us2y, us10y, us30y };
+  // fetchFredSeries itself can throw (network, 401, 500). Use allSettled so a
+  // single bad series doesn't nuke the other two. Then withFallback catches any
+  // residual parse/throw just in case.
+  return withFallback(async () => {
+    const [us2yR, us10yR, us30yR] = await Promise.allSettled([
+      fetchFredSeries('DGS2'),
+      fetchFredSeries('DGS10'),
+      fetchFredSeries('DGS30'),
+    ]);
+    return {
+      us2y: us2yR.status === 'fulfilled' ? us2yR.value : 0,
+      us10y: us10yR.status === 'fulfilled' ? us10yR.value : 0,
+      us30y: us30yR.status === 'fulfilled' ? us30yR.value : 0,
+    };
+  }, { us2y: 0, us10y: 0, us30y: 0 });
 }
 
 // ==================== ALPHA VANTAGE ====================

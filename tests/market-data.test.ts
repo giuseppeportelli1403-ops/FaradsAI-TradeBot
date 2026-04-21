@@ -5,6 +5,9 @@ import {
   withCache,
   withFallback,
   fetchCandles,
+  fetchVix,
+  fetchDxy,
+  computeCorrelation,
   _getTwelveDataDailyCap,
   _resetTwelveDataDailyCap,
   _getCandleCache,
@@ -61,6 +64,80 @@ describe('withFallback', () => {
     const fallback = { vix: 0, vix_30d_avg: 0 };
     const result = await withFallback(async () => { throw new Error('fail'); }, fallback);
     expect(result).toEqual({ vix: 0, vix_30d_avg: 0 });
+  });
+});
+
+describe('Researcher-facing fetcher resilience (regression test for 2026-04-21 05:30 UTC crash)', () => {
+  // On 2026-04-21 at 05:30 UTC the Market Researcher crashed when fetchVix
+  // threw because the Twelve Data circuit breaker was tripped. The throw
+  // propagated through Promise.all -> detectRegime -> runResearcherAgent ->
+  // safeRun, aborting the whole research cycle. After the fix every external
+  // fetcher is wrapped in withFallback — they can NEVER propagate an
+  // exception; callers always get a sensible default.
+  const originalKey = process.env.TWELVE_DATA_API_KEY;
+
+  beforeEach(() => {
+    process.env.TWELVE_DATA_API_KEY = 'test-key';
+    _resetTwelveDataDailyCap();
+    _getCandleCache().clear();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env.TWELVE_DATA_API_KEY;
+    else process.env.TWELVE_DATA_API_KEY = originalKey;
+    _resetTwelveDataDailyCap();
+    vi.restoreAllMocks();
+  });
+
+  it('fetchVix returns zero-defaults when the upstream fetchCandles throws', async () => {
+    vi.spyOn(axios, 'get').mockRejectedValue(new Error('Network is down'));
+    const result = await fetchVix();
+    expect(result).toEqual({ vix: 0, vix_30d_avg: 0 });
+  });
+
+  it('fetchDxy returns zero-defaults when the upstream fetchCandles throws', async () => {
+    vi.spyOn(axios, 'get').mockRejectedValue(new Error('API returned 500'));
+    const result = await fetchDxy();
+    expect(result).toEqual({ dxy: 0, direction: 'flat' });
+  });
+
+  it('computeCorrelation returns neutral-correlation when fetchCandles throws', async () => {
+    vi.spyOn(axios, 'get').mockRejectedValue(new Error('Rate limited'));
+    const result = await computeCorrelation('EURUSD', 'DXY', 30);
+    expect(result.correlation_30d).toBe(0);
+    expect(result.correlation_90d).toBe(0);
+    expect(result.instrument_a).toBe('EURUSD');
+    expect(result.instrument_b).toBe('DXY');
+  });
+
+  it('fetchVix degrades when the breaker is tripped (exact crash scenario)', async () => {
+    // Trip the breaker by returning the credit-exhaustion payload.
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: { status: 'error', message: 'You have run out of API credits for the day.' },
+    });
+    // First call trips the breaker (via AAPL since VIX returns [] before hitting TD)
+    await fetchCandles('AAPL', '1d', 10).catch(() => undefined);
+    expect(_getTwelveDataDailyCap()).not.toBeNull();
+
+    // Now fetchVix/fetchDxy must still return defaults, not throw.
+    const vix = await fetchVix();
+    const dxy = await fetchDxy();
+    expect(vix).toEqual({ vix: 0, vix_30d_avg: 0 });
+    expect(dxy).toEqual({ dxy: 0, direction: 'flat' });
+  });
+
+  it('Promise.all of [fetchVix, fetchDxy, computeCorrelation] never rejects — Researcher invariant', async () => {
+    // Simulate the detectRegime() call shape that crashed: Promise.all of these
+    // three. The researcher's Promise.all MUST never reject now.
+    vi.spyOn(axios, 'get').mockRejectedValue(new Error('Everything is on fire'));
+    await expect(
+      Promise.all([fetchVix(), fetchDxy(), computeCorrelation('EURUSD', 'USDJPY')])
+    ).resolves.toEqual([
+      { vix: 0, vix_30d_avg: 0 },
+      { dxy: 0, direction: 'flat' },
+      expect.objectContaining({ correlation_30d: 0, correlation_90d: 0 }),
+    ]);
   });
 });
 
