@@ -90,7 +90,7 @@ Setup: ${trade.setup_type} | Score: ${trade.composite_score}`);
 }
 
 export async function alertKillSwitch(type: 'daily' | 'weekly', pnlPct: number): Promise<void> {
-  const limit = type === 'daily' ? '4%' : '8%';
+  const limit = type === 'daily' ? '6%' : '8%';
   await send(`🚨 *KILL SWITCH ACTIVATED — ${type.toUpperCase()}*
 
 ${type === 'daily' ? 'Daily' : 'Weekly'} loss limit (${limit}) reached.

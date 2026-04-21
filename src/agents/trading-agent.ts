@@ -157,7 +157,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       return JSON.stringify({
         total_daily_pnl: pnl, equity,
         daily_pnl_pct: Math.round(pct * 100) / 100,
-        kill_switch_active: pct <= -4,
+        kill_switch_active: pct <= -6,
         open_positions: countOpenPositions(),
       });
     }
