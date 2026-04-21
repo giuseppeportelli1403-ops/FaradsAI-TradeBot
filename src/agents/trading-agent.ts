@@ -254,10 +254,21 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
 
   for (let i = 0; i < maxIterations; i++) {
     const response = await anthropic.messages.create({
-      model: 'claude-opus-4-6',
+      // Cost optimisation (2026-04-21): ICT reasoning is quantitative
+      // (order blocks, FVGs, structure detection, R:R math). Sonnet 4.6
+      // handles this well at roughly 1/3 the token cost of Opus. The ICT
+      // agent fires up to ~70× per day across kill zones — Opus on this
+      // cadence was the single biggest Claude-API burn line-item. If
+      // decision quality regresses noticeably vs the Opus run, revert
+      // the `model` field to `claude-opus-4-6`.
+      model: 'claude-sonnet-4-6',
       max_tokens: 16000,
       thinking: { type: 'adaptive' },
-      output_config: { effort: 'high' },
+      // effort: 'medium' trades a small amount of thinking trace depth
+      // for ~25% output-token savings. ICT decisions don't need max-depth
+      // reasoning once the scoring + kill-zone rules have already
+      // filtered the universe.
+      output_config: { effort: 'medium' },
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       tools: MCP_TOOLS,
       messages,
