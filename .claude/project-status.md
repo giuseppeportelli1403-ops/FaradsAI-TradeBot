@@ -1,8 +1,16 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-21 (morning — gate relaxations deployed, bot trading with relaxed gates during London Open)
+Last updated: 2026-04-21 (Day 2 afternoon — paid Twelve Data Grow active, TD symbol mapper shipped, bot healthy)
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: master (pushed to https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
-Last commit: 4c580f7 — "feat(demo): DEMO_RELAXED_GATES flag unlocks 3 gate relaxations"
+Last commit: 0d0d62a — "fix(market-data): map Farad tickers to Twelve Data symbol format"
+
+## 🚨 MAJOR BUG FIX THIS MORNING
+The scanner was SILENTLY FAILING on 15/20 instruments since forever. Twelve Data returns HTTP 404 for broker-style tickers ("EURUSD", "US30", "DE40"); needs "EUR/USD", "DJIA", "DAX". The scanner's `catch { return null }` was swallowing those as "bias neutral", making it look like those instruments were legit-excluded when in reality they never got data. Surfaced when Grow tier key was rotated in — paid API returned cleaner errors than free.
+
+**Fix:** `_mapToTwelveDataSymbol()` in market-data.ts (commit `0d0d62a`). Verified by hand against all 20 tickers. 129/129 tests green.
+
+## 💳 PAID TWELVE DATA GROW ACTIVE
+Giuseppe paid $79/mo mid-demo after Day 2's zero-trades was traced to free-tier exhaustion by 01:00 UTC. New key rotated into VPS .env at 08:19 UTC. 5,000 credits/day ceiling (vs 800). Expected burn with scanner cache + symbol mapper: ~800-1,200 credits/day → ~6× headroom.
 
 ## ✅ LATEST — DEMO_RELAXED_GATES live on VPS as of 07:44 UTC
 
