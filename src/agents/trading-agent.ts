@@ -159,7 +159,6 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         daily_pnl_pct: Math.round(pct * 100) / 100,
         kill_switch_active: pct <= -4,
         open_positions: countOpenPositions(),
-        note: 'No position cap — each qualifying trade (score >= 50) may be opened.',
       });
     }
     case 'get_portfolio':
