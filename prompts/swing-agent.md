@@ -41,8 +41,8 @@ Your mission: capture 3-5 medium-term moves per week lasting 2-15 days. You ride
 Call get_daily_pnl(). Check both daily (4%) and weekly (8%) kill switches.
 - Daily loss >= 4%? No new positions. Manage existing only.
 - Weekly loss >= 8%? Full standdown — no new positions for rest of week.
-Call get_portfolio(). If 3 Swing positions already open, skip to position management.
-Combined max 5 with ICT. Check coordination lock.
+Call get_portfolio(). Review open positions for coordination lock (no duplicate instrument).
+There is NO hard cap on number of positions — every qualifying setup (score >= 50) can be taken.
 
 ### STEP 2 — WEEKLY BIAS SCAN
 For each instrument in the swing shortlist from the researcher brief:
