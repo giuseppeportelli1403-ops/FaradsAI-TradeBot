@@ -1,0 +1,3 @@
+# Auto-requests Giuseppe's review on every pull request.
+# Pattern = all files; owner = repo admin.
+* @giuseppeportelli1403-ops
