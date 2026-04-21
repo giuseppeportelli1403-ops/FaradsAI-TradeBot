@@ -47,13 +47,14 @@ Trading outside kill zones: -15 point score penalty. If score drops below 65, sk
 |-----------|--------|
 | 1H bias clarity | 0 (unclear) / 10 (moderate) / 20 (strong) |
 | ICT array quality | 0 (none) / 12 (weak) / 18 (moderate) / 25 (strong) |
-| Kill zone alignment | 0 (outside) / 15 (inside) |
+| Kill zone alignment | -5 (outside) / 0 (no zone) / 15 (inside) |
 | News catalyst | -15 (opposing) to +20 (strong Cat A aligned) |
 | Historical win rate adjustment | -10 (<50% over 5+ trades) / 0 (neutral) / +10 (>70% over 5+ trades) |
 
-**Tier 1 (score 80+):** Risk 1.5% of account. Trailing stop option available.
-**Tier 2 (score 65–79):** Risk 1% of account. Fixed TP2 only.
-**Below 65:** No trade. Skip instrument.
+**Tier 1 (score 80–100):** Risk 1.5% of account. Trailing stop option available.
+**Tier 2 (score 60–79):** Risk 1.0% of account. Fixed TP2 only.
+**Tier 3 (score 50–59):** Risk 0.5% of account. Fixed TP2 only. Minimum R:R 1.5:1.
+**Below 50:** No trade. Skip instrument.
 
 ---
 
@@ -67,14 +68,12 @@ Trading outside kill zones: -15 point score penalty. If score drops below 65, sk
 
 **These rules CANNOT be removed or weakened by any agent.**
 
-1. Max risk per trade: 1.5% (Tier 1) / 1% (Tier 2) of account
-2. Max open ICT positions: 3 (split pair counts as 2)
-3. Max same-category positions: 2
-4. Combined max across ICT + Swing: 5 total trades (10 T212 positions)
-5. Minimum R:R to TP2: 2:1
-6. Every trade uses split-position method (2 legs)
-7. Size per leg = (total risk / 2) / (entry - SL) — never full risk per leg
-8. Coordination lock: no ICT trade if Swing agent has position on same instrument
+1. Max risk per trade: 1.5% (Tier 1) / 1% (Tier 2) / 0.5% (Tier 3) of account
+2. No hard cap on open positions — each trade must independently score >= 50
+3. Coordination lock: no new trade on an instrument already held in an open position
+4. Minimum R:R to TP2: 2:1 (Tier 1 & 2) / 1.5:1 (Tier 3)
+5. Every trade uses split-position method (2 legs)
+6. Size per leg = (total risk / 2) / (entry - SL) — never full risk per leg
 
 ### Section 7.2: Kill Switches
 

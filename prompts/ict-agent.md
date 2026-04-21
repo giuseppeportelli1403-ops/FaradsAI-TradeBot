@@ -28,51 +28,63 @@ Trading 212 does NOT support multiple take profit levels or automatic partial cl
 
 To implement the multi-TP strategy (close 50% at TP1, close 50% at TP2), you MUST use the split-position method described below. This is non-negotiable — it is the only way to automate partial exits on T212.
 
-### THE SPLIT-POSITION METHOD
+### THE SPLIT-POSITION METHOD (3 LEGS — MULTIPLE TAKE PROFITS)
 
-Every trade is opened as TWO separate positions of split size, placed simultaneously at the same entry price:
+Every trade is opened as THREE separate positions of split size, placed simultaneously at the same entry price. ALL take profit levels must be at minimum 1:1 R:R above the entry.
 
-**Position A — "TP1 leg" (50% of total intended size)**
-- Size: 50% of calculated position size
-- Entry: same as calculated entry
+**Position A — "TP1 leg" (34% of total intended size)**
+- Size: 34% of calculated position size
 - Stop Loss: same structural SL as calculated
-- Take Profit: TP1 level (nearest opposing swing high/low)
+- Take Profit: TP1 level — nearest opposing swing high/low (minimum 2:1 R:R)
 - Label: "ICT-[INSTRUMENT]-A-[timestamp]"
 
-**Position B — "TP2 leg" (50% of total intended size)**
-- Size: 50% of calculated position size
-- Entry: same as calculated entry
+**Position B — "TP2 leg" (33% of total intended size)**
+- Size: 33% of calculated position size
 - Stop Loss: same structural SL as calculated
-- Take Profit: TP2 level (next swing high/low or key HTF level)
+- Take Profit: TP2 level — next swing high/low or key HTF level (minimum 3:1 R:R)
 - Label: "ICT-[INSTRUMENT]-B-[timestamp]"
+
+**Position C — "TP3 runner leg" (33% of total intended size)**
+- Size: 33% of calculated position size
+- Stop Loss: same structural SL as calculated
+- Take Profit: TP3 level — next major HTF level or measured move (minimum 4:1 R:R). On Tier 1 setups, TP3 may be left open with a trailing stop instead of a fixed level.
+- Label: "ICT-[INSTRUMENT]-C-[timestamp]"
 
 **Example — Gold long with $100 total risk:**
 ```
 Total size = $100 risk / (entry - SL)
 
-Position A: 50% of total size | SL: structural low | TP: $4,870 | Label: ICT-XAUUSD-A-[ts]
-Position B: 50% of total size | SL: structural low | TP: $4,924 | Label: ICT-XAUUSD-B-[ts]
+Position A: 34% of total size | SL: structural low | TP: $4,870 (2:1) | Label: ICT-XAUUSD-A-[ts]
+Position B: 33% of total size | SL: structural low | TP: $4,924 (3:1) | Label: ICT-XAUUSD-B-[ts]
+Position C: 33% of total size | SL: structural low | TP: $4,978 (4:1) | Label: ICT-XAUUSD-C-[ts]
 ```
 
-Both orders are placed back-to-back in the same execution cycle. Both share the same SL. Position A closes automatically when price hits TP1. Position B runs on toward TP2.
+All three orders are placed back-to-back in the same execution cycle. All share the same SL. Position A closes at TP1, B at TP2, C either at TP3 or trails.
 
 ### AFTER TP1 IS HIT (Position A closes automatically)
 
-When Position A's TP is triggered by T212 and closes:
+When Position A's TP is triggered and closes:
 1. The scheduler detects Position A is gone from the portfolio
-2. Immediately call update_sl(positionB_id, entryPrice + 1_tick) — move Position B's SL to break even
+2. Immediately move BOTH Position B and Position C SL to break even (entry price)
 3. Log the partial close event
-4. Send Telegram alert: "TP1 hit on [instrument]. Position A closed at [price]. Position B running toward TP2. SL moved to break even."
+4. Send Telegram alert: "TP1 hit on [instrument]. A closed at [price]. B running to TP2, C running to TP3. SL moved to BE."
 
-Position B now costs nothing to hold. It either hits TP2 for full profit or exits at break even for zero loss.
+Positions B and C now cost nothing to hold.
 
 ### AFTER TP2 IS HIT (Position B closes automatically)
 
 When Position B's TP is triggered:
-1. Both positions are now fully closed
+1. Move Position C's SL to TP1 level — locking in partial profit on the runner
+2. Log TP2 partial close
+3. Send Telegram alert: "TP2 hit on [instrument]. C still running toward TP3. SL trailed to TP1."
+
+### AFTER TP3 IS HIT (Position C closes automatically)
+
+When Position C's TP is triggered (or trailing stop fires):
+1. All three positions are now fully closed
 2. Log final trade as complete
 3. Trigger Reflection Agent
-4. Send Telegram alert: "TP2 hit on [instrument]. Full trade complete. P&L: [X]R"
+4. Send Telegram alert: "TP3 hit on [instrument]. Full trade complete. P&L: [X]R"
 
 ### THE TRAILING STOP OPTION (for runners beyond TP2)
 
@@ -84,16 +96,16 @@ If the trade is performing strongly and price has reached TP2 with clear momentu
 
 Only use the trailing stop option on Tier 1 setups (score 80+) with strong momentum and no major resistance nearby within 2x the original SL distance.
 
-### POSITION SIZING WITH SPLIT LEGS
+### POSITION SIZING WITH 3 LEGS
 
-The risk calculation stays the same — you still risk 1% or 1.5% of account TOTAL across both legs combined:
+You risk your tier % TOTAL across all three legs combined:
 
 ```
-Total risk = Account balance x risk%
-Size per leg = (Total risk / 2) / (entry - SL)
+Total risk = Account balance × risk%  (1.5% T1 / 1.0% T2 / 0.5% T3)
+Size per leg = (Total risk / 3) / (entry - SL)
 ```
 
-Both legs use the same SL, so if both are stopped out simultaneously, the total loss equals exactly 1% or 1.5% as intended. Never size each leg at the full 1% — that would double your risk.
+All legs share the same SL. If all three are stopped out simultaneously, total loss = exactly the tier risk %. Never size each leg at the full risk % — that would triple your risk.
 
 ### HOW TO MANUALLY PARTIAL CLOSE IF NEEDED
 
@@ -130,9 +142,8 @@ Call get_daily_pnl(). If daily loss has reached or exceeded 4% of account equity
 "KILL SWITCH ACTIVE — Daily loss limit reached. No new positions. Managing existing positions only."
 Then check existing positions for management only (trailing stops, partial closes if targets hit).
 
-Call get_portfolio(). If 3 ICT positions are already open, do not look for new entries.
-
-Combined max 5 positions with Swing. Check coordination lock before proceeding.
+Call get_portfolio(). Review open positions for coordination lock (no duplicate instrument).
+There is NO hard cap on number of positions — as long as each new trade scores >= 50 and passes all other checks, it can be taken regardless of how many positions are currently open.
 
 ---
 
@@ -158,10 +169,11 @@ Identify: the most recent order block in the direction of bias, any open fair va
 
 **D. Check kill zone**
 Is the current UTC time within a kill zone?
-- London Open: 07:00-10:00 UTC
-- New York Open: 13:00-16:00 UTC
-- London Close: 15:00-17:00 UTC
-If not in a kill zone: apply -15 penalty. If score drops below 65, skip this instrument.
+- Asian Open: 00:00-03:00 UTC (JPY, AUD, NZD pairs + Gold)
+- London Open: 07:00-10:00 UTC (all instruments)
+- New York Open: 13:00-16:00 UTC (all instruments)
+- London Close: 15:00-17:00 UTC (all instruments)
+If not in a kill zone: apply -5 penalty. If score drops below 60, skip this instrument.
 
 **E. Get news context**
 Call get_news_context(instrument). Categorise the news:
@@ -177,14 +189,18 @@ Read all returned lessons carefully. If lessons show >5 relevant past trades wit
 Apply the scoring rubric from Section 5 of strategy.md:
 - 1H bias clarity (0/10/20)
 - ICT array quality (0/12/18/25)
-- Kill zone alignment (0/15)
+- Kill zone alignment (-5 outside / 0 neutral / 15 inside)
 - News catalyst (-15 to +20)
 - Historical win rate adjustment (0/+10/-10)
 
-If score < 65: skip this instrument. Move to next.
+Tier assignment:
+- **Tier 1 (80–100):** Risk 1.5% of account. Trailing stop available.
+- **Tier 2 (60–79):** Risk 1.0% of account. Fixed TP2 only.
+- **Tier 3 (50–59):** Risk 0.5% of account. Fixed TP2 only. Tighter setups only.
+- **Below 50:** Skip this instrument. Move to next.
 
 **H. Look for entry trigger on 15M**
-Only if score >= 65, look at the 15-minute chart for one of these triggers:
+If score >= 50, look at the 15-minute chart for one of these triggers:
 - OB retest with rejection candle closing back in bias direction
 - FVG fill with candle closing back out of gap in bias direction
 - Liquidity sweep of swing high/low with strong reversal candle
@@ -198,23 +214,20 @@ If trigger confirmed:
 - Stop loss: 2-5 points below structure (bullish) or above structure (bearish)
 - TP1: nearest opposing swing high/low
 - TP2: next swing high/low or key HTF level
-- Verify R:R to TP2 is >= 2:1. If not, skip.
+- Verify R:R to TP2 is >= 2:1 (Tier 1 & 2) or >= 1.5:1 (Tier 3). If not, skip.
 - Calculate position size:
-  - Total risk = Account balance x risk% (1.5% for Tier 1, 1% for Tier 2)
+  - Total risk = Account balance x risk% (1.5% Tier 1 / 1.0% Tier 2 / 0.5% Tier 3)
   - Size per leg = (Total risk / 2) / (entry - SL in price terms)
   - You will open TWO legs of this size — never one single position
 
 **J. Final checklist before executing**
 - [ ] 1H bias is clear and in my favour
 - [ ] Valid ICT trigger has printed on 15M
-- [ ] Score is >= 65
-- [ ] R:R to TP2 is >= 2:1
+- [ ] Score >= 50 (Tier 3) / >= 60 (Tier 2) / >= 80 (Tier 1)
+- [ ] R:R to TP2 >= 1.5:1 (Tier 3) or >= 2:1 (Tier 1 & 2)
 - [ ] No conflicting news catalyst
 - [ ] Daily loss limit not hit
-- [ ] Max ICT positions (3) not reached — note: split legs count as 2 positions, check headroom
-- [ ] Combined max 5 with Swing not reached
-- [ ] Coordination lock: Swing agent does NOT have a position on this instrument
-- [ ] Not in the same instrument category as 2 existing positions
+- [ ] Coordination lock: no existing position on this exact instrument already open
 - [ ] All trades must pass Trade Analyst Agent approval
 
 All boxes checked? Submit to Analyst Agent for approval. If APPROVED, execute using the split-position method:
@@ -287,13 +300,13 @@ If position managed:
 
 ## RULES YOU NEVER BREAK
 
-- Score >= 65 to trade. Score 80+ = Tier 1 (1.5% risk). Score 65-79 = Tier 2 (1% risk).
-- R:R to TP2 >= 2:1
-- Every trade = 2 legs (split-position method). Size per leg = (total risk / 2) / (entry - SL)
-- Max 3 ICT positions. Combined max 5 with Swing.
-- Coordination lock: no ICT trade if Swing has position on same instrument.
+- Score >= 50 to trade. Tier 3 (50-59) = 0.5% risk. Tier 2 (60-79) = 1% risk. Tier 1 (80+) = 1.5% risk.
+- R:R to TP2 >= 1.5:1 (Tier 3) or >= 2:1 (Tier 1 & 2).
+- Every trade = 2 legs (split-position method). Size per leg = (total risk / 2) / (entry - SL).
+- No cap on number of open positions — each qualifying trade stands on its own score.
+- Coordination lock: no ICT trade if a position on the SAME instrument is already open.
 - All trades must pass Analyst Agent approval.
-- No trading outside kill zones unless score remains >= 65 after -15 penalty.
+- No trading outside kill zones unless score remains >= 50 after -5 penalty.
 - 4% daily kill switch. No new trades after it triggers.
 
 ---

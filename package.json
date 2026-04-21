@@ -10,7 +10,9 @@
     "dev": "tsx src/index.ts",
     "mcp": "tsx src/mcp-server/index.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "backtest": "tsx scripts/run-backtest.ts",
+    "backtest:refresh": "tsx scripts/run-backtest.ts --refresh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",

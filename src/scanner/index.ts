@@ -63,6 +63,11 @@ export const INSTRUMENT_UNIVERSE: Array<{
   { ticker: 'USDJPY', epic: 'USDJPY', name: 'USD/JPY', category: 'fx', spread_quality: 'tight' },
   { ticker: 'GBPJPY', epic: 'GBPJPY', name: 'GBP/JPY', category: 'fx', spread_quality: 'medium' },
   { ticker: 'AUDUSD', epic: 'AUDUSD', name: 'AUD/USD', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'NZDUSD', epic: 'NZDUSD', name: 'NZD/USD', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'USDCAD', epic: 'USDCAD', name: 'USD/CAD', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'USDCHF', epic: 'USDCHF', name: 'USD/CHF', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'EURJPY', epic: 'EURJPY', name: 'EUR/JPY', category: 'fx', spread_quality: 'tight' },
+  { ticker: 'EURGBP', epic: 'EURGBP', name: 'EUR/GBP', category: 'fx', spread_quality: 'tight' },
 
   // US Large-Cap Stocks
   { ticker: 'AAPL', epic: 'AAPL', name: 'Apple', category: 'us-large-cap', spread_quality: 'tight' },
@@ -155,6 +160,7 @@ export function getCurrentKillZone(): { inKillZone: boolean; zone: string } {
   const utcMinute = now.getUTCMinutes();
   const timeDecimal = utcHour + utcMinute / 60;
 
+  if (timeDecimal >= 0 && timeDecimal < 3) return { inKillZone: true, zone: 'Asian Open' };
   if (timeDecimal >= 7 && timeDecimal < 10) return { inKillZone: true, zone: 'London Open' };
   if (timeDecimal >= 13 && timeDecimal < 16) return { inKillZone: true, zone: 'NY Open' };
   if (timeDecimal >= 15 && timeDecimal < 17) return { inKillZone: true, zone: 'London Close' };
@@ -177,14 +183,20 @@ function demoRelaxedGatesActive(): boolean {
 }
 
 const KILL_ZONE_BONUS_IN = 15;
+// Outside kill zones: small positive bonus to let strong setups compete at any hour.
+// Previously 0 (production) / 10 (demo) — now permanently 5 to increase opportunity.
+const KILL_ZONE_BONUS_OUT = 5;
 function killZoneBonusOut(): number {
-  return demoRelaxedGatesActive() ? 10 : 0;
+  return demoRelaxedGatesActive() ? 10 : KILL_ZONE_BONUS_OUT;
 }
 
 const TIER_1_THRESHOLD = 80;
-const TIER_2_THRESHOLD = 65;
+// Tier 2 lowered from 65 → 60 to capture more high-quality setups.
+const TIER_2_THRESHOLD = 60;
+// Tier 3 is now permanent (was demo-only). 0.5% risk, requires score 50-59.
+const TIER_3_THRESHOLD = 50;
 function tier3Threshold(): number {
-  return demoRelaxedGatesActive() ? 50 : Infinity;
+  return demoRelaxedGatesActive() ? 50 : TIER_3_THRESHOLD;
 }
 
 // Hourly ranking cache. During the free-tier demo window, the scanner's full
@@ -195,7 +207,8 @@ function tier3Threshold(): number {
 // Twelve Data Grow is active, drop RANKING_TTL_MS to 0 to restore per-cycle
 // freshness (memory note: reference_farad_scanner_throttle.md).
 let rankingCache: { at: number; zone: string; results: RankedInstrument[] } | null = null;
-const RANKING_TTL_MS = 60 * 60_000;
+// Reduced from 60 min → 15 min so fresh signals are picked up faster each cycle.
+const RANKING_TTL_MS = 15 * 60_000;
 
 /** Exposed for tests — clear the ranking cache. */
 export function _resetRankingCache(): void {

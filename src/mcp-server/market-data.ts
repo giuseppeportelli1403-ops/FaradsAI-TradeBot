@@ -120,6 +120,11 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
   USDJPY: 'USD/JPY',
   GBPJPY: 'GBP/JPY',
   AUDUSD: 'AUD/USD',
+  NZDUSD: 'NZD/USD',
+  USDCAD: 'USD/CAD',
+  USDCHF: 'USD/CHF',
+  EURJPY: 'EUR/JPY',
+  EURGBP: 'EUR/GBP',
   // Indices — TD uses academic/exchange tickers, not broker-style
   US30: 'DJIA',
   DE40: 'DAX',

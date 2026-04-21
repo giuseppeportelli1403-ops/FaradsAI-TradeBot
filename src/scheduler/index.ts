@@ -356,6 +356,11 @@ export function startScheduler(): void {
   // Every 8 minutes: Capital.com session keep-alive.
   cron.schedule('*/8 * * * *', () => pingKeepAlive());
 
+  // Daily at 02:30 UTC: Market Researcher (before Asian close + ahead of London open)
+  cron.schedule('30 2 * * *', async () => {
+    await safeRun('Market Researcher (Asian session)', runResearcherAgent);
+  });
+
   // Daily at 05:30 UTC: Market Researcher (before London open)
   cron.schedule('30 5 * * *', async () => {
     await safeRun('Market Researcher (daily)', runResearcherAgent);
@@ -364,6 +369,12 @@ export function startScheduler(): void {
   // Sunday at 22:00 UTC: Market Researcher (weekly outlook)
   cron.schedule('0 22 * * 0', async () => {
     await safeRun('Market Researcher (weekly)', runResearcherAgent);
+  });
+
+  // ICT agent triggered at every 4H candle close during active sessions Mon-Fri.
+  // Covers Asian close (04:00), London open (08:00), NY open (12:00), London close (16:00), NY close (20:00).
+  cron.schedule('0 4,8,12,16,20 * * 1-5', async () => {
+    await safeRun('ICT Trading Agent (4H trigger)', runTradingAgent);
   });
 
   // Daily at 21:30 UTC: Swing Agent (after US close)
@@ -376,8 +387,9 @@ export function startScheduler(): void {
     await safeRun('Swing Trading Agent (weekly outlook)', runSwingAgent);
   });
 
-  // Every 4 hours during London/NY sessions (08:00, 12:00, 16:00 UTC) Mon-Fri: Swing management
-  cron.schedule('0 8,12,16 * * 1-5', async () => {
+  // Every 2 hours during active sessions (07:00–20:00 UTC) Mon-Fri: Swing management.
+  // Doubled from 4H to catch more swing setups forming across timeframes.
+  cron.schedule('0 7,9,11,13,15,17,19 * * 1-5', async () => {
     await safeRun('Swing Trading Agent (management)', runSwingAgent);
   });
 
@@ -387,12 +399,14 @@ export function startScheduler(): void {
   });
 
   console.log('Scheduler started. Cron jobs active:');
-  console.log('  */5 * * * *     — Split-position monitor + candle detection → ICT Agent');
-  console.log('  */8 * * * *     — Capital.com session keep-alive ping');
-  console.log('  30 5 * * *      — Market Researcher (daily)');
-  console.log('  0 22 * * 0      — Market Researcher (weekly)');
-  console.log('  30 21 * * 1-5   — Swing Agent (daily)');
-  console.log('  0 6 * * 1       — Swing Agent (weekly outlook)');
-  console.log('  0 8,12,16 * * 1-5 — Swing Agent (management)');
-  console.log('  0 0 * * 0       — Weekly Review Agent');
+  console.log('  */5 * * * *           — Split-position monitor + candle detection → ICT Agent');
+  console.log('  */8 * * * *           — Capital.com session keep-alive ping');
+  console.log('  30 2 * * *            — Market Researcher (Asian session)');
+  console.log('  30 5 * * *            — Market Researcher (daily pre-London)');
+  console.log('  0 22 * * 0            — Market Researcher (weekly)');
+  console.log('  0 4,8,12,16,20 * * 1-5 — ICT Agent (4H candle close trigger)');
+  console.log('  30 21 * * 1-5         — Swing Agent (daily)');
+  console.log('  0 6 * * 1             — Swing Agent (weekly outlook)');
+  console.log('  0 7,9,11,13,15,17,19 * * 1-5 — Swing Agent (2H management)');
+  console.log('  0 0 * * 0             — Weekly Review Agent');
 }
