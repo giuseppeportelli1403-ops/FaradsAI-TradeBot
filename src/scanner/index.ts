@@ -45,38 +45,30 @@ export const INSTRUMENT_UNIVERSE: Array<{
   category: string;
   spread_quality: 'tight' | 'medium' | 'wide';
 }> = [
-  // Indices
+  // Core 10 (trimmed from 25 on 2026-04-21 for focus + cleaner ICT setups).
+  // All tight-spread, deepest-liquidity instruments where ICT structure reads
+  // cleanest. See commit history for the full 25-instrument predecessor if
+  // you want to restore minor pairs or additional US stocks.
+  //
+  // Indices (4)
   { ticker: 'US100', epic: 'US100', name: 'Nasdaq 100', category: 'index', spread_quality: 'tight' },
   { ticker: 'US500', epic: 'US500', name: 'S&P 500', category: 'index', spread_quality: 'tight' },
   { ticker: 'US30', epic: 'US30', name: 'Dow Jones 30', category: 'index', spread_quality: 'tight' },
   { ticker: 'DE40', epic: 'DE40', name: 'DAX 40', category: 'index', spread_quality: 'tight' },
-  { ticker: 'UK100', epic: 'UK100', name: 'FTSE 100', category: 'index', spread_quality: 'medium' },
 
-  // Commodities
+  // Commodities (1)
   { ticker: 'GOLD', epic: 'GOLD', name: 'Gold', category: 'commodity', spread_quality: 'tight' },
-  { ticker: 'SILVER', epic: 'SILVER', name: 'Silver', category: 'commodity', spread_quality: 'medium' },
-  { ticker: 'OIL_CRUDE', epic: 'OIL_CRUDE', name: 'Crude Oil WTI', category: 'commodity', spread_quality: 'medium' },
 
-  // FX Majors
+  // FX Majors (4) — highest-liquidity pairs, cleanest kill-zone behaviour
   { ticker: 'EURUSD', epic: 'EURUSD', name: 'EUR/USD', category: 'fx', spread_quality: 'tight' },
   { ticker: 'GBPUSD', epic: 'GBPUSD', name: 'GBP/USD', category: 'fx', spread_quality: 'tight' },
   { ticker: 'USDJPY', epic: 'USDJPY', name: 'USD/JPY', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'GBPJPY', epic: 'GBPJPY', name: 'GBP/JPY', category: 'fx', spread_quality: 'medium' },
   { ticker: 'AUDUSD', epic: 'AUDUSD', name: 'AUD/USD', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'NZDUSD', epic: 'NZDUSD', name: 'NZD/USD', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'USDCAD', epic: 'USDCAD', name: 'USD/CAD', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'USDCHF', epic: 'USDCHF', name: 'USD/CHF', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'EURJPY', epic: 'EURJPY', name: 'EUR/JPY', category: 'fx', spread_quality: 'tight' },
-  { ticker: 'EURGBP', epic: 'EURGBP', name: 'EUR/GBP', category: 'fx', spread_quality: 'tight' },
 
-  // US Large-Cap Stocks
+  // US Large-Cap (1) — Apple kept as the blue-chip reference. Other tech
+  // stocks removed because their intraday structure often diverges from
+  // the clean ICT model during the 13:00-16:00 NY session.
   { ticker: 'AAPL', epic: 'AAPL', name: 'Apple', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'MSFT', epic: 'MSFT', name: 'Microsoft', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'NVDA', epic: 'NVDA', name: 'NVIDIA', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'AMZN', epic: 'AMZN', name: 'Amazon', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'GOOGL', epic: 'GOOGL', name: 'Alphabet', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'META', epic: 'META', name: 'Meta', category: 'us-large-cap', spread_quality: 'tight' },
-  { ticker: 'TSLA', epic: 'TSLA', name: 'Tesla', category: 'us-large-cap', spread_quality: 'medium' },
 ];
 
 // ==================== BIAS DETECTION ====================

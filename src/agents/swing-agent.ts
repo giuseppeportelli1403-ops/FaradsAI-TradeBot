@@ -124,16 +124,16 @@ Begin your 10-step decision sequence now. Start with Step 1 (risk check).`;
 
   for (let i = 0; i < 15; i++) {
     const response = await anthropic.messages.create({
-      // Cost optimisation (2026-04-21 part 2): completes the ICT-agent
-      // Opus→Sonnet migration. Swing fires ~7×/day so the per-fire spend
-      // was smaller than ICT's, but Opus on max-depth multi-timeframe
-      // analysis still dominated the daily non-ICT Claude spend. Sonnet
-      // handles Swing's pullback + confluence reasoning well; if
-      // decision quality regresses noticeably, revert to 'claude-opus-4-6'.
+      // Cost optimisation (2026-04-21 part 3): now on Sonnet + medium effort
+      // to match ICT agent. Swing's per-cycle reasoning budget shrinks but
+      // the 3×/day session-boundary cadence (reduced from 7×/day in this
+      // same PR) means total Claude spend drops roughly 2× on Swing. Revert
+      // to 'claude-opus-4-6' + effort:'high' if multi-timeframe confluence
+      // quality regresses noticeably.
       model: 'claude-sonnet-4-6',
       max_tokens: 16000,
       thinking: { type: 'adaptive' },
-      output_config: { effort: 'high' },
+      output_config: { effort: 'medium' },
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       tools: MCP_TOOLS,
       messages,
