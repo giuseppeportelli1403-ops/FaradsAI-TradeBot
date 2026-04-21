@@ -47,7 +47,14 @@ export async function runWeeklyReviewAgent(): Promise<string> {
   }
 
   const response = await anthropic.messages.create({
-    model: 'claude-opus-4-6',
+    // Cost optimisation (2026-04-21): weekly review runs once per week,
+    // so absolute cost is small either way, but keeping all agents on a
+    // single model family simplifies cache-warming + reasoning about
+    // quality deltas. Sonnet 4.6 at effort 'max' produces thorough
+    // reviews; if weekly strategy tuning output regresses, revert to
+    // 'claude-opus-4-6' (highest-leverage reasoning is the review's
+    // strategy-file-edit decision, which happens once per week).
+    model: 'claude-sonnet-4-6',
     max_tokens: 16000,
     thinking: { type: 'adaptive' },
     output_config: { effort: 'max' },
