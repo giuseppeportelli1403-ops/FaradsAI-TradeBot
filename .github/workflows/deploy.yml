@@ -41,7 +41,13 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci --production=false
+        # Using `npm install` instead of `npm ci` because the repo's
+        # package-lock.json is generated on Windows and omits sql.js's
+        # Linux-specific transitive deps (@emnapi/core, @emnapi/runtime).
+        # `npm ci` rejects any lockfile drift; `npm install` tolerates it
+        # while still respecting the exact versions in package.json.
+        # Switch back to `npm ci` once a Linux-generated lockfile is committed.
+        run: npm install --no-audit --no-fund --production=false
 
       - name: TypeScript build
         run: npm run build
