@@ -103,8 +103,8 @@ Multi-Timeframe Trend Pullback with Confluence — ride dominant trends by enter
 
 ### Section 7.2: Kill Switches
 
-**Daily loss limit: 4% of account equity. Non-negotiable.**
-**Weekly loss limit: 8% of account equity. Non-negotiable.**
+**Daily loss limit: 6% of account equity. Non-negotiable.**
+**Weekly loss limit: 10% of account equity. Non-negotiable.**
 
 When triggered:
 - No new positions opened

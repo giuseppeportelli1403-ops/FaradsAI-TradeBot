@@ -59,7 +59,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const pnl = balance.profitLoss + (daily?.realised_pnl ?? 0);
       const equity = balance.balance;
       const pct = equity ? (pnl / equity) * 100 : 0;
-      return JSON.stringify({ total_daily_pnl: pnl, equity, daily_pnl_pct: Math.round(pct * 100) / 100, kill_switch_active: pct <= -4, open_positions: countOpenPositions() });
+      return JSON.stringify({ total_daily_pnl: pnl, equity, daily_pnl_pct: Math.round(pct * 100) / 100, kill_switch_active: pct <= -6, open_positions: countOpenPositions() });
     }
     case 'get_portfolio': return JSON.stringify(await capital.getOpenPositions());
     case 'get_ranked_instruments': return JSON.stringify(await getRankedInstruments(Number(input.limit) || 20));

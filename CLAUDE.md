@@ -162,7 +162,7 @@ Still pending: Blocker 6 (24h `capital.ping()` keep-alive soak) and the broader 
 1. Every trade = TWO positions (split-position method)
 2. Size per leg = (Total risk / 2) / (entry - SL)
 3. Max 3 ICT + 3 Swing positions. Combined max 5 trades (10 Capital.com positions)
-4. Daily loss kill switch: 4%. Weekly: 8%
+4. Daily loss kill switch: 6%. Weekly: 10%
 5. Minimum composite score 65 to trade
 6. Minimum R:R: 2:1 (ICT) / 3:1 (Swing)
 7. Trailing stops only on Tier 1 (score 80+)
