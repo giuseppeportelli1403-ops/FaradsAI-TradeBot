@@ -1,9 +1,16 @@
 // Scheduler — Candle Close Detection + Split-Position Monitoring + Agent Triggers
 // The central nervous system that triggers all 6 agents at the right times.
 //
-// Capital.com executes SL/TP and trailing stops server-side, so the local
-// monitoring loop is ONLY responsible for our custom split-position logic:
-//   "When Position A hits TP1, move Position B's SL to break-even."
+// Capital.com executes SL/TP server-side, so the local monitoring loop is
+// ONLY responsible for our custom 3-leg split-position logic:
+//   Leg A hits TP1 → move Leg B + Leg C SL to break-even (entry)
+//   Leg B hits TP2 → move Leg C SL to TP1 level (trailing lock-in)
+//   Leg C hits TP3 → trade complete, trigger reflection
+//   Any leg hits SL → update status, finalise if all legs are closed
+//
+// (Upgraded from 2-leg to 3-leg on 2026-04-21. Legacy 2-leg trades without
+// position_c_id are still supported — handleTp1Hit and downstream handlers
+// null-check position_c_id before attempting to move it.)
 //
 // Every 8 minutes we ping the Capital.com session to keep it warm (their
 // tokens idle out around 10 minutes).
@@ -24,10 +31,11 @@ import { CapitalClient } from '../mcp-server/capital-client.js';
 import {
   alertTp1Hit as realAlertTp1Hit,
   alertTp2Hit as realAlertTp2Hit,
+  alertTp3Hit as realAlertTp3Hit,
   alertSlHit as realAlertSlHit,
   alertSystemWarning as realAlertSystemWarning,
 } from '../notifications/telegram.js';
-import type { CapitalPosition, Activity, TradeRecord } from '../types.js';
+import type { CapitalPosition, Activity, TradeRecord, TradeStatus } from '../types.js';
 
 const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
@@ -52,6 +60,7 @@ export interface MonitorDeps {
   updateTradeStatus: typeof realUpdateTradeStatus;
   alertTp1Hit?: typeof realAlertTp1Hit;
   alertTp2Hit?: typeof realAlertTp2Hit;
+  alertTp3Hit?: typeof realAlertTp3Hit;   // NEW (3-leg): fired on Leg C TP
   alertSlHit?: typeof realAlertSlHit;
 }
 
@@ -140,6 +149,7 @@ function defaultMonitorDeps(): MonitorDeps {
     updateTradeStatus: realUpdateTradeStatus,
     alertTp1Hit: realAlertTp1Hit,
     alertTp2Hit: realAlertTp2Hit,
+    alertTp3Hit: realAlertTp3Hit,
     alertSlHit: realAlertSlHit,
   };
 }
@@ -148,9 +158,7 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
   const d = deps ?? defaultMonitorDeps();
 
   const activeOrders = d.getActiveSlTpOrders();
-  // We only act on leg A — leg B's SL is managed by Capital after we move it to BE.
-  const legAOrders = activeOrders.filter((o) => o.leg === 'A');
-  if (legAOrders.length === 0) return;
+  if (activeOrders.length === 0) return;
 
   // Fetch open positions + activity history once per tick to avoid hammering the API.
   let openPositions: CapitalPosition[];
@@ -167,23 +175,28 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
 
   const openDealIds = new Set(openPositions.map((p) => p.position.dealId));
 
+  // 3-leg monitor: split the already-fetched activeOrders by leg and iterate
+  // each in its own pass. Each handler (handleTp1Hit / handleTp2Hit / etc.)
+  // deactivates the closed row internally, so we don't need to re-query
+  // between passes. handleSlOnLeg queries fresh to check cross-leg state
+  // when deciding whether the trade is fully closed.
+  //
+  // Legacy 2-leg trades have no Leg C row in sl_tp_orders, so the third
+  // pass is naturally a no-op for them.
+  const legAOrders = activeOrders.filter((o) => o.leg === 'A');
+  const legBOrders = activeOrders.filter((o) => o.leg === 'B');
+  const legCOrders = activeOrders.filter((o) => o.leg === 'C');
+
+  // ---------- Pass 1: Leg A ----------
   for (const order of legAOrders) {
-    if (!order.deal_id) {
-      // Legacy or malformed row — nothing we can do without a dealId.
-      continue;
-    }
-
+    if (!order.deal_id) continue;
     try {
-      if (openDealIds.has(order.deal_id)) {
-        // Position A still open; nothing to do.
-        continue;
-      }
+      if (openDealIds.has(order.deal_id)) continue;
 
-      // Position A is no longer open — Capital closed it (SL or TP hit).
       const reason = classifyCloseReason(activities, order.deal_id);
       const trade = d.getTradeById(order.trade_id);
       if (!trade) {
-        console.warn(`[Monitor] Trade ${order.trade_id} not found for closed leg A`);
+        console.warn(`[Monitor] Trade ${order.trade_id} not found for closed Leg A`);
         d.deactivateSlTpOrder(order.trade_id, 'A');
         continue;
       }
@@ -191,57 +204,78 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
       if (reason === 'TP') {
         await handleTp1Hit(trade, order.trade_id, d);
       } else if (reason === 'SL') {
-        await handleLegAClosed(trade, order.trade_id, 'sl_hit', d);
+        await handleSlOnLeg(trade, order.trade_id, 'A', d);
       } else {
-        // Unknown close reason — still mark leg A inactive so we don't loop on it.
-        // Do NOT touch trade status; a human/later tick can investigate.
         console.warn(
           `[Monitor] Leg A for trade ${order.trade_id} (deal ${order.deal_id}) ` +
-            `closed but reason could not be classified. Deactivating leg A only.`,
+            `closed but reason could not be classified. Deactivating Leg A only.`,
         );
         d.deactivateSlTpOrder(order.trade_id, 'A');
       }
     } catch (error) {
-      console.error(`[Monitor] Error processing leg A for trade ${order.trade_id}:`, error);
+      console.error(`[Monitor] Error processing Leg A for trade ${order.trade_id}:`, error);
     }
   }
 
-  // Second pass: if leg B is still marked active in our DB but is no longer
-  // open on Capital, the trade is fully closed — promote to 'complete'.
-  const legBOrders = d.getActiveSlTpOrders().filter((o) => o.leg === 'B');
+  // ---------- Pass 2: Leg B ----------
   for (const order of legBOrders) {
     if (!order.deal_id) continue;
-    if (openDealIds.has(order.deal_id)) continue;
-
-    const trade = d.getTradeById(order.trade_id);
-    if (!trade) {
-      d.deactivateSlTpOrder(order.trade_id, 'B');
-      continue;
-    }
-
-    const reason = classifyCloseReason(activities, order.deal_id);
-    const status = reason === 'TP' ? 'complete' : reason === 'SL' ? 'sl_hit' : 'complete';
-    d.updateTradeStatus(order.trade_id, status);
-    d.deactivateSlTpOrder(order.trade_id, 'B');
-
     try {
-      if (status === 'complete') {
-        if (d.alertTp2Hit) await d.alertTp2Hit(trade);
-      } else {
-        if (d.alertSlHit) await d.alertSlHit(trade);
-      }
-    } catch (e) {
-      console.error('[Monitor] Telegram alert for leg B close failed:', e);
-    }
+      if (openDealIds.has(order.deal_id)) continue;
 
-    // Trigger reflection once both legs are closed. Skip when deps were
-    // injected (tests don't want side effects from the agent runner).
-    if (!deps) {
-      setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
+      const reason = classifyCloseReason(activities, order.deal_id);
+      const trade = d.getTradeById(order.trade_id);
+      if (!trade) {
+        d.deactivateSlTpOrder(order.trade_id, 'B');
+        continue;
+      }
+
+      if (reason === 'TP') {
+        await handleTp2Hit(trade, order.trade_id, d);
+      } else {
+        // SL or OTHER: B exited at its SL (entry after TP1, or original SL if A hit SL first).
+        await handleSlOnLeg(trade, order.trade_id, 'B', d);
+      }
+    } catch (error) {
+      console.error(`[Monitor] Error processing Leg B for trade ${order.trade_id}:`, error);
+    }
+  }
+
+  // ---------- Pass 3: Leg C ----------
+  for (const order of legCOrders) {
+    if (!order.deal_id) continue;
+    try {
+      if (openDealIds.has(order.deal_id)) continue;
+
+      const reason = classifyCloseReason(activities, order.deal_id);
+      const trade = d.getTradeById(order.trade_id);
+      if (!trade) {
+        d.deactivateSlTpOrder(order.trade_id, 'C');
+        continue;
+      }
+
+      if (reason === 'TP') {
+        await handleTp3Hit(trade, order.trade_id, d);
+        // Full positive outcome — reflection fires once all 3 legs are closed
+        // (which they are after handleTp3Hit deactivates C).
+        if (!deps) {
+          setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
+        }
+      } else {
+        // SL or OTHER on Leg C: trailing SL at TP1 triggered, or just a normal SL.
+        await handleSlOnLeg(trade, order.trade_id, 'C', d);
+        if (!deps) {
+          setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
+        }
+      }
+    } catch (error) {
+      console.error(`[Monitor] Error processing Leg C for trade ${order.trade_id}:`, error);
     }
   }
 }
 
+/** Leg A closed at TP1 → partial profit taken, move B+C SL to break-even
+ *  (entry price) so the remaining profit legs are risk-free. */
 export async function handleTp1Hit(
   trade: TradeRecord,
   tradeId: string,
@@ -255,11 +289,20 @@ export async function handleTp1Hit(
   if (trade.position_b_id) {
     try {
       await d.capital.updatePosition(trade.position_b_id, { stopLevel: trade.entry });
-      console.log(
-        `[TP1] ${trade.instrument} — Position B SL moved to break-even (${trade.entry})`,
-      );
+      console.log(`[TP1] ${trade.instrument} — Position B SL moved to BE (${trade.entry})`);
     } catch (error) {
       console.error(`[TP1] Failed to move Position B SL to BE for ${tradeId}:`, error);
+    }
+  }
+
+  // Move Position C's SL to break-even too (3-leg). Legacy 2-leg trades
+  // without position_c_id skip this step silently.
+  if (trade.position_c_id) {
+    try {
+      await d.capital.updatePosition(trade.position_c_id, { stopLevel: trade.entry });
+      console.log(`[TP1] ${trade.instrument} — Position C SL moved to BE (${trade.entry})`);
+    } catch (error) {
+      console.error(`[TP1] Failed to move Position C SL to BE for ${tradeId}:`, error);
     }
   }
 
@@ -270,25 +313,113 @@ export async function handleTp1Hit(
   }
 }
 
-export async function handleLegAClosed(
+/** Leg B closed at TP2 → Position A + B both done at profit.
+ *  3-leg trades: move Position C's SL to TP1 level (trailing lock-in) and
+ *  leave status at 'tp2_hit' while C runs.
+ *  Legacy 2-leg trades (no position_c_id): finalise the trade to 'complete'
+ *  since there's no Leg C to wait on. The Telegram alert message adapts via
+ *  its `trade.closed_at` check. */
+export async function handleTp2Hit(
   trade: TradeRecord,
   tradeId: string,
-  status: 'sl_hit',
   deps?: MonitorDeps,
 ): Promise<void> {
   const d = deps ?? defaultMonitorDeps();
-  // Leg A SL-hit before TP1. Capital already closed it; we just record the state.
-  d.updateTradeStatus(tradeId, status);
-  d.deactivateSlTpOrder(tradeId, 'A');
+  d.deactivateSlTpOrder(tradeId, 'B');
 
-  try {
-    if (d.alertSlHit) await d.alertSlHit(trade);
-  } catch (e) {
-    console.error('[Monitor] Telegram SL alert failed:', e);
+  // Legacy 2-leg path — no Leg C, trade is fully done.
+  if (!trade.position_c_id) {
+    d.updateTradeStatus(tradeId, 'complete');
+    try {
+      if (d.alertTp2Hit) await d.alertTp2Hit(trade);
+    } catch (e) {
+      console.error('[Monitor] Telegram TP2 (legacy 2-leg) alert failed:', e);
+    }
+    return;
   }
 
-  // If Position B is also gone from open positions, reflection fires in the
-  // second pass above — nothing else to do here.
+  // 3-leg path — intermediate milestone. C still running with trailing SL.
+  d.updateTradeStatus(tradeId, 'tp2_hit');
+  try {
+    await d.capital.updatePosition(trade.position_c_id, { stopLevel: trade.tp1 });
+    console.log(
+      `[TP2] ${trade.instrument} — Position C SL moved to TP1 trailing level (${trade.tp1})`,
+    );
+  } catch (error) {
+    console.error(`[TP2] Failed to trail Position C SL to TP1 for ${tradeId}:`, error);
+  }
+
+  try {
+    if (d.alertTp2Hit) await d.alertTp2Hit(trade);
+  } catch (e) {
+    console.error('[Monitor] Telegram TP2 alert failed:', e);
+  }
+}
+
+/** Leg C closed at TP3 → full trade completion at maximum gain.
+ *  Mark trade complete and fire the TP3 alert. Reflection triggers in the
+ *  calling pass. */
+export async function handleTp3Hit(
+  trade: TradeRecord,
+  tradeId: string,
+  deps?: MonitorDeps,
+): Promise<void> {
+  const d = deps ?? defaultMonitorDeps();
+  d.updateTradeStatus(tradeId, 'complete');
+  d.deactivateSlTpOrder(tradeId, 'C');
+
+  try {
+    if (d.alertTp3Hit) await d.alertTp3Hit(trade);
+    else if (d.alertTp2Hit) await d.alertTp2Hit(trade); // fallback if alertTp3Hit not wired
+  } catch (e) {
+    console.error('[Monitor] Telegram TP3 alert failed:', e);
+  }
+}
+
+/** A leg hit its SL. The meaning varies by leg:
+ *   Leg A SL = trade stopped out before any TP hit (worst case — full loss).
+ *   Leg B SL = B stopped at BE after A hit TP1 (partial profit realised on A, 0 on B).
+ *   Leg C SL = C stopped at TP1 trailing after A+B TPs (partial profit on C too).
+ *
+ *  We deactivate the closed leg, update pnl status, and finalise the trade
+ *  to 'complete' or 'sl_hit' based on whether any TP was reached earlier.
+ *  The alert variant we fire depends on the trade.status before this SL event. */
+export async function handleSlOnLeg(
+  trade: TradeRecord,
+  tradeId: string,
+  leg: 'A' | 'B' | 'C',
+  deps?: MonitorDeps,
+): Promise<void> {
+  const d = deps ?? defaultMonitorDeps();
+  d.deactivateSlTpOrder(tradeId, leg);
+
+  // If any other legs are still active, don't finalise the trade yet —
+  // later passes (this tick or future ticks) will detect them closing.
+  const stillActive = d.getActiveSlTpOrders().filter((o) => o.trade_id === tradeId);
+  if (stillActive.length > 0) {
+    // Interim SL — trade not fully closed yet. Don't alert yet.
+    console.log(
+      `[SL] Leg ${leg} for trade ${tradeId} hit SL; ${stillActive.length} leg(s) still active, waiting.`,
+    );
+    return;
+  }
+
+  // All legs closed. Final status: 'complete' if any TP was reached, 'sl_hit' if pure loss.
+  const anyTpHit = trade.status === 'tp1_hit' || trade.status === 'tp2_hit';
+  const finalStatus: TradeStatus = anyTpHit ? 'complete' : 'sl_hit';
+  d.updateTradeStatus(tradeId, finalStatus);
+
+  try {
+    if (finalStatus === 'sl_hit') {
+      if (d.alertSlHit) await d.alertSlHit(trade);
+    } else {
+      // Partial-win close — use alertTp2Hit which already describes a
+      // completed trade with P&L. (alertTp3Hit is reserved for full TP3 wins.)
+      if (d.alertTp2Hit) await d.alertTp2Hit(trade);
+    }
+  } catch (e) {
+    console.error('[Monitor] Telegram SL-close alert failed:', e);
+  }
 }
 
 // ==================== KEEP-ALIVE ====================

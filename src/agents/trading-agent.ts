@@ -197,14 +197,27 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
     case 'log_trade': {
       const trade = JSON.parse(input.trade_data as string);
       insertTrade(trade);
-      createSlTpOrder({ trade_id: trade.id, leg: 'A', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_a, sl_price: trade.sl, tp_price: trade.tp1 });
-      createSlTpOrder({ trade_id: trade.id, leg: 'B', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_b, sl_price: trade.sl, tp_price: trade.tp2 });
+      // Leg A (TP1 target) — always present.
+      createSlTpOrder({ trade_id: trade.id, leg: 'A', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_a, sl_price: trade.sl, tp_price: trade.tp1, deal_id: trade.position_a_id });
+      // Leg B (TP2 target) — always present.
+      createSlTpOrder({ trade_id: trade.id, leg: 'B', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_b, sl_price: trade.sl, tp_price: trade.tp2, deal_id: trade.position_b_id });
+      // Leg C (TP3 target) — 3-leg trades only. The agent may legitimately
+      // omit size_c / position_c_id / tp3 for a legacy 2-leg trade; don't
+      // create a Leg C row in that case.
+      if (trade.size_c !== undefined && trade.size_c !== null && trade.tp3 !== undefined && trade.tp3 !== null) {
+        createSlTpOrder({ trade_id: trade.id, leg: 'C', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_c, sl_price: trade.sl, tp_price: trade.tp3, deal_id: trade.position_c_id });
+      }
       await alertTradePlaced(trade);
       return JSON.stringify({ status: 'logged', trade_id: trade.id });
     }
     case 'update_sl':
+      // Update all legs present. updateSlPrice matches on (trade_id, leg,
+      // is_active=1), so legs that don't exist (e.g. Leg C on a legacy
+      // 2-leg trade, or Leg A/B after they've been deactivated by TP close)
+      // are silent no-ops. Cheap to call all three defensively.
       updateSlPrice(input.trade_id as string, 'A', Number(input.new_sl));
       updateSlPrice(input.trade_id as string, 'B', Number(input.new_sl));
+      updateSlPrice(input.trade_id as string, 'C', Number(input.new_sl));
       return JSON.stringify({ status: 'updated' });
     case 'close_position':
       return JSON.stringify(await capital.closePosition(input.dealId as string));

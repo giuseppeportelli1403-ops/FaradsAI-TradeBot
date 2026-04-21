@@ -86,8 +86,11 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
     case 'log_trade': {
       const trade = JSON.parse(input.trade_data as string);
       insertTrade(trade);
-      createSlTpOrder({ trade_id: trade.id, leg: 'A', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_a, sl_price: trade.sl, tp_price: trade.tp1 });
-      createSlTpOrder({ trade_id: trade.id, leg: 'B', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_b, sl_price: trade.sl, tp_price: trade.tp2 });
+      createSlTpOrder({ trade_id: trade.id, leg: 'A', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_a, sl_price: trade.sl, tp_price: trade.tp1, deal_id: trade.position_a_id });
+      createSlTpOrder({ trade_id: trade.id, leg: 'B', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_b, sl_price: trade.sl, tp_price: trade.tp2, deal_id: trade.position_b_id });
+      if (trade.size_c !== undefined && trade.size_c !== null && trade.tp3 !== undefined && trade.tp3 !== null) {
+        createSlTpOrder({ trade_id: trade.id, leg: 'C', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_c, sl_price: trade.sl, tp_price: trade.tp3, deal_id: trade.position_c_id });
+      }
       await alertTradePlaced(trade);
       return JSON.stringify({ status: 'logged', trade_id: trade.id });
     }
