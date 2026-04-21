@@ -526,9 +526,11 @@ export function startScheduler(): void {
     await safeRun('Swing Trading Agent (weekly outlook)', runSwingAgent);
   });
 
-  // Every 2 hours during active sessions (07:00–20:00 UTC) Mon-Fri: Swing management.
-  // Doubled from 4H to catch more swing setups forming across timeframes.
-  cron.schedule('0 7,9,11,13,15,17,19 * * 1-5', async () => {
+  // Swing management at 3 high-signal session boundaries: London Open (08),
+  // NY Open (13), London Close (17). Dropped from 7 fires/day on 2026-04-21
+  // cost cut — the intermediate 2H slots (09/11/15/19) rarely produced new
+  // Swing decisions and mostly re-ran management on existing positions.
+  cron.schedule('0 8,13,17 * * 1-5', async () => {
     await safeRun('Swing Trading Agent (management)', runSwingAgent);
   });
 
@@ -544,6 +546,6 @@ export function startScheduler(): void {
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
   console.log('  30 21 * * 1-5         — Swing Agent (daily)');
   console.log('  0 6 * * 1             — Swing Agent (weekly outlook)');
-  console.log('  0 7,9,11,13,15,17,19 * * 1-5 — Swing Agent (2H management)');
+  console.log('  0 8,13,17 * * 1-5     — Swing Agent (session-boundary management)');
   console.log('  0 0 * * 0             — Weekly Review Agent');
 }
