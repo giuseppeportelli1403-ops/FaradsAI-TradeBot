@@ -27,6 +27,7 @@ import {
   updateTradeStatus as realUpdateTradeStatus,
   getTradeById as realGetTradeById,
 } from '../database/index.js';
+import { getCurrentKillZone } from '../scanner/index.js';
 import { CapitalClient } from '../mcp-server/capital-client.js';
 import {
   alertTp1Hit as realAlertTp1Hit,
@@ -480,6 +481,19 @@ export function startScheduler(): void {
     const new1h = await check1hCandleClose();
 
     if (new15m || new1h) {
+      // Cost gate (2026-04-21): ICT strategy only produces setups inside
+      // kill zones. Outside those windows the agent reliably decides
+      // NO TRADE ("outside kill zone" / "sub-threshold scores") after
+      // burning a full Claude cycle. Skip at the scheduler level to save
+      // ~20 cycles/day × ~$1 each.
+      const kz = getCurrentKillZone();
+      if (!kz.inKillZone) {
+        console.log(
+          `[Scheduler] Candle close at ${new Date().toISOString()} — ` +
+            `skipping ICT cycle (outside kill zone: ${kz.zone})`,
+        );
+        return;
+      }
       await safeRun('ICT Trading Agent', runTradingAgent);
     }
   });
@@ -497,11 +511,10 @@ export function startScheduler(): void {
     await safeRun('Market Researcher (weekly)', runResearcherAgent);
   });
 
-  // ICT agent triggered at every 4H candle close during active sessions Mon-Fri.
-  // Covers Asian close (04:00), London open (08:00), NY open (12:00), London close (16:00), NY close (20:00).
-  cron.schedule('0 4,8,12,16,20 * * 1-5', async () => {
-    await safeRun('ICT Trading Agent (4H trigger)', runTradingAgent);
-  });
+  // (4H ICT cron removed 2026-04-21 — redundant with the */5 min + candle-close
+  // detection, which already fires at the 4H boundaries. Cost cut, no behavior
+  // regression — every hour the 4H cron covered is also a 1H boundary the */5
+  // cron detects and acts on.)
 
   // Daily at 21:30 UTC: Swing Agent (after US close)
   cron.schedule('30 21 * * 1-5', async () => {
@@ -529,7 +542,6 @@ export function startScheduler(): void {
   console.log('  */8 * * * *           — Capital.com session keep-alive ping');
   console.log('  30 5 * * *            — Market Researcher (daily pre-London)');
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
-  console.log('  0 4,8,12,16,20 * * 1-5 — ICT Agent (4H candle close trigger)');
   console.log('  30 21 * * 1-5         — Swing Agent (daily)');
   console.log('  0 6 * * 1             — Swing Agent (weekly outlook)');
   console.log('  0 7,9,11,13,15,17,19 * * 1-5 — Swing Agent (2H management)');
