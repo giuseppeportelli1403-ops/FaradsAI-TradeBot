@@ -1,181 +1,123 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-21 (Day 2 afternoon — paid Twelve Data Grow active, TD symbol mapper shipped, bot healthy)
+Last updated: 2026-04-21 (end of Day 2 — 9 PRs shipped, cost optimised, auto-deploy live)
 Project: BetterOpsAI Trading Bot ("Farad")
-Branch: master (pushed to https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
-Last commit: 0d0d62a — "fix(market-data): map Farad tickers to Twelve Data symbol format"
+Branch: **master** (now the default; `main` deleted today. Repo: https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
+Last commit on master: `d7ed32a` — "perf: tighten iteration + output-token caps; swap AAPL/US30 for OIL/SILVER"
+VPS head: `d7ed32a` (same as master — auto-deploy working)
+pm2 state: restart #16, PID 50271, online
 
-## 🚨 MAJOR BUG FIX THIS MORNING
-The scanner was SILENTLY FAILING on 15/20 instruments since forever. Twelve Data returns HTTP 404 for broker-style tickers ("EURUSD", "US30", "DE40"); needs "EUR/USD", "DJIA", "DAX". The scanner's `catch { return null }` was swallowing those as "bias neutral", making it look like those instruments were legit-excluded when in reality they never got data. Surfaced when Grow tier key was rotated in — paid API returned cleaner errors than free.
+## 🌅 FIRST THING TO READ NEXT SESSION
 
-**Fix:** `_mapToTwelveDataSymbol()` in market-data.ts (commit `0d0d62a`). Verified by hand against all 20 tickers. 129/129 tests green.
+**Bot is fully configured and running on its leanest production setup.** 9 PRs merged today across infrastructure, architecture, and cost. Nothing pending. Key items to be aware of:
 
-## 💳 PAID TWELVE DATA GROW ACTIVE
-Giuseppe paid $79/mo mid-demo after Day 2's zero-trades was traced to free-tier exhaustion by 01:00 UTC. New key rotated into VPS .env at 08:19 UTC. 5,000 credits/day ceiling (vs 800). Expected burn with scanner cache + symbol mapper: ~800-1,200 credits/day → ~6× headroom.
+1. **Auto-deploy is live.** Push to master (via PR + admin merge) triggers CI + SSH + pm2 restart in ~90 seconds. No more manual `pm2 restart` trips.
+2. **Branch protection + ruleset active on master.** Direct pushes blocked (except admin override). Justin opens PRs, Giuseppe reviews/approves/merges.
+3. **All agents on Claude Sonnet 4.6.** Zero Opus usage in production code. Expected daily burn €8-18.
+4. **3-leg split-position is live** — schema, monitor, alerts, and prompts all aligned. Orphan-trade bug from Day 1 is eliminated.
+5. **10-instrument universe** — tight-spread core only (4 FX majors, 3 indices, 3 commodities).
 
-## ✅ LATEST — DEMO_RELAXED_GATES live on VPS as of 07:44 UTC
+## 📋 What shipped today (9 PRs)
 
-- VPS restart #4, pm2 PID 43916, healthy
-- `.env` line `DEMO_RELAXED_GATES=true` set + confirmed in startup log
-- Bot deployed mid-London-Open (07:00-10:00 UTC window)
-- 123/123 tests green, commit `4c580f7`, architecture spec for offline-replay deferred
+| PR | Commit | Purpose |
+|---|---|---|
+| 1 | `2bfc0e1` | CI npm install fix + revert "No position cap" agent hint |
+| 2 | `b726086` | CODEOWNERS (auto-route PRs to Giuseppe) |
+| 3 | `d26d217` | pull_request trigger for CI (fixes required-status-check chicken-egg) |
+| 4 | `475f2d7` | **3-leg architecture** (schema + monitor + alerts + agent log_trade; 5 phases, 660+ LOC) |
+| 5 | `7ff76cd` | Remove Asian Open kill zone + 02:30 UTC researcher |
+| 6 | `cb52f40` | ICT Opus→Sonnet, ICT effort→medium, drop 4H cron, skip out-of-killzone |
+| 7 | `d416a7c` | All Opus → Sonnet (Swing + Review) |
+| 8 | `4d51387` | Universe 25→10 + Swing mgmt 7×→3× + Swing effort→medium |
+| 9 | `d7ed32a` | maxIter 15→8, max_tokens 16k→12k, swap AAPL/US30 for OIL/SILVER |
 
-**What changed in behaviour right now:**
-- Scanner kill-zone bonus outside kill zones: 0 → +10 (strong off-hours setups can clear Tier 2)
-- Tier 3 bracket active for composite score 50-64 at 0.5% risk
-- R:R minimum dropped to 1.5:1 for tight-spread symbols (EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD, US100, US500, US30, DE40, AAPL, MSFT, NVDA, AMZN, GOOGL, META)
-- Unchanged hard guards: daily 4% kill switch, weekly 8%, coordination lock, split-position method, live-trade gate
+Every PR: CI-tested, admin-merged, auto-deployed. Zero direct pushes to master.
 
-**Expected trade rate with gates relaxed:** 3-5 trades/week (vs 0.8-2.3 before). First evidence should land within the next ~8 hours (today's London Open + NY Open windows). Telegram buzz on any 🟢 trade open.
+## 🎯 Final production config
 
-**Revert path if Giuseppe changes his mind:** `ssh bot@162.55.212.198 'sed -i "s/^DEMO_RELAXED_GATES=true/DEMO_RELAXED_GATES=false/" /home/bot/trading-bot/.env && pm2 restart trading-bot --update-env'`. No code change needed.
+**Agents — all Claude Sonnet 4.6:**
+| Agent | Effort | maxIter | max_tokens |
+|---|---|---|---|
+| ICT | medium | 8 | 12,000 |
+| Swing | medium | 8 | 12,000 |
+| Review | max | — | 12,000 |
+| Analyst | medium | — | 2,000 |
+| Reflection | high | — | 4,000 |
+| Researcher | medium | — | 1,000 |
 
----
+**Universe (10):**
+- Indices: US100, US500, DE40
+- Commodities: GOLD, SILVER, OIL_CRUDE
+- FX Majors: EURUSD, GBPUSD, USDJPY, AUDUSD
 
-## 🌅 FIRST THING TO READ WHEN YOU WAKE UP
+**Cron schedule (live):**
+```
+*/5 * * * *       ICT monitor + candle close (KILL-ZONE GATED)
+*/8 * * * *       Capital keep-alive
+30 5 * * *        Researcher daily pre-London
+0 22 * * 0        Researcher weekly
+30 21 * * 1-5     Swing daily
+0 6 * * 1         Swing weekly outlook
+0 8,13,17 * * 1-5 Swing mgmt (session boundaries: London Open / NY Open / London Close)
+0 0 * * 0         Weekly Review (Sunday)
+```
 
-Giuseppe commissioned a full deep-dive audit overnight. Deliverables:
+**Flags:**
+- `DEMO_RELAXED_GATES=true` — Tier 3 active, kill-zone bonus +10 outside, R:R 1.5:1 for tight-spread symbols
+- TD Grow paid plan active (5,000 credits/day)
 
-- **📄 Word document (what you asked for):** `audit/BENCHMARK_REPORT.docx` — 39 KB, cover page, TOC, full report + Gate Audit appendix
-- **📝 Markdown version:** `audit/BENCHMARK_REPORT.md` (498 lines)
-- **🔍 Gate audit source:** `C:\Users\user\Downloads\_benchmark\farad\GATE_AUDIT.md`
-- **📊 Per-bot inventories:** `C:\Users\user\Downloads\_benchmark\<jesse|freqtrade|backtrader|hummingbot|farad>\INVENTORY.md`
+## 💰 Cost projection
 
-**Headline:** Your fear is partially justified. Realistic trade rate = **0.8–2.3 trades/week** (one every 3–5 days), can be tripled to **3–5/week** by relaxing 3 specific gates this week. Day 1's zero trades was a **data exhaustion** problem (already fixed), NOT filter strictness. Bot will trade — just slower than your gut hopes.
+| Stage | €/day |
+|---|---|
+| Morning baseline (all Opus, 25 instruments, no gates) | 100-130 |
+| End of day config (all cuts) | **8-18** |
 
-**3 P0 actions for this week** (all detailed with exact thresholds in §5 of the report):
-1. [S, ~4h] Relax Kill Zone penalty (–15 → –5), add Tier 3 score bracket (50–64 at 0.5% risk), reduce R:R min (2:1 → 1.5:1) for tight-spread symbols. Expected: 3x trade frequency without touching kill switches.
-2. [M, ~3d] Build offline candle replay harness. Unblocks every "would this have traded?" question without burning TD credits.
-3. [S, ~1d] Approval gate on self-rewriting strategy loop. Closes the tail risk of the review agent shipping a kill-switch-disabling rule overnight.
+For the remaining 12 demo days: **~€100-220 total**. Under the €200 target Giuseppe originally budgeted for 2 weeks.
 
-**3 gates to NEVER relax:** daily 4% kill switch, ICT/Swing coordination lock, split-position method.
+Twelve Data paid tier: $79/mo ongoing.
 
-**Ask me:** "What did the bot do overnight?" — I'll pull pm2 logs and tell you exactly.
+## 🚧 Known open item — 3-leg trading behaviour unproven in live
 
----
+The 3-leg architecture (schema + monitor + Telegram) is fully implemented and tested (143 vitest cases pass including specific TP1/TP2/TP3 handler regressions). But the bot hasn't fired a real 3-leg trade yet — Day 2 passed without a qualifying setup after all the infrastructure work. First live 3-leg trade will validate the whole end-to-end chain (agent opens 3 Capital positions → log_trade records A+B+C → monitor tracks → TP1 moves B+C to BE → etc.).
 
+**Watch tomorrow's Telegram for** 🟢 *NEW TRADE* showing Leg A/B/C with TP1/TP2/TP3 R:R.
 
-## What We Did This Session
+## 🛡️ Infrastructure state
 
-Giuseppe returned to a bot that had spent demo-day-1 (2026-04-20) producing
-no trades because of two data-source problems + a structural budget problem
-with the Twelve Data free tier. We diagnosed, fixed, and deployed four
-commits — the bot is now overnight-ready for demo day 2.
+- **Branch protection on master:** PR required, 1 approval required, required `Build + Test` status check, no force-push, no delete
+- **Ruleset blocking `main` recreation:** active
+- **GitHub Pro:** active (€4/mo for private-repo branch protection)
+- **Auto-deploy:** GitHub Actions `.github/workflows/deploy.yml` — CI test gate + restricted-command SSH deploy key
+- **Deploy key on VPS:** `~/.ssh/github_deploy` (never leaves VPS). `authorized_keys` has `command="/home/bot/deploy.sh"` restriction
+- **3 secrets in GitHub:** VPS_HOST, VPS_USER, VPS_SSH_KEY
+- **CODEOWNERS:** `* @giuseppeportelli1403-ops`
 
-### Fix 1 — yahoo-finance2 v3 instantiation bug
-- VPS had `yahoo-finance2@3.14.0` installed; v3 dropped the singleton default
-  export. Sector-strength calls were throwing `Call const yahooFinance = new YahooFinance() first`.
-- Migrated `src/mcp-server/market-data.ts:12` to `import YahooFinance` + module-
-  level `const yahooFinance = new YahooFinance()`.
-- Side-effect: v3 warns about Node ≥22 (VPS is 20.20.2). Advisory only;
-  library works. Saved to memory as a "watch if sector data gets weird" signal.
-- Commit: **478a104** `fix(market-data): migrate yahoo-finance2 to v3 instantiation`
+## 🤝 Justin's merge — what survived vs what got reverted
 
-### Fix 2 — Twelve Data daily-cap circuit breaker
-- Root cause: Twelve Data signals credit exhaustion via HTTP 200 +
-  `{status:'error', message:'...out of API credits...'}` — TokenBucket caught
-  nothing because nothing looked wrong at the transport layer. Each retry still
-  incremented TD's counter, burning 1,089 post-cap credits on day 1.
-- Added module-level breaker state + `isDailyCapTripped()` short-circuit at
-  top of `fetchCandles()`. Trips on regex match against error message or real
-  HTTP 429 (defensive). Auto-resets at UTC midnight (TD's reset boundary).
-- Added 4 vitest cases covering the exact production error string, short-
-  circuit behaviour, non-triggering on unrelated errors, and HTTP 429 fallback.
-- **Verified in production at 22:00:17 UTC** — breaker fired against the
-  still-exhausted counter and successfully blocked further network hits.
-- Commit: **3dc2da7** `feat(market-data): add Twelve Data daily-cap circuit breaker`
+From Justin's commit `9e095b0` (merged PR #67e67d9 earlier today):
 
-### Root-cause analysis — why 800 credits evaporated by 14:00 UTC
-- Two Explore agents in parallel mapped the scanner + agent call chain.
-- Smoking gun: `getRankedInstruments()` in `src/scanner/index.ts` fanning out
-  20 × `fetchCandles('1h', 30)` per call = 20 TD credits × every ICT cycle
-  (~every 15 min during market hours) = 480–1,200 credits/day from ranking alone.
-- Full budget: ~1,400–1,600 credits/day vs 800 cap. Cap was always going to blow.
+**Kept in production:** 3-leg architecture (now code-complete), backtest engine, Tier 2 at 60, Tier 3 permanent at 50, outside kill-zone bonus +5, scanner cache TTL 15 min, per-instrument coordination lock, ICT + Swing prompt updates.
 
-### Fix 3 — Scanner hourly caching (Option 1, demo-time throttle)
-- Added module-level ranking cache, keyed by `(at, zone, results)`.
-- TTL: 60 min. Invalidates early on kill-zone transitions (07/10/13/15/16/17 UTC)
-  so killZone score bonus stays accurate.
-- Expected burn: ~100–160 credits/day from ranking (~75% reduction).
-- Giuseppe's explicit framing: "we will do no 1 [hourly scanner] when the bot
-  leaves the demo i want you to remind about this change so then i will pay the 80".
-  Memory flag added: `project_farad_demo_end_todo.md` — raise scanner revert +
-  Twelve Data Grow decision proactively at demo end (~2026-05-04).
-- Commit: **42e4215** `perf(scanner): cache rankings hourly to fit Twelve Data free tier`
+**Reverted during cost work:** Asian Open kill zone + 02:30 researcher (PR #5), 4H ICT cron (PR #6), Swing mgmt 7×/day (PR #8 back to 3×), "No position cap" agent hint (PR #1), 25-instrument universe (PR #8 trimmed to 10).
 
-### Fix 4 — Telegram alert on trade-open
-- Gap discovered by Explore agent: `alertTradePlaced()` existed in
-  `src/notifications/telegram.ts:43` but was never called. Both agents logged
-  trades to DB silently. User's phone only buzzed on position *close* events.
-- Wired `await alertTradePlaced(trade)` into both ICT and Swing agents'
-  `log_trade` case (`trading-agent.ts:200`, `swing-agent.ts:89`).
-- Motivation: Giuseppe is going to sleep; he wants his phone to buzz the
-  moment the bot opens a position overnight.
-- Commit: **073d04f** `feat(notifications): fire Telegram alert when a trade is opened`
+**Replaced:** Justin's deploy workflow (no CI gate, no restricted key) replaced with our CI-gated workflow.
 
-## Current State — All four fixes deployed & live
-- ✅ **VPS:** PID 41463, pm2 restart counter at 3, uptime clean, 12.9mb→99mb
-  on startup (normal), preflight + Capital.com + DB + Telegram + Scheduler ✓
-- ✅ **Tests:** 117/117 green (was 113 + 4 new breaker tests)
-- ✅ **Build:** `tsc` clean on laptop and VPS
-- ✅ **GitHub:** origin/master up-to-date (4 commits ahead of start of session)
-- ✅ **Breaker verified in production** (fired at 22:00:17 UTC)
-- ⏳ **Demo day 2 (2026-04-21):** starts fresh at UTC midnight. London Open
-  07:00 UTC, NY Open 13:00 UTC. Scanner will burn ~160 credits/day max.
+Justin's real contributions (3-leg + backtest engine) survived. His risky behavioural changes (Asian sprawl, no-cap hint, 7×/day mgmt) were walked back.
 
-## Decisions Made This Session
+## 📚 Reference docs (all in `audit/`)
 
-- **Option 1 over Option 3 for demo phase.** Chose scanner throttling (free)
-  over paid Twelve Data plan ($79/mo Grow). Giuseppe's reasoning: test on free
-  infra first; pay only when demo proves the bot trades well.
-- **Proactive reminder pattern.** New workflow: when Giuseppe defers a decision
-  to a future event (demo end, live flip), save a project-type memory with
-  trigger conditions so the next session can raise it without being asked.
-- **Atomic commits per logical unit** — four commits this session, each
-  independently green for bisect. Same pattern as the prior session.
-- **Mid-demo fix posture** — "research first, show proposed diffs, then touch
-  live-path code." Used Explore agents for mapping before edits on both rounds.
+- `audit/BENCHMARK_REPORT.md` / `.docx` — full benchmark vs Jesse/Freqtrade/Backtrader/Hummingbot (498 lines)
+- `audit/ARCHITECTURE_offline_replay.md` / `.docx` — architecture spec for offline backtest harness (~700 lines, option (C) from the 3-leg decision — Justin ended up building this separately and we merged it)
+- `audit/build_docx.py` / `build_architecture_docx.py` — pypandoc scripts to regenerate .docx from .md
 
-## Next Steps — for Giuseppe on return
+## 🚦 Next session priorities
 
-### Immediate (morning debrief)
-1. Check Telegram — if the bot opened any positions overnight, the 🟢 alert
-   will be in your chat history with full entry/SL/TP details.
-2. When you open Claude Code, ask: **"what did the bot do overnight?"** — I'll
-   pull VPS logs, count cycles, show decisions, report any trade activity.
-3. If no trade fired during London or NY Open, dig into the agent reasoning
-   to see if it's being too risk-averse for demo pace.
+1. **Check tomorrow morning:** `"what did the bot do overnight?"` — pull pm2 logs, confirm kill-zone gate is skipping dead hours
+2. **First 3-leg live trade** will be the infrastructure validation moment
+3. **Anthropic dashboard** — confirm daily burn lands at €8-18 (steady state after today's dev restarts settle)
+4. **Twelve Data dashboard** — confirm paid tier is working normally, no cap-exhaust errors
+5. **Review agent Sunday 00:00 UTC** — first post-3-leg-upgrade weekly review
 
-### This week (demo continues through 2026-05-04)
-4. Let the scheduler run. Cached scanner should keep credit burn well under 800/day.
-5. Watch for the first real TP1 event — needed to verify `handleTp1Hit` moves
-   Position B's SL to break-even on Capital's side (gate #2 for going live).
-6. Weekly Review Agent fires Sunday 00:00 UTC — read its output Monday morning.
+## 🧘 Session close state
 
-### At demo end (~2026-05-04)
-7. Claude will proactively raise (per `project_farad_demo_end_todo.md`):
-   - Revert scanner throttle if Twelve Data Grow is purchased
-   - Consider Node 22 VPS upgrade if sector data has drifted
-8. Decide on live trading: requires deliberate `LIVE_TRADING_OK=true` +
-   live URL swap. Preflight refuses without both.
-
-## Deferred / Known Issues
-
-### Introduced this session
-- VPS runs Node 20.20.2 but `yahoo-finance2@3.14.0` prefers Node ≥22.
-  Library works with a warning; flagged as watch-item in memory.
-- Scanner cache is a demo-time compromise, not a permanent design — revert
-  flagged in memory for post-demo.
-
-### Unchanged from previous session (still valid)
-- Secret rotation (Capital API creds) deferred per Giuseppe's call
-- VPS `.env` still has dead `CAPITAL_PASSWORD` line (harmless)
-- GitHub default branch still `main` (code on `master`)
-- `BROKER_MIGRATION_PROMPT.md` references historical CAPITAL_PASSWORD
-- `scripts/epic-mapping.json` gitignored artefact
-
-## Session Reliability Notes
-- Four atomic commits, each independently green (`npm run build && npm test`).
-- Deploy pipeline held: `git pull --ff-only && npm run build && pm2 restart` —
-  each restart ≤3s downtime. Three restarts this session (deploy round 1, then
-  re-deploy round 2). Capital.com session maintained throughout via keep-alive.
-- All verification stayed on Capital.com demo URL. Live-trading gate intact.
+Everything merged, deployed, healthy. Bot armed for tomorrow's London Open. Zero pending work items. Repo clean at `d7ed32a`, VPS synced.
