@@ -174,12 +174,7 @@ function demoRelaxedGatesActive(): boolean {
 }
 
 const KILL_ZONE_BONUS_IN = 15;
-// Outside kill zones: small positive bonus to let strong setups compete at any hour.
-// Previously 0 (production) / 10 (demo) — now permanently 5 to increase opportunity.
-const KILL_ZONE_BONUS_OUT = 5;
-function killZoneBonusOut(): number {
-  return demoRelaxedGatesActive() ? 10 : KILL_ZONE_BONUS_OUT;
-}
+const KILL_ZONE_BONUS_OUT = 0;
 
 const TIER_1_THRESHOLD = 80;
 // Tier 2 lowered from 65 → 60 to capture more high-quality setups.
@@ -225,6 +220,12 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
     return rankingCache.results.slice(0, limit);
   }
 
+  // Hard gate — no scanning outside kill zones
+  if (!killZone.inKillZone) {
+    console.log('[Scanner] Outside kill zone — no instruments ranked.');
+    return [];
+  }
+
   const results: RankedInstrument[] = [];
 
   // Scan all instruments in parallel (batched to respect rate limits)
@@ -250,7 +251,7 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           // Preliminary composite score
           let score = 0;
           score += biasResult.clarity;                                           // 0/10/20
-          score += killZone.inKillZone ? KILL_ZONE_BONUS_IN : killZoneBonusOut(); // 0/10/15
+          score += killZone.inKillZone ? KILL_ZONE_BONUS_IN : KILL_ZONE_BONUS_OUT; // 15 in-zone, 0 outside
           score += newsScore;                                                    // -15 to +20
           score += inst.spread_quality === 'tight' ? 5 : 0;                    // Bonus for tight spreads
 
