@@ -1,0 +1,104 @@
+name: Deploy to VPS
+
+# Auto-deploy on every push to master. CI gate runs full test suite; deploy
+# job only fires if tests pass. Deploy step SSHes into the bot VPS using a
+# dedicated ed25519 key (not the bot user's id_ed25519). The key is pinned
+# to a forced command via authorized_keys — see /home/bot/deploy.sh on the
+# VPS. Even if this workflow is compromised, the SSH session can ONLY run
+# the deploy script, not arbitrary shell.
+#
+# Secrets required in repo Settings → Secrets and variables → Actions:
+#   VPS_HOST     e.g. 162.55.212.198
+#   VPS_USER     e.g. bot
+#   VPS_SSH_KEY  private key generated at ~/.ssh/github_deploy on VPS
+#
+# Retrieve the private key in YOUR OWN terminal (never in chat):
+#   ssh bot@162.55.212.198 'cat ~/.ssh/github_deploy'
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+# One deploy at a time. If a new push arrives while another deploy is
+# running, queue it — don't cancel the in-flight one mid-pull.
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Build + Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --production=false
+
+      - name: TypeScript build
+        run: npm run build
+
+      - name: Run vitest suite
+        run: npm test
+
+  deploy:
+    name: Deploy to VPS
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only deploy from master branch pushes + manual dispatches. Belt and
+    # braces in case the trigger rules above ever get loosened.
+    if: github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Trigger deploy via SSH
+        env:
+          SSH_HOST: ${{ secrets.VPS_HOST }}
+          SSH_USER: ${{ secrets.VPS_USER }}
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
+          # Validate secrets are present — fail fast with a clear message
+          # instead of SSH's cryptic "Permission denied (publickey)".
+          : "${SSH_HOST:?VPS_HOST secret is not set}"
+          : "${SSH_USER:?VPS_USER secret is not set}"
+          : "${SSH_KEY:?VPS_SSH_KEY secret is not set}"
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          echo "Triggering deploy on $SSH_USER@$SSH_HOST ..."
+          # -T disables PTY request (our authorized_keys entry sets no-pty).
+          # StrictHostKeyChecking=accept-new pins the host key for this run;
+          # GitHub runners are ephemeral so this is effectively first-contact
+          # on every deploy. MITM risk is low (attacker would need to
+          # intercept GitHub's runner traffic to the VPS). Upgrade to a
+          # pinned host key via an extra secret if you want stricter.
+          # The `true` is discarded — the command= restriction in
+          # authorized_keys forces /home/bot/deploy.sh regardless.
+          ssh -T \
+            -o StrictHostKeyChecking=accept-new \
+            -o UserKnownHostsFile=/tmp/known_hosts \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=30 \
+            -i ~/.ssh/deploy_key \
+            "$SSH_USER@$SSH_HOST" \
+            true
+
+          echo "Deploy triggered successfully. The VPS ran /home/bot/deploy.sh."
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Auto-deploy failed. Check the logs above. The live bot is UNCHANGED — a failed deploy leaves the previous version running. To recover manually: ssh bot@162.55.212.198 'cd /home/bot/trading-bot && pm2 status'"
