@@ -54,7 +54,125 @@ function saveToFile(): void {
   writeFileSync(DB_PATH, buffer);
 }
 
+// ==================== SCHEMA-VERSION HELPERS ====================
+// SQLite cannot ALTER a CHECK constraint in place. For the 2-leg → 3-leg
+// upgrade on 2026-04-21, we rebuild `sl_tp_orders` and `trades` if either
+// still carries the old constraint. Standard SQLite recreate pattern: new
+// table with updated schema, copy data, drop old, rename.
+
+function sltpOrdersHasLegCCheck(): boolean {
+  const rows = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='sl_tp_orders'");
+  const schema = rows[0]?.values[0]?.[0] as string | undefined;
+  return !!schema && /leg IN \('A', 'B', 'C'\)/.test(schema);
+}
+
+function rebuildSltpOrdersTable(): void {
+  console.log('[DB Migration] Rebuilding sl_tp_orders with leg=\'A\'|\'B\'|\'C\' CHECK');
+  db.run('BEGIN TRANSACTION');
+  try {
+    db.run('ALTER TABLE sl_tp_orders RENAME TO sl_tp_orders_old');
+    db.run(`
+      CREATE TABLE sl_tp_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trade_id TEXT NOT NULL,
+        leg TEXT NOT NULL CHECK(leg IN ('A', 'B', 'C')),
+        instrument TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        sl_price REAL,
+        tp_price REAL,
+        trailing_stop_distance REAL,
+        deal_id TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        triggered_at TEXT,
+        FOREIGN KEY (trade_id) REFERENCES trades(id)
+      )
+    `);
+    db.run(`
+      INSERT INTO sl_tp_orders (id, trade_id, leg, instrument, direction, quantity, sl_price, tp_price, trailing_stop_distance, deal_id, is_active, created_at, triggered_at)
+      SELECT id, trade_id, leg, instrument, direction, quantity, sl_price, tp_price, trailing_stop_distance, deal_id, is_active, created_at, triggered_at FROM sl_tp_orders_old
+    `);
+    db.run('DROP TABLE sl_tp_orders_old');
+    db.run('CREATE INDEX IF NOT EXISTS idx_sl_tp_active ON sl_tp_orders(is_active)');
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK');
+    throw err;
+  }
+}
+
+function tradesHasTp2HitStatus(): boolean {
+  const rows = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'");
+  const schema = rows[0]?.values[0]?.[0] as string | undefined;
+  return !!schema && /'tp2_hit'/.test(schema);
+}
+
+function rebuildTradesTable(): void {
+  console.log('[DB Migration] Rebuilding trades with status including \'tp2_hit\' + 3-leg columns');
+  db.run('BEGIN TRANSACTION');
+  try {
+    db.run('ALTER TABLE trades RENAME TO trades_old');
+    db.run(`
+      CREATE TABLE trades (
+        id TEXT PRIMARY KEY,
+        strategy_tag TEXT NOT NULL CHECK(strategy_tag IN ('ICT_INTRADAY', 'SWING')),
+        instrument TEXT NOT NULL,
+        instrument_category TEXT NOT NULL,
+        direction TEXT NOT NULL CHECK(direction IN ('long', 'short')),
+        setup_type TEXT NOT NULL,
+        entry REAL NOT NULL,
+        sl REAL NOT NULL,
+        tp1 REAL NOT NULL,
+        tp2 REAL NOT NULL,
+        tp3 REAL,
+        position_a_id TEXT,
+        position_b_id TEXT,
+        position_c_id TEXT,
+        size_a REAL NOT NULL,
+        size_b REAL NOT NULL,
+        size_c REAL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit')),
+        pnl_a REAL,
+        pnl_b REAL,
+        pnl_c REAL,
+        pnl_total REAL,
+        composite_score INTEGER NOT NULL,
+        kill_zone TEXT,
+        news_category TEXT,
+        analyst_decision TEXT,
+        reasoning TEXT,
+        opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+        closed_at TEXT
+      )
+    `);
+    // Copy existing rows, leaving tp3/position_c_id/size_c/pnl_c NULL.
+    db.run(`
+      INSERT INTO trades (id, strategy_tag, instrument, instrument_category, direction, setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status, pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at, closed_at)
+      SELECT id, strategy_tag, instrument, instrument_category, direction, setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status, pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at, closed_at FROM trades_old
+    `);
+    db.run('DROP TABLE trades_old');
+    db.run('CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_tag)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_trades_instrument ON trades(instrument)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_trades_opened ON trades(opened_at)');
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK');
+    throw err;
+  }
+}
+
 function createTables(): void {
+  // 3-leg split-position architecture (upgraded from 2-leg on 2026-04-21):
+  //   Leg A (partial: size_a) closes at TP1 → status = tp1_hit, SL of B+C moved to entry
+  //   Leg B (partial: size_b) closes at TP2 → status = tp2_hit, SL of C moved to TP1 level
+  //   Leg C (partial: size_c) closes at TP3 → status = complete
+  //   Any leg hitting SL → status = sl_hit (logged even if A/B already closed at TP)
+  //
+  // tp3 / position_c_id / size_c / pnl_c are nullable to accommodate legacy
+  // 2-leg rows from before the upgrade. New rows always populate all three
+  // legs (see insertTrade defensive defaults).
   db.run(`
     CREATE TABLE IF NOT EXISTS trades (
       id TEXT PRIMARY KEY,
@@ -67,13 +185,17 @@ function createTables(): void {
       sl REAL NOT NULL,
       tp1 REAL NOT NULL,
       tp2 REAL NOT NULL,
+      tp3 REAL,
       position_a_id TEXT,
       position_b_id TEXT,
+      position_c_id TEXT,
       size_a REAL NOT NULL,
       size_b REAL NOT NULL,
-      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'complete', 'sl_hit')),
+      size_c REAL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit')),
       pnl_a REAL,
       pnl_b REAL,
+      pnl_c REAL,
       pnl_total REAL,
       composite_score INTEGER NOT NULL,
       kill_zone TEXT,
@@ -102,8 +224,10 @@ function createTables(): void {
       analyst_decision TEXT,
       position_a_outcome TEXT,
       position_b_outcome TEXT,
+      position_c_outcome TEXT,
       pnl_a_r REAL,
       pnl_b_r REAL,
+      pnl_c_r REAL,
       pnl_total_r REAL,
       was_bias_correct INTEGER,
       was_trigger_valid INTEGER,
@@ -141,7 +265,7 @@ function createTables(): void {
     CREATE TABLE IF NOT EXISTS sl_tp_orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       trade_id TEXT NOT NULL,
-      leg TEXT NOT NULL CHECK(leg IN ('A', 'B')),
+      leg TEXT NOT NULL CHECK(leg IN ('A', 'B', 'C')),
       instrument TEXT NOT NULL,
       direction TEXT NOT NULL,
       quantity REAL NOT NULL,
@@ -156,15 +280,61 @@ function createTables(): void {
     )
   `);
 
-  // Idempotent ALTER for pre-existing older DBs (sql.js has no
-  // real migrations). PRAGMA table_info() lists every column; if deal_id is
-  // missing, add it. Safe to run on every boot.
-  const colsResult = db.exec('PRAGMA table_info(sl_tp_orders)');
-  const existingCols = colsResult[0]
-    ? colsResult[0].values.map((row) => row[1] as string)
+  // Idempotent migrations for pre-existing older DBs (sql.js has no
+  // real migrations). PRAGMA table_info() lists every column; we ADD missing
+  // columns. Safe to run on every boot — ALTER TABLE ADD COLUMN is a no-op if
+  // the column already exists... except it isn't (SQLite throws "duplicate
+  // column"), so we check first.
+  const sltpCols = db.exec('PRAGMA table_info(sl_tp_orders)');
+  const existingSltpCols = sltpCols[0]
+    ? sltpCols[0].values.map((row) => row[1] as string)
     : [];
-  if (!existingCols.includes('deal_id')) {
+  if (!existingSltpCols.includes('deal_id')) {
     db.run('ALTER TABLE sl_tp_orders ADD COLUMN deal_id TEXT');
+  }
+
+  // 3-leg schema migration: add tp3/position_c_id/size_c/pnl_c if missing.
+  const tradesCols = db.exec('PRAGMA table_info(trades)');
+  const existingTradesCols = tradesCols[0]
+    ? tradesCols[0].values.map((row) => row[1] as string)
+    : [];
+  if (!existingTradesCols.includes('tp3')) {
+    db.run('ALTER TABLE trades ADD COLUMN tp3 REAL');
+  }
+  if (!existingTradesCols.includes('position_c_id')) {
+    db.run('ALTER TABLE trades ADD COLUMN position_c_id TEXT');
+  }
+  if (!existingTradesCols.includes('size_c')) {
+    db.run('ALTER TABLE trades ADD COLUMN size_c REAL');
+  }
+  if (!existingTradesCols.includes('pnl_c')) {
+    db.run('ALTER TABLE trades ADD COLUMN pnl_c REAL');
+  }
+
+  // Lessons table: add position_c_outcome, pnl_c_r for 3-leg reflection.
+  const lessonsCols = db.exec('PRAGMA table_info(lessons)');
+  const existingLessonsCols = lessonsCols[0]
+    ? lessonsCols[0].values.map((row) => row[1] as string)
+    : [];
+  if (!existingLessonsCols.includes('position_c_outcome')) {
+    db.run('ALTER TABLE lessons ADD COLUMN position_c_outcome TEXT');
+  }
+  if (!existingLessonsCols.includes('pnl_c_r')) {
+    db.run('ALTER TABLE lessons ADD COLUMN pnl_c_r REAL');
+  }
+
+  // CHECK-constraint changes cannot be done via ALTER TABLE in SQLite. Two
+  // constraints changed in the 3-leg upgrade:
+  //   - sl_tp_orders.leg: 'A'|'B' → 'A'|'B'|'C'
+  //   - trades.status:    added 'tp2_hit'
+  // For pre-existing DBs with the old constraints, we rebuild via the standard
+  // SQLite pattern: create new with updated schema, copy data, drop old,
+  // rename. Only runs if the DB was originally created with the 2-leg schema.
+  if (existingSltpCols.length > 0 && !sltpOrdersHasLegCCheck()) {
+    rebuildSltpOrdersTable();
+  }
+  if (existingTradesCols.length > 0 && !tradesHasTp2HitStatus()) {
+    rebuildTradesTable();
   }
 
   db.run(`
