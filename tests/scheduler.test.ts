@@ -494,22 +494,19 @@ describe('monitorSplitPositions', () => {
     expect(errSpy).toHaveBeenCalled();
   });
 
-  it('second pass: leg B gone from Capital, activity TP → trade marked complete, alertTp2Hit fired', async () => {
+  it('leg B closed at TP on a legacy 2-leg trade (no position_c_id) → trade marked complete, alertTp2Hit fired', async () => {
+    // Legacy-compat: a trade without position_c_id (i.e. created before the
+    // 3-leg upgrade) behaves like the old 2-leg world when Leg B hits TP:
+    // trade finalises to 'complete' immediately, alertTp2Hit is the "full
+    // complete" message (the alert function picks via trade.closed_at).
     const trade = makeTrade({ id: 'trade-1', status: 'tp1_hit' });
     const deps = makeDeps();
-    // First call: no leg A active (already deactivated on TP1 hit earlier).
-    // But monitorSplitPositions early-returns if legAOrders is empty — we need
-    // at least one leg-A entry present to reach the Capital calls + leg-B pass.
-    // Provide a leg-A row that is STILL OPEN on Capital so the leg-A branch no-ops,
-    // letting the second pass execute against the leg-B row.
-    deps._mocks.getActiveSlTpOrders
-      .mockReturnValueOnce([
-        makeOrder({ leg: 'A', deal_id: 'DEAL-A-STILL-OPEN', trade_id: 'other-trade' }),
-      ])
-      .mockReturnValueOnce([
-        makeOrder({ leg: 'B', deal_id: 'DEAL-B-1', trade_id: 'trade-1' }),
-      ]);
-    // A-open keeps leg-A branch as no-op; B-missing triggers second-pass promotion.
+    // Single top-level fetch now — mock returns both Leg A (still open on
+    // Capital, no action) + Leg B (closed, triggers handleTp2Hit) in one array.
+    deps._mocks.getActiveSlTpOrders.mockReturnValueOnce([
+      makeOrder({ leg: 'A', deal_id: 'DEAL-A-STILL-OPEN', trade_id: 'other-trade' }),
+      makeOrder({ leg: 'B', deal_id: 'DEAL-B-1', trade_id: 'trade-1' }),
+    ]);
     deps._mocks.getOpenPositions.mockResolvedValue([makeOpenPosition('DEAL-A-STILL-OPEN')]);
     deps._mocks.getActivityHistory.mockResolvedValue([
       {
@@ -533,16 +530,19 @@ describe('monitorSplitPositions', () => {
     expect(deps._mocks.alertSlHit).not.toHaveBeenCalled();
   });
 
-  it('second pass: leg B gone from Capital, activity SL → trade marked sl_hit, alertSlHit fired', async () => {
+  it('leg B SL\'d at BE on a 2-leg trade where A already TP\'d → partial-win finalisation: status=complete, alertTp2Hit (NOT alertSlHit)', async () => {
+    // Scenario: A hit TP1 earlier (trade.status already 'tp1_hit'), then
+    // B stopped out at its break-even SL. That's a PARTIAL WIN — realized
+    // profit on A, zero on B. Per 3-leg semantics (handleSlOnLeg), finalise
+    // as 'complete' with the alertTp2Hit variant. Previously (2-leg world)
+    // this was wrongly marked 'sl_hit' + alertSlHit — misleading since the
+    // trade was actually profitable.
     const trade = makeTrade({ id: 'trade-1', status: 'tp1_hit' });
     const deps = makeDeps();
-    deps._mocks.getActiveSlTpOrders
-      .mockReturnValueOnce([
-        makeOrder({ leg: 'A', deal_id: 'DEAL-A-STILL-OPEN', trade_id: 'other-trade' }),
-      ])
-      .mockReturnValueOnce([
-        makeOrder({ leg: 'B', deal_id: 'DEAL-B-1', trade_id: 'trade-1' }),
-      ]);
+    deps._mocks.getActiveSlTpOrders.mockReturnValueOnce([
+      makeOrder({ leg: 'A', deal_id: 'DEAL-A-STILL-OPEN', trade_id: 'other-trade' }),
+      makeOrder({ leg: 'B', deal_id: 'DEAL-B-1', trade_id: 'trade-1' }),
+    ]);
     deps._mocks.getOpenPositions.mockResolvedValue([makeOpenPosition('DEAL-A-STILL-OPEN')]);
     deps._mocks.getActivityHistory.mockResolvedValue([
       {
@@ -553,6 +553,40 @@ describe('monitorSplitPositions', () => {
         status: 'STOP_HIT',
         size: 0.5,
         level: 1.0853,
+      },
+    ]);
+    deps._mocks.getTradeById.mockReturnValue(trade);
+
+    await monitorSplitPositions(deps);
+
+    // Partial-win close → trade is complete, not sl_hit.
+    expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-1', 'complete');
+    expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('trade-1', 'B');
+    // Alert variant is the "trade complete" message, not the SL-hit one.
+    expect(deps._mocks.alertTp2Hit).toHaveBeenCalledTimes(1);
+    expect(deps._mocks.alertSlHit).not.toHaveBeenCalled();
+  });
+
+  it('leg B SL\'d BEFORE any TP (trade.status still open) → true loss: status=sl_hit, alertSlHit fired', async () => {
+    // Adversarial case: B closes (SL) while trade is still in 'open' state.
+    // handleSlOnLeg deactivates B, no other legs active, trade.status was
+    // 'open' → no TP was hit → finalise as sl_hit + alertSlHit.
+    const trade = makeTrade({ id: 'trade-1', status: 'open' });
+    const deps = makeDeps();
+    deps._mocks.getActiveSlTpOrders.mockReturnValueOnce([
+      makeOrder({ leg: 'A', deal_id: 'DEAL-A-STILL-OPEN', trade_id: 'other-trade' }),
+      makeOrder({ leg: 'B', deal_id: 'DEAL-B-1', trade_id: 'trade-1' }),
+    ]);
+    deps._mocks.getOpenPositions.mockResolvedValue([makeOpenPosition('DEAL-A-STILL-OPEN')]);
+    deps._mocks.getActivityHistory.mockResolvedValue([
+      {
+        date: '2026-04-17T09:30:00Z',
+        epic: 'EURUSD',
+        dealId: 'DEAL-B-1',
+        activity: 'POSITION',
+        status: 'STOP_HIT',
+        size: 0.5,
+        level: 1.0830,
       },
     ]);
     deps._mocks.getTradeById.mockReturnValue(trade);
