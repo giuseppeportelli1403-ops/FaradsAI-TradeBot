@@ -1,8 +1,31 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-21 (post-midnight Malta time) — end of demo-day-1 debrief + two further fixes deployed
+Last updated: 2026-04-21 (overnight audit session complete)
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: master (pushed to https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
-Last commit: 073d04f — "feat(notifications): fire Telegram alert when a trade is opened"
+Last commit: 5d4d364 — "chore: auto-update session state — demo day 1 debrief + 4 deployed fixes"
+
+## 🌅 FIRST THING TO READ WHEN YOU WAKE UP
+
+Giuseppe commissioned a full deep-dive audit overnight. Deliverables:
+
+- **📄 Word document (what you asked for):** `audit/BENCHMARK_REPORT.docx` — 39 KB, cover page, TOC, full report + Gate Audit appendix
+- **📝 Markdown version:** `audit/BENCHMARK_REPORT.md` (498 lines)
+- **🔍 Gate audit source:** `C:\Users\user\Downloads\_benchmark\farad\GATE_AUDIT.md`
+- **📊 Per-bot inventories:** `C:\Users\user\Downloads\_benchmark\<jesse|freqtrade|backtrader|hummingbot|farad>\INVENTORY.md`
+
+**Headline:** Your fear is partially justified. Realistic trade rate = **0.8–2.3 trades/week** (one every 3–5 days), can be tripled to **3–5/week** by relaxing 3 specific gates this week. Day 1's zero trades was a **data exhaustion** problem (already fixed), NOT filter strictness. Bot will trade — just slower than your gut hopes.
+
+**3 P0 actions for this week** (all detailed with exact thresholds in §5 of the report):
+1. [S, ~4h] Relax Kill Zone penalty (–15 → –5), add Tier 3 score bracket (50–64 at 0.5% risk), reduce R:R min (2:1 → 1.5:1) for tight-spread symbols. Expected: 3x trade frequency without touching kill switches.
+2. [M, ~3d] Build offline candle replay harness. Unblocks every "would this have traded?" question without burning TD credits.
+3. [S, ~1d] Approval gate on self-rewriting strategy loop. Closes the tail risk of the review agent shipping a kill-switch-disabling rule overnight.
+
+**3 gates to NEVER relax:** daily 4% kill switch, ICT/Swing coordination lock, split-position method.
+
+**Ask me:** "What did the bot do overnight?" — I'll pull pm2 logs and tell you exactly.
+
+---
+
 
 ## What We Did This Session
 
