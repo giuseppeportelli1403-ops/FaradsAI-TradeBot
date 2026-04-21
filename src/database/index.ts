@@ -399,6 +399,11 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
   const asStrOrNull = (v: unknown): string | null =>
     v === undefined || v === null ? null : String(v);
 
+  // Helper: treat undefined/null as null, otherwise coerce to Number. Used
+  // for tp3 / size_c / pnl_c where a legacy 2-leg trade may omit the field.
+  const asNumOrNull = (v: unknown): number | null =>
+    v === undefined || v === null ? null : (typeof v === 'number' && !isNaN(v) ? v : null);
+
   const row = {
     id: String(trade.id),
     strategy_tag: trade.strategy_tag!,
@@ -410,10 +415,13 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
     sl: asNum(trade.sl, 0),
     tp1: asNum(trade.tp1, 0),
     tp2: asNum(trade.tp2, 0),
+    tp3: asNumOrNull(trade.tp3),                           // NEW (3-leg)
     position_a_id: asStrOrNull(trade.position_a_id),
     position_b_id: asStrOrNull(trade.position_b_id),
+    position_c_id: asStrOrNull(trade.position_c_id),       // NEW (3-leg)
     size_a: asNum(trade.size_a, 0),
     size_b: asNum(trade.size_b, 0),
+    size_c: asNumOrNull(trade.size_c),                     // NEW (3-leg)
     status: trade.status ?? 'open',
     composite_score: asNum(trade.composite_score, 0),
     kill_zone: asStrOrNull(trade.kill_zone),
@@ -425,29 +433,43 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
 
   db.run(`
     INSERT INTO trades (id, strategy_tag, instrument, instrument_category, direction,
-      setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b,
+      setup_type, entry, sl, tp1, tp2, tp3, position_a_id, position_b_id, position_c_id,
+      size_a, size_b, size_c,
       status, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     row.id, row.strategy_tag, row.instrument, row.instrument_category,
-    row.direction, row.setup_type, row.entry, row.sl, row.tp1, row.tp2,
-    row.position_a_id, row.position_b_id, row.size_a, row.size_b,
+    row.direction, row.setup_type, row.entry, row.sl, row.tp1, row.tp2, row.tp3,
+    row.position_a_id, row.position_b_id, row.position_c_id,
+    row.size_a, row.size_b, row.size_c,
     row.status, row.composite_score, row.kill_zone, row.news_category,
     row.analyst_decision, row.reasoning, row.opened_at,
   ]);
   saveToFile();
 }
 
-export function updateTradeStatus(tradeId: string, status: TradeStatus, pnlA?: number, pnlB?: number): void {
-  const pnlTotal = (pnlA ?? 0) + (pnlB ?? 0);
+export function updateTradeStatus(
+  tradeId: string,
+  status: TradeStatus,
+  pnlA?: number,
+  pnlB?: number,
+  pnlC?: number,    // NEW (3-leg) — P&L on Leg C in R units once it closes
+): void {
+  // pnl_total = sum of whichever leg pnls have been populated. COALESCE via the
+  // existing stored values so partial updates (e.g. only leg C this call)
+  // don't clobber earlier leg pnl_a/pnl_b that were set on previous calls.
   const closedAt = status === 'complete' || status === 'sl_hit' ? new Date().toISOString() : null;
 
   db.run(`
-    UPDATE trades SET status = ?, pnl_a = COALESCE(?, pnl_a), pnl_b = COALESCE(?, pnl_b),
-      pnl_total = CASE WHEN ? IS NOT NULL OR ? IS NOT NULL THEN ? ELSE pnl_total END,
-      closed_at = COALESCE(?, closed_at)
+    UPDATE trades
+    SET status = ?,
+        pnl_a = COALESCE(?, pnl_a),
+        pnl_b = COALESCE(?, pnl_b),
+        pnl_c = COALESCE(?, pnl_c),
+        pnl_total = COALESCE(pnl_a, 0) + COALESCE(pnl_b, 0) + COALESCE(pnl_c, 0),
+        closed_at = COALESCE(?, closed_at)
     WHERE id = ?
-  `, [status, pnlA ?? null, pnlB ?? null, pnlA ?? null, pnlB ?? null, pnlTotal, closedAt, tradeId]);
+  `, [status, pnlA ?? null, pnlB ?? null, pnlC ?? null, closedAt, tradeId]);
   saveToFile();
 }
 
@@ -611,7 +633,7 @@ export function logAnalystDecision(tradeId: string, strategyTag: StrategyTag, de
 
 export function createSlTpOrder(params: {
   trade_id: string;
-  leg: 'A' | 'B';
+  leg: 'A' | 'B' | 'C';        // NEW 2026-04-21: 'C' added for 3-leg split-position
   instrument: string;
   direction: Direction;
   quantity: number;

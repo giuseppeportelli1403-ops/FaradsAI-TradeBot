@@ -193,7 +193,7 @@ export interface Sentiment {
 
 // ==================== TRADE RECORDS ====================
 
-export type TradeStatus = 'open' | 'tp1_hit' | 'complete' | 'sl_hit';
+export type TradeStatus = 'open' | 'tp1_hit' | 'tp2_hit' | 'complete' | 'sl_hit';
 export type StrategyTag = 'ICT_INTRADAY' | 'SWING';
 export type Direction = 'long' | 'short';
 
@@ -208,13 +208,17 @@ export interface TradeRecord {
   sl: number;
   tp1: number;
   tp2: number;
+  tp3: number | null;                // NEW 2026-04-21: Leg C target; null on legacy 2-leg rows
   position_a_id: string;
   position_b_id: string;
+  position_c_id: string | null;      // NEW: nullable for legacy 2-leg rows
   size_a: number;
   size_b: number;
+  size_c: number | null;             // NEW: nullable for legacy 2-leg rows
   status: TradeStatus;
   pnl_a: number | null;
   pnl_b: number | null;
+  pnl_c: number | null;              // NEW: Leg C P&L (only populated after C closes)
   pnl_total: number | null;
   composite_score: number;
   kill_zone: string;
@@ -241,8 +245,10 @@ export interface Lesson {
   composite_score: number;
   position_a_outcome: string;
   position_b_outcome: string;
+  position_c_outcome: string | null;   // NEW 2026-04-21: null on legacy 2-leg lessons
   pnl_a_r: number;
   pnl_b_r: number;
+  pnl_c_r: number | null;              // NEW: Leg C P&L in R units
   pnl_total_r: number;
   was_bias_correct: boolean;
   was_trigger_valid: boolean;
