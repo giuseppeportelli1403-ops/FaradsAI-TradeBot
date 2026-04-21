@@ -8,6 +8,7 @@ import {
   _getTwelveDataDailyCap,
   _resetTwelveDataDailyCap,
   _getCandleCache,
+  _mapToTwelveDataSymbol,
 } from '../src/mcp-server/market-data.js';
 
 describe('withCache', () => {
@@ -60,6 +61,48 @@ describe('withFallback', () => {
     const fallback = { vix: 0, vix_30d_avg: 0 };
     const result = await withFallback(async () => { throw new Error('fail'); }, fallback);
     expect(result).toEqual({ vix: 0, vix_30d_avg: 0 });
+  });
+});
+
+describe('Twelve Data symbol mapping', () => {
+  // Verified by hand against the Grow-tier API on 2026-04-21.
+  it('inserts slashes for forex majors', () => {
+    expect(_mapToTwelveDataSymbol('EURUSD')).toBe('EUR/USD');
+    expect(_mapToTwelveDataSymbol('GBPUSD')).toBe('GBP/USD');
+    expect(_mapToTwelveDataSymbol('USDJPY')).toBe('USD/JPY');
+    expect(_mapToTwelveDataSymbol('GBPJPY')).toBe('GBP/JPY');
+    expect(_mapToTwelveDataSymbol('AUDUSD')).toBe('AUD/USD');
+  });
+
+  it('maps broker-style indices to TD index codes', () => {
+    expect(_mapToTwelveDataSymbol('US30')).toBe('DJIA');
+    expect(_mapToTwelveDataSymbol('DE40')).toBe('DAX');
+    expect(_mapToTwelveDataSymbol('UK100')).toBe('UKX');
+  });
+
+  it('maps OIL_CRUDE and DXY', () => {
+    expect(_mapToTwelveDataSymbol('OIL_CRUDE')).toBe('WTI/USD');
+    expect(_mapToTwelveDataSymbol('DXY')).toBe('DX');
+  });
+
+  it('returns null for VIX (unavailable on Grow tier)', () => {
+    expect(_mapToTwelveDataSymbol('VIX')).toBeNull();
+  });
+
+  it('passes through natively-accepted TD symbols', () => {
+    expect(_mapToTwelveDataSymbol('AAPL')).toBe('AAPL');
+    expect(_mapToTwelveDataSymbol('MSFT')).toBe('MSFT');
+    expect(_mapToTwelveDataSymbol('NVDA')).toBe('NVDA');
+    expect(_mapToTwelveDataSymbol('TSLA')).toBe('TSLA');
+    expect(_mapToTwelveDataSymbol('US100')).toBe('US100');
+    expect(_mapToTwelveDataSymbol('US500')).toBe('US500');
+    expect(_mapToTwelveDataSymbol('GOLD')).toBe('GOLD');
+    expect(_mapToTwelveDataSymbol('SILVER')).toBe('SILVER');
+  });
+
+  it('is case-insensitive on input', () => {
+    expect(_mapToTwelveDataSymbol('eurusd')).toBe('EUR/USD');
+    expect(_mapToTwelveDataSymbol('EurUsd')).toBe('EUR/USD');
   });
 });
 

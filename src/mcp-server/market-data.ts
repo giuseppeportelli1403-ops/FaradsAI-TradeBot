@@ -102,6 +102,46 @@ export function _getTwelveDataDailyCap(): { resetsAt: number } | null {
   return twelveDataDailyCap;
 }
 
+// Twelve Data symbol format differs from Farad's internal ticker convention
+// (which mirrors Capital.com's `epic` field — mostly no slashes, mostly
+// uppercase-concatenated). This mapper converts a Farad ticker to the symbol
+// Twelve Data's /time_series endpoint accepts. Validated by hand 2026-04-21
+// against the Grow-tier key; free tier was silently 404-ing on forex/indices
+// (scanner swallowed errors via `catch { return null }` making it look like
+// bias=neutral skipping — actually TD was refusing the requests).
+//
+// Returns null when the symbol is not available on the current tier (currently:
+// VIX requires Pro tier). Callers MUST treat null as "no data available, not
+// an error" — fetchCandles returns an empty array in that case.
+const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
+  // Forex — TD requires slash
+  EURUSD: 'EUR/USD',
+  GBPUSD: 'GBP/USD',
+  USDJPY: 'USD/JPY',
+  GBPJPY: 'GBP/JPY',
+  AUDUSD: 'AUD/USD',
+  // Indices — TD uses academic/exchange tickers, not broker-style
+  US30: 'DJIA',
+  DE40: 'DAX',
+  UK100: 'UKX',
+  // Commodities — OIL_CRUDE isn't a TD symbol; WTI/USD is
+  OIL_CRUDE: 'WTI/USD',
+  // Macro — DXY is USDX or DX on TD
+  DXY: 'DX',
+};
+
+// Symbols that are simply not available on the Grow tier. If we see one of
+// these, return empty candles (which downstream consumers handle gracefully —
+// e.g. fetchVix returns vix=0). Upgrading to Pro tier ($229/mo) unlocks VIX.
+const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX']);
+
+/** Exposed for tests — expose the mapper to verify coverage. */
+export function _mapToTwelveDataSymbol(ticker: string): string | null {
+  const upper = ticker.toUpperCase();
+  if (TWELVE_DATA_UNAVAILABLE.has(upper)) return null;
+  return TWELVE_DATA_SYMBOL_MAP[upper] ?? ticker;
+}
+
 export async function fetchCandles(
   symbol: string,
   timeframe: Timeframe,
@@ -120,7 +160,17 @@ export async function fetchCandles(
     return cached;
   }
 
-  // 2. Circuit-breaker: skip the network call entirely if we've already hit
+  // 2. Map to Twelve Data's symbol format. Returns null for symbols not
+  //    available on the current tier (e.g. VIX needs Pro). We return an empty
+  //    array in that case so callers like fetchVix degrade gracefully instead
+  //    of the Market Researcher crashing on an unhandled throw.
+  const tdSymbol = _mapToTwelveDataSymbol(symbol);
+  if (tdSymbol === null) {
+    console.warn(`[Market Data] ${symbol} is not available on the current Twelve Data plan tier — returning empty candles.`);
+    return [];
+  }
+
+  // 3. Circuit-breaker: skip the network call entirely if we've already hit
   //    the daily cap. Twelve Data still counts post-exhaustion calls, so this
   //    is how we stop bleeding credits (and log noise) until UTC midnight.
   if (isDailyCapTripped()) {
@@ -129,7 +179,7 @@ export async function fetchCandles(
     );
   }
 
-  // 3. Await a rate-limit token. Throws RateLimitQueuedError if the 60s wait
+  // 4. Await a rate-limit token. Throws RateLimitQueuedError if the 60s wait
   //    expires; callers decide whether to surface the error or skip the step.
   await twelveDataBucket.acquire(60_000);
 
@@ -137,7 +187,7 @@ export async function fetchCandles(
   try {
     ({ data } = await axios.get(`${TWELVE_DATA_BASE}/time_series`, {
       params: {
-        symbol,
+        symbol: tdSymbol,
         interval,
         outputsize: outputSize,
         apikey: apiKey,
@@ -175,6 +225,11 @@ export async function fetchCandles(
 
 export async function fetchVix(): Promise<{ vix: number; vix_30d_avg: number }> {
   const candles = await fetchCandles('VIX', '1d', 30);
+  if (candles.length === 0) {
+    // VIX is Pro-tier-only on Twelve Data; Grow returns empty. Degrade gracefully
+    // rather than crashing the Market Researcher (which fetches this at 05:30 UTC).
+    return { vix: 0, vix_30d_avg: 0 };
+  }
   const current = candles[0]?.close ?? 0;
   const avg = candles.reduce((sum, c) => sum + c.close, 0) / candles.length;
   return { vix: current, vix_30d_avg: Math.round(avg * 100) / 100 };
@@ -182,9 +237,12 @@ export async function fetchVix(): Promise<{ vix: number; vix_30d_avg: number }> 
 
 export async function fetchDxy(): Promise<{ dxy: number; direction: 'rising' | 'falling' | 'flat' }> {
   const candles = await fetchCandles('DXY', '1d', 10);
+  if (candles.length === 0) {
+    return { dxy: 0, direction: 'flat' };
+  }
   const current = candles[0]?.close ?? 0;
   const fiveDaysAgo = candles[4]?.close ?? current;
-  const change = ((current - fiveDaysAgo) / fiveDaysAgo) * 100;
+  const change = fiveDaysAgo === 0 ? 0 : ((current - fiveDaysAgo) / fiveDaysAgo) * 100;
 
   let direction: 'rising' | 'falling' | 'flat';
   if (change > 0.3) direction = 'rising';
