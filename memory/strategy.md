@@ -78,7 +78,7 @@ Trading outside kill zones: -15 point score penalty. If score drops below 65, sk
 ### Section 7.2: Kill Switches
 
 **Daily loss limit: 6% of account equity. Non-negotiable.**
-**Weekly loss limit: 8% of account equity. Non-negotiable.**
+**Weekly loss limit: 10% of account equity. Non-negotiable.**
 
 When triggered:
 - No new positions opened
