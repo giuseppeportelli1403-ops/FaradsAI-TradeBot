@@ -18,6 +18,12 @@ name: Deploy to VPS
 on:
   push:
     branches: [master]
+  # Also run CI on every pull request targeting master. This makes the
+  # "Build + Test" required-status-check actually achievable before merge
+  # — without a pull_request trigger, the check only fires post-merge,
+  # which creates a chicken-and-egg where no PR can ever meet the gate.
+  pull_request:
+    branches: [master]
   workflow_dispatch: {}
 
 # One deploy at a time. If a new push arrives while another deploy is
