@@ -177,15 +177,16 @@ export function registerTradingTools(server: McpServer): void {
     'log_trade',
     {
       title: 'Log Trade to Database',
-      description: 'Save a complete trade record (both legs) to the database and create SL/TP monitoring entries for the scheduler. Accepts Capital.com dealIds for audit linkage.',
+      description: 'Save a complete trade record (3 legs A/B/C targeting TP1/TP2/TP3) to the database and create SL/TP monitoring entries for the scheduler. Accepts Capital.com dealIds for audit linkage. Legacy 2-leg trades still work — omit size_c/tp3/position_c_deal_id and only A+B rows are created.',
       inputSchema: {
-        trade_data: z.string().describe('JSON string of full trade record with id, instrument, direction, size_a, size_b, sl, tp1, tp2'),
-        position_a_deal_id: z.string().optional().describe('Capital.com dealId of Position A (from place_order confirmation)'),
-        position_b_deal_id: z.string().optional().describe('Capital.com dealId of Position B (from place_order confirmation)'),
+        trade_data: z.string().describe('JSON string of full trade record: id, instrument, direction, size_a, size_b, size_c?, sl, tp1, tp2, tp3?, position_a_id, position_b_id, position_c_id?, composite_score, kill_zone, setup_type'),
+        position_a_deal_id: z.string().optional().describe('Capital.com dealId of Position A (Leg A, targets TP1, from place_order confirmation)'),
+        position_b_deal_id: z.string().optional().describe('Capital.com dealId of Position B (Leg B, targets TP2)'),
+        position_c_deal_id: z.string().optional().describe('Capital.com dealId of Position C (Leg C, targets TP3). Omit on legacy 2-leg trades.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    wrapTool('log_trade', async ({ trade_data, position_a_deal_id, position_b_deal_id }) => {
+    wrapTool('log_trade', async ({ trade_data, position_a_deal_id, position_b_deal_id, position_c_deal_id }) => {
       let parsed: Record<string, unknown>;
       try {
         parsed = JSON.parse(trade_data);
@@ -224,6 +225,24 @@ export function registerTradingTools(server: McpServer): void {
         deal_id: position_b_deal_id,
       } as Parameters<typeof createSlTpOrder>[0]);
 
+      // Leg C (3-leg trades only) — create if size_c + tp3 are both provided.
+      // Omitting either keeps this a legacy 2-leg record.
+      const hasLegC =
+        parsed.size_c !== undefined && parsed.size_c !== null &&
+        parsed.tp3 !== undefined && parsed.tp3 !== null;
+      if (hasLegC) {
+        createSlTpOrder({
+          trade_id: parsed.id as string,
+          leg: 'C',
+          instrument: parsed.instrument as string,
+          direction: parsed.direction as 'long' | 'short',
+          quantity: parsed.size_c as number,
+          sl_price: parsed.sl as number,
+          tp_price: parsed.tp3 as number,
+          deal_id: position_c_deal_id,
+        } as Parameters<typeof createSlTpOrder>[0]);
+      }
+
       return {
         content: [{
           type: 'text' as const,
@@ -232,6 +251,8 @@ export function registerTradingTools(server: McpServer): void {
             trade_id: parsed.id,
             position_a_deal_id: position_a_deal_id ?? null,
             position_b_deal_id: position_b_deal_id ?? null,
+            position_c_deal_id: hasLegC ? (position_c_deal_id ?? null) : null,
+            legs_registered: hasLegC ? 3 : 2,
           }),
         }],
       };
