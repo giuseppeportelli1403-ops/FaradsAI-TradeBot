@@ -172,7 +172,7 @@ Is the current UTC time within a kill zone?
 - London Open: 07:00-10:00 UTC (all instruments)
 - New York Open: 13:00-16:00 UTC (all instruments)
 - London Close: 15:00-17:00 UTC (all instruments)
-If not in a kill zone: apply -5 penalty. If score drops below 60, skip this instrument.
+If NOT in a kill zone: STOP. Do not analyse any instruments. Do not place any trades. End your cycle and wait for the next kill zone. This is a hard rule with no exceptions.
 
 **E. Get news context**
 Call get_news_context(instrument). Categorise the news:
@@ -305,7 +305,7 @@ If position managed:
 - No cap on number of open positions — each qualifying trade stands on its own score.
 - Coordination lock: no ICT trade if a position on the SAME instrument is already open.
 - All trades must pass Analyst Agent approval.
-- No trading outside kill zones unless score remains >= 50 after -5 penalty.
+- NO trading outside kill zones. Hard stop — no exceptions, no score override.
 - 6% daily kill switch. No new trades after it triggers.
 
 ---
