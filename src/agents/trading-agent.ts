@@ -250,7 +250,12 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
     { role: 'user', content: contextMessage },
   ];
 
-  const maxIterations = 15;
+  // Iteration cap reduced 15 → 8 on 2026-04-21. Typical decision cycle
+  // completes in 5-8 iterations; runs that hit 15 were usually stuck in
+  // a research loop that never converges. 8 forces a decision with the
+  // data the agent has gathered so far — occasional quality dip on
+  // borderline cases, significant tail-cost saving.
+  const maxIterations = 8;
 
   for (let i = 0; i < maxIterations; i++) {
     const response = await anthropic.messages.create({
@@ -262,7 +267,12 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
       // decision quality regresses noticeably vs the Opus run, revert
       // the `model` field to `claude-opus-4-6`.
       model: 'claude-sonnet-4-6',
-      max_tokens: 16000,
+      // max_tokens 16000 → 12000 (2026-04-21): caps the output each
+      // iteration can generate. Typical response is 2-5k, so 12k is
+      // still generous headroom. Rare verbose responses now truncate
+      // earlier — saves worst-case output cost without affecting the
+      // 95th percentile.
+      max_tokens: 12000,
       thinking: { type: 'adaptive' },
       // effort: 'medium' trades a small amount of thinking trace depth
       // for ~25% output-token savings. ICT decisions don't need max-depth

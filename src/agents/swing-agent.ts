@@ -122,7 +122,10 @@ Begin your 10-step decision sequence now. Start with Step 1 (risk check).`;
     { role: 'user', content: contextMessage },
   ];
 
-  for (let i = 0; i < 15; i++) {
+  // Iteration cap 15 → 8 (2026-04-21) mirrors ICT agent. Swing cycles
+  // rarely needed >8 iterations; capping forces earlier decision on
+  // long-running research loops.
+  for (let i = 0; i < 8; i++) {
     const response = await anthropic.messages.create({
       // Cost optimisation (2026-04-21 part 3): now on Sonnet + medium effort
       // to match ICT agent. Swing's per-cycle reasoning budget shrinks but
@@ -131,7 +134,8 @@ Begin your 10-step decision sequence now. Start with Step 1 (risk check).`;
       // to 'claude-opus-4-6' + effort:'high' if multi-timeframe confluence
       // quality regresses noticeably.
       model: 'claude-sonnet-4-6',
-      max_tokens: 16000,
+      // max_tokens 16000 → 12000 (2026-04-21) matches ICT agent.
+      max_tokens: 12000,
       thinking: { type: 'adaptive' },
       output_config: { effort: 'medium' },
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
