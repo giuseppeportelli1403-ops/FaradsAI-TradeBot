@@ -11,7 +11,7 @@
 //   6. Sizing math (recompute independently, reject if >5% discrepancy)
 
 import Anthropic from '@anthropic-ai/sdk';
-import { loadPrompt, loadStrategy } from './load-prompt.js';
+import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
 import { getLatestBrief, getOpenTrades, getLessons, logAnalystDecision } from '../database/index.js';
 import type { AnalystDecision, StrategyTag } from '../types.js';
 
@@ -50,7 +50,7 @@ interface TradeProposal {
 export async function runAnalystAgent(proposal: TradeProposal): Promise<AnalystDecision> {
   console.log(`Trade Analyst reviewing: ${proposal.instrument} ${proposal.direction} (${proposal.strategy_tag})`);
 
-  const systemPrompt = loadPrompt('analyst-agent.md');
+  const systemPrompt = loadPromptWithDemoContext('analyst-agent.md');
   const strategyFile = proposal.strategy_tag === 'SWING' ? 'swing_strategy.md' : 'strategy.md';
   const strategy = loadStrategy(strategyFile);
   const brief = getLatestBrief();

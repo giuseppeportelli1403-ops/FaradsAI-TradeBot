@@ -5,7 +5,7 @@
 // Uses Claude Sonnet with the system prompt from AGENT_SYSTEM_PROMPTS_V3 Section 2
 
 import Anthropic from '@anthropic-ai/sdk';
-import { loadPrompt, loadStrategy } from './load-prompt.js';
+import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
 
 const anthropic = new Anthropic();
@@ -102,7 +102,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
 export async function runSwingAgent(): Promise<void> {
   console.log('Swing Trading Agent starting decision cycle...');
 
-  const systemPrompt = loadPrompt('swing-agent.md');
+  const systemPrompt = loadPromptWithDemoContext('swing-agent.md');
   const strategy = loadStrategy('swing_strategy.md');
   const brief = getLatestBrief();
 

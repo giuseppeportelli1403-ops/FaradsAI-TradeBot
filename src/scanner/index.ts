@@ -164,6 +164,29 @@ export function getCurrentKillZone(): { inKillZone: boolean; zone: string } {
 
 // ==================== MAIN SCANNER ====================
 
+// Demo-phase gate relaxations. Set DEMO_RELAXED_GATES=true in the env to
+// unlock more trade candidates during the 2-week evaluation window:
+//   - Kill-zone bonus: inside 15 / outside 10 (instead of 15 / 0) — narrows
+//     the penalty gap from 15 points to 5 so off-hours setups can clear the
+//     Tier 2 threshold when bias + news + spread are strong.
+//   - Tier 3 bracket at score 50-64 — adds a new risk band (0.5% risk per
+//     trade; see agent prompt demo-context block) for marginal setups.
+// Default (unset flag) preserves the stricter production behaviour.
+function demoRelaxedGatesActive(): boolean {
+  return process.env.DEMO_RELAXED_GATES === 'true';
+}
+
+const KILL_ZONE_BONUS_IN = 15;
+function killZoneBonusOut(): number {
+  return demoRelaxedGatesActive() ? 10 : 0;
+}
+
+const TIER_1_THRESHOLD = 80;
+const TIER_2_THRESHOLD = 65;
+function tier3Threshold(): number {
+  return demoRelaxedGatesActive() ? 50 : Infinity;
+}
+
 // Hourly ranking cache. During the free-tier demo window, the scanner's full
 // fan-out (20 × fetchCandles('1h', 30) = 20 Twelve Data credits per call) ran
 // every ICT cycle (~every 15 min), burning the daily cap by mid-session.
@@ -222,20 +245,26 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
 
           // Preliminary composite score
           let score = 0;
-          score += biasResult.clarity;                          // 0/10/20
-          score += killZone.inKillZone ? 15 : 0;              // 0/15
-          score += newsScore;                                   // -15 to +20
-          score += inst.spread_quality === 'tight' ? 5 : 0;   // Bonus for tight spreads
+          score += biasResult.clarity;                                           // 0/10/20
+          score += killZone.inKillZone ? KILL_ZONE_BONUS_IN : killZoneBonusOut(); // 0/10/15
+          score += newsScore;                                                    // -15 to +20
+          score += inst.spread_quality === 'tight' ? 5 : 0;                    // Bonus for tight spreads
 
           // Base score of 25 so Tier 2 (65+) is achievable with moderate signals
           score += 25;
+
+          const tier: 1 | 2 | 3 | null =
+            score >= TIER_1_THRESHOLD ? 1 :
+            score >= TIER_2_THRESHOLD ? 2 :
+            score >= tier3Threshold() ? 3 :
+            null;
 
           return {
             ticker: inst.ticker,
             name: inst.name,
             composite_score: Math.max(0, Math.min(100, score)),
             bias: biasResult.bias as 'bullish' | 'bearish' | 'neutral',
-            tier: score >= 80 ? 1 as const : score >= 65 ? 2 as const : null,
+            tier,
           } satisfies RankedInstrument;
         } catch {
           return null;

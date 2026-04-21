@@ -23,6 +23,11 @@ async function main(): Promise<void> {
   initTelegram();
   console.log('[OK] Telegram initialised.');
 
+  // Log demo-phase flag status so ops can see at-a-glance whether the
+  // relaxed gates are active (expected during the 2-week demo window only).
+  const demoRelaxed = process.env.DEMO_RELAXED_GATES === 'true';
+  console.log(`[Config] DEMO_RELAXED_GATES: ${demoRelaxed ? 'ACTIVE (kill-zone bonus 15/10, Tier 3 at 50-64, R:R 1.5:1 for tight-spread symbols)' : 'inactive (default strict gates)'}`);
+
   // Step 3: Start scheduler (candle detection, position monitoring, agent triggers)
   startScheduler();
   console.log('[OK] Scheduler running. Bot is live.');

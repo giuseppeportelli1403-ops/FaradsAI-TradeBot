@@ -335,5 +335,5 @@ export interface RankedInstrument {
   name: string;
   composite_score: number;
   bias: 'bullish' | 'bearish' | 'neutral';
-  tier: 1 | 2 | null;  // null if score < 65
+  tier: 1 | 2 | 3 | null;  // null if score < 65 (< 50 when DEMO_RELAXED_GATES=true). Tier 3 = 50-64 (demo only).
 }

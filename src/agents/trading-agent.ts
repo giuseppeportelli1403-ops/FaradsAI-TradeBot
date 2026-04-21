@@ -6,7 +6,7 @@
 // from AGENT_SYSTEM_PROMPTS_V3 Section 1 to guide its reasoning.
 
 import Anthropic from '@anthropic-ai/sdk';
-import { loadPrompt, loadStrategy } from './load-prompt.js';
+import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
 import { alertTradePlaced } from '../notifications/telegram.js';
 
@@ -218,7 +218,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
 export async function runTradingAgent(): Promise<void> {
   console.log('ICT Trading Agent starting decision cycle...');
 
-  const systemPrompt = loadPrompt('ict-agent.md');
+  const systemPrompt = loadPromptWithDemoContext('ict-agent.md');
   const strategy = loadStrategy('strategy.md');
   const brief = getLatestBrief();
 
