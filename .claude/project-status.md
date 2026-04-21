@@ -1,8 +1,27 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-21 (overnight audit session complete)
+Last updated: 2026-04-21 (morning — gate relaxations deployed, bot trading with relaxed gates during London Open)
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: master (pushed to https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
-Last commit: 5d4d364 — "chore: auto-update session state — demo day 1 debrief + 4 deployed fixes"
+Last commit: 4c580f7 — "feat(demo): DEMO_RELAXED_GATES flag unlocks 3 gate relaxations"
+
+## ✅ LATEST — DEMO_RELAXED_GATES live on VPS as of 07:44 UTC
+
+- VPS restart #4, pm2 PID 43916, healthy
+- `.env` line `DEMO_RELAXED_GATES=true` set + confirmed in startup log
+- Bot deployed mid-London-Open (07:00-10:00 UTC window)
+- 123/123 tests green, commit `4c580f7`, architecture spec for offline-replay deferred
+
+**What changed in behaviour right now:**
+- Scanner kill-zone bonus outside kill zones: 0 → +10 (strong off-hours setups can clear Tier 2)
+- Tier 3 bracket active for composite score 50-64 at 0.5% risk
+- R:R minimum dropped to 1.5:1 for tight-spread symbols (EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD, US100, US500, US30, DE40, AAPL, MSFT, NVDA, AMZN, GOOGL, META)
+- Unchanged hard guards: daily 4% kill switch, weekly 8%, coordination lock, split-position method, live-trade gate
+
+**Expected trade rate with gates relaxed:** 3-5 trades/week (vs 0.8-2.3 before). First evidence should land within the next ~8 hours (today's London Open + NY Open windows). Telegram buzz on any 🟢 trade open.
+
+**Revert path if Giuseppe changes his mind:** `ssh bot@162.55.212.198 'sed -i "s/^DEMO_RELAXED_GATES=true/DEMO_RELAXED_GATES=false/" /home/bot/trading-bot/.env && pm2 restart trading-bot --update-env'`. No code change needed.
+
+---
 
 ## 🌅 FIRST THING TO READ WHEN YOU WAKE UP
 
