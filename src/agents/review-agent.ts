@@ -55,7 +55,9 @@ export async function runWeeklyReviewAgent(): Promise<string> {
     // 'claude-opus-4-6' (highest-leverage reasoning is the review's
     // strategy-file-edit decision, which happens once per week).
     model: 'claude-sonnet-4-6',
-    max_tokens: 16000,
+    // max_tokens 16000 → 12000 (2026-04-21) — weekly review output is
+    // structured + concise, rarely needs more than 8k tokens.
+    max_tokens: 12000,
     thinking: { type: 'adaptive' },
     output_config: { effort: 'max' },
     system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],

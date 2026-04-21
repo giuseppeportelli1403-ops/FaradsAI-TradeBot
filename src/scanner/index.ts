@@ -50,25 +50,25 @@ export const INSTRUMENT_UNIVERSE: Array<{
   // cleanest. See commit history for the full 25-instrument predecessor if
   // you want to restore minor pairs or additional US stocks.
   //
-  // Indices (4)
+  // Indices (3) — US30 removed 2026-04-21 (swapped for commodities)
   { ticker: 'US100', epic: 'US100', name: 'Nasdaq 100', category: 'index', spread_quality: 'tight' },
   { ticker: 'US500', epic: 'US500', name: 'S&P 500', category: 'index', spread_quality: 'tight' },
-  { ticker: 'US30', epic: 'US30', name: 'Dow Jones 30', category: 'index', spread_quality: 'tight' },
   { ticker: 'DE40', epic: 'DE40', name: 'DAX 40', category: 'index', spread_quality: 'tight' },
 
-  // Commodities (1)
+  // Commodities (3) — OIL_CRUDE + SILVER restored 2026-04-21. Gold-silver
+  // ratio + gold-oil correlation give the agent useful cross-asset macro
+  // reads during kill zones. Medium spread on silver/oil is tolerable
+  // because they trade large enough ATR ranges that the spread is a small
+  // % of typical setup distance.
   { ticker: 'GOLD', epic: 'GOLD', name: 'Gold', category: 'commodity', spread_quality: 'tight' },
+  { ticker: 'SILVER', epic: 'SILVER', name: 'Silver', category: 'commodity', spread_quality: 'medium' },
+  { ticker: 'OIL_CRUDE', epic: 'OIL_CRUDE', name: 'Crude Oil WTI', category: 'commodity', spread_quality: 'medium' },
 
   // FX Majors (4) — highest-liquidity pairs, cleanest kill-zone behaviour
   { ticker: 'EURUSD', epic: 'EURUSD', name: 'EUR/USD', category: 'fx', spread_quality: 'tight' },
   { ticker: 'GBPUSD', epic: 'GBPUSD', name: 'GBP/USD', category: 'fx', spread_quality: 'tight' },
   { ticker: 'USDJPY', epic: 'USDJPY', name: 'USD/JPY', category: 'fx', spread_quality: 'tight' },
   { ticker: 'AUDUSD', epic: 'AUDUSD', name: 'AUD/USD', category: 'fx', spread_quality: 'tight' },
-
-  // US Large-Cap (1) — Apple kept as the blue-chip reference. Other tech
-  // stocks removed because their intraday structure often diverges from
-  // the clean ICT model during the 13:00-16:00 NY session.
-  { ticker: 'AAPL', epic: 'AAPL', name: 'Apple', category: 'us-large-cap', spread_quality: 'tight' },
 ];
 
 // ==================== BIAS DETECTION ====================
