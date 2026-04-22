@@ -15,6 +15,7 @@ import {
   _mapToTwelveDataSymbol,
   _resetAlphaVantageRateLimitFlag,
   fetchNewsContext,
+  normalizeForAlphaVantage,
 } from '../src/mcp-server/market-data.js';
 
 describe('withCache', () => {
@@ -335,6 +336,43 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     _resetTwelveDataState();
     expect(_getCandleCache().size()).toBe(0);
     expect(_getTwelveDataDailyCap()).toBeNull();
+  });
+});
+
+describe('normalizeForAlphaVantage', () => {
+  it('maps EURUSD to FOREX:EUR,FOREX:USD (both sides of the pair)', () => {
+    expect(normalizeForAlphaVantage('EURUSD')).toBe('FOREX:EUR,FOREX:USD');
+  });
+
+  it('maps all scanner-universe FX pairs to FOREX:X,FOREX:Y', () => {
+    expect(normalizeForAlphaVantage('GBPUSD')).toBe('FOREX:GBP,FOREX:USD');
+    expect(normalizeForAlphaVantage('USDJPY')).toBe('FOREX:USD,FOREX:JPY');
+    expect(normalizeForAlphaVantage('AUDUSD')).toBe('FOREX:AUD,FOREX:USD');
+  });
+
+  it('maps commodities to their ETF news proxies (GLD / SLV / USO)', () => {
+    expect(normalizeForAlphaVantage('GOLD')).toBe('GLD');
+    expect(normalizeForAlphaVantage('SILVER')).toBe('SLV');
+    expect(normalizeForAlphaVantage('OIL_CRUDE')).toBe('USO');
+  });
+
+  it('maps cross-broker commodity aliases to the same ETF proxies', () => {
+    expect(normalizeForAlphaVantage('XAUUSD')).toBe('GLD');
+    expect(normalizeForAlphaVantage('XAGUSD')).toBe('SLV');
+    expect(normalizeForAlphaVantage('USOIL')).toBe('USO');
+    expect(normalizeForAlphaVantage('WTIUSD')).toBe('USO');
+  });
+
+  it('passes through native AV stock tickers unchanged (uppercased)', () => {
+    expect(normalizeForAlphaVantage('AAPL')).toBe('AAPL');
+    expect(normalizeForAlphaVantage('MSFT')).toBe('MSFT');
+    expect(normalizeForAlphaVantage('NVDA')).toBe('NVDA');
+  });
+
+  it('is case-insensitive on input', () => {
+    expect(normalizeForAlphaVantage('eurusd')).toBe('FOREX:EUR,FOREX:USD');
+    expect(normalizeForAlphaVantage('Gold')).toBe('GLD');
+    expect(normalizeForAlphaVantage('aapl')).toBe('AAPL');
   });
 });
 

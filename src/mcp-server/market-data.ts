@@ -607,17 +607,51 @@ export function _resetAlphaVantageRateLimitFlag(): void {
   alphaVantageRateLimitLoggedForUtcDate = null;
 }
 
-// TODO(next-session, 2026-04-23+): Farad tickers are passed raw to Alpha
-// Vantage's `tickers` parameter, but AV expects prefixed forms like
-// FOREX:EUR, CRYPTO:BTC, or raw stock symbols — not EURUSD/OIL_CRUDE/GOLD.
-// Live-probe verification was blocked 2026-04-22 by AV's 25-req/day free-
-// tier quota being exhausted mid-audit. Next session (after UTC midnight,
-// when the quota resets) probe the correct ticker-format per Farad-universe
-// symbol and route through a mapping similar to TWELVE_DATA_SYMBOL_MAP,
-// then enable. Until then, every non-stock instrument silently returns
-// zero news items — which is at least consistent and graceful.
-function normalizeForAlphaVantage(instrument: string): string {
-  return instrument;
+/**
+ * Normalises a Farad ticker to the format Alpha Vantage's NEWS_SENTIMENT
+ * endpoint expects in its `tickers` parameter.
+ *
+ *   - FX pairs       → "FOREX:X,FOREX:Y" (both sides; AV supports comma-list)
+ *   - Commodities    → ETF proxy tickers (GLD / SLV / USO) since AV has no
+ *                      commodity-specific prefix. News about the ETF is the
+ *                      closest-available sentiment signal.
+ *   - US stocks      → uppercased pass-through (AAPL / MSFT / NVDA work raw)
+ *
+ * Exported so tests can verify routing coverage. Mapping chosen from AV
+ * docs 2026-04-22; live-probe verification happens 2026-04-23+ when the
+ * free-tier 25-req daily quota resets. The per-call log inside
+ * fetchNewsContext records `instrument → mapped → N articles` so any
+ * entry returning empty feeds is visible immediately.
+ */
+export function normalizeForAlphaVantage(instrument: string): string {
+  const upper = instrument.toUpperCase();
+
+  const fxMap: Record<string, string> = {
+    EURUSD: 'FOREX:EUR,FOREX:USD',
+    GBPUSD: 'FOREX:GBP,FOREX:USD',
+    USDJPY: 'FOREX:USD,FOREX:JPY',
+    AUDUSD: 'FOREX:AUD,FOREX:USD',
+    GBPJPY: 'FOREX:GBP,FOREX:JPY',
+    NZDUSD: 'FOREX:NZD,FOREX:USD',
+    USDCAD: 'FOREX:USD,FOREX:CAD',
+    USDCHF: 'FOREX:USD,FOREX:CHF',
+    EURJPY: 'FOREX:EUR,FOREX:JPY',
+    EURGBP: 'FOREX:EUR,FOREX:GBP',
+  };
+  if (fxMap[upper]) return fxMap[upper];
+
+  const commodityMap: Record<string, string> = {
+    GOLD: 'GLD',
+    XAUUSD: 'GLD',
+    SILVER: 'SLV',
+    XAGUSD: 'SLV',
+    OIL_CRUDE: 'USO',
+    USOIL: 'USO',
+    WTIUSD: 'USO',
+  };
+  if (commodityMap[upper]) return commodityMap[upper];
+
+  return upper;
 }
 
 export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> {
@@ -665,6 +699,15 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
     }
 
     if (!Array.isArray(data.feed)) return [];
+
+    // Observability: record the mapping outcome so tomorrow's first-call
+    // verification can see at a glance which mapping entries return real
+    // data. Low volume: scanner runs ~1× per kill-zone candle-close, 7
+    // universe instruments, so ~28 lines/day.
+    console.log(
+      `[Market Data] AV news for ${instrument} (as ${normalizeForAlphaVantage(instrument)}): ` +
+        `${data.feed.length} articles`,
+    );
 
     return data.feed.map((article: Record<string, unknown>) => {
     const score = parseFloat(String(article.overall_sentiment_score || '0'));
