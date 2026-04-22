@@ -13,6 +13,8 @@ import {
   _resetTwelveDataState,
   _getCandleCache,
   _mapToTwelveDataSymbol,
+  _resetAlphaVantageRateLimitFlag,
+  fetchNewsContext,
 } from '../src/mcp-server/market-data.js';
 
 describe('withCache', () => {
@@ -275,6 +277,48 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Dropped 2 malformed'),
     );
+  });
+
+  it('fetchNewsContext returns [] + logs once when AV rate-limit response is detected', async () => {
+    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
+    _resetAlphaVantageRateLimitFlag();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Exact shape AV returns on free-tier exhaustion — HTTP 200, {Information}
+    // body, no `feed`. Pre-fix this fell through `!data.feed` → silent [].
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        Information:
+          'We have detected your API key as ABCDEFGH and our standard API rate limit is 25 requests per day. Please subscribe to any of the premium plans...',
+      },
+    });
+
+    const first = await fetchNewsContext('EURUSD');
+    const second = await fetchNewsContext('GOLD');
+    const third = await fetchNewsContext('OIL_CRUDE');
+
+    // All three return [] gracefully — no throws.
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(third).toEqual([]);
+
+    // Loud log fires exactly once — not three times. Ops sees the signal
+    // without the log being flooded by every cycle's worth of calls.
+    const rateLimitLogCalls = errSpy.mock.calls.filter((args) =>
+      typeof args[0] === 'string' && args[0].includes('Alpha Vantage daily rate limit reached'),
+    );
+    expect(rateLimitLogCalls).toHaveLength(1);
+  });
+
+  it('fetchNewsContext wraps in withFallback — axios throws degrade to []', async () => {
+    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(axios, 'get').mockRejectedValue(new Error('Network outage'));
+
+    // Pre-fix (unwrapped), this throw would propagate to the caller and
+    // crash researcher-agent's Promise.all. Post-fix: silent empty.
+    const result = await fetchNewsContext('EURUSD');
+    expect(result).toEqual([]);
   });
 
   it('_resetTwelveDataState clears BOTH the daily-cap breaker and the candle cache', async () => {

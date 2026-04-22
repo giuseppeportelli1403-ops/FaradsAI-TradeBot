@@ -587,22 +587,73 @@ export async function fetchYieldCurve(): Promise<{ us2y: number; us10y: number; 
 
 const ALPHA_VANTAGE_BASE = 'https://www.alphavantage.co/query';
 
+// One-shot flag so we loudly announce AV's daily-quota exhaustion the first
+// time it's observed in this process, then fall silent on repeat responses.
+// Same UX goal as the TwelveData daily-cap error — let ops see it without
+// flooding the log when every subsequent cycle hits the same cap.
+let alphaVantageRateLimitLogged = false;
+
+/** Exposed for tests — reset the one-shot AV rate-limit log flag. */
+export function _resetAlphaVantageRateLimitFlag(): void {
+  alphaVantageRateLimitLogged = false;
+}
+
+// TODO(next-session, 2026-04-23+): Farad tickers are passed raw to Alpha
+// Vantage's `tickers` parameter, but AV expects prefixed forms like
+// FOREX:EUR, CRYPTO:BTC, or raw stock symbols — not EURUSD/OIL_CRUDE/GOLD.
+// Live-probe verification was blocked 2026-04-22 by AV's 25-req/day free-
+// tier quota being exhausted mid-audit. Next session (after UTC midnight,
+// when the quota resets) probe the correct ticker-format per Farad-universe
+// symbol and route through a mapping similar to TWELVE_DATA_SYMBOL_MAP,
+// then enable. Until then, every non-stock instrument silently returns
+// zero news items — which is at least consistent and graceful.
+function normalizeForAlphaVantage(instrument: string): string {
+  return instrument;
+}
+
 export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> {
-  const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
-  if (!apiKey) { console.error('[Market Data] ALPHA_VANTAGE_API_KEY not set'); return []; }
+  // withFallback wrapper: any axios error, parse failure, or unexpected
+  // response shape returns an empty NewsItem[] instead of bubbling. Important
+  // because unwrapped throws from this function propagate into scanner /
+  // researcher Promise.all blocks and can tear down an entire cycle. Pattern
+  // matches fetchVix/fetchDxy/fetchYieldCurve etc. The console.error from
+  // withFallback itself gives ops a visible trail when things go wrong.
+  return withFallback(async () => {
+    const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
+    if (!apiKey) {
+      console.error('[Market Data] ALPHA_VANTAGE_API_KEY not set');
+      return [];
+    }
 
-  const { data } = await axios.get(ALPHA_VANTAGE_BASE, {
-    params: {
-      function: 'NEWS_SENTIMENT',
-      tickers: instrument,
-      apikey: apiKey,
-      limit: 10,
-    },
-  });
+    const { data } = await axios.get(ALPHA_VANTAGE_BASE, {
+      params: {
+        function: 'NEWS_SENTIMENT',
+        tickers: normalizeForAlphaVantage(instrument),
+        apikey: apiKey,
+        limit: 10,
+      },
+    });
 
-  if (!data.feed) return [];
+    // AV's "daily quota exhausted" signal comes back as HTTP 200 + a lone
+    // {Information: "We have detected your API key as ... 25 requests per
+    // day ..."} object with no `feed`. The pre-existing `!data.feed` guard
+    // treats this as "empty news" — which silently masks the fact that
+    // the integration has stopped working entirely. Detect the signature
+    // and surface it once per process so ops notices.
+    if (!data.feed && typeof data.Information === 'string' && /rate limit|requests per day|standard api rate limit/i.test(data.Information)) {
+      if (!alphaVantageRateLimitLogged) {
+        console.error(
+          `[Market Data] Alpha Vantage daily rate limit reached (25 req/day on free tier). ` +
+            `News scores will be zero for the rest of the UTC day. Quota resets at UTC midnight.`,
+        );
+        alphaVantageRateLimitLogged = true;
+      }
+      return [];
+    }
 
-  return data.feed.map((article: Record<string, unknown>) => {
+    if (!Array.isArray(data.feed)) return [];
+
+    return data.feed.map((article: Record<string, unknown>) => {
     const score = parseFloat(String(article.overall_sentiment_score || '0'));
     const absScore = Math.abs(score);
 
@@ -623,4 +674,5 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
       summary: article.summary as string,
     };
   });
+  }, [] as NewsItem[]);
 }
