@@ -19,6 +19,22 @@ import { CandleCache, TIMEFRAME_INTERVAL } from './candle-cache.js';
 
 export { RateLimitQueuedError } from './rate-limiter.js';
 
+/**
+ * Thrown by fetchCandles when the Twelve Data daily-credit circuit breaker
+ * has tripped. A dedicated class lets callers check `err instanceof
+ * TwelveDataDailyCapError` rather than matching on the message string —
+ * the message wording can change without silently breaking the scanner's
+ * ops-signal log or any other downstream consumer.
+ */
+export class TwelveDataDailyCapError extends Error {
+  public readonly resetsAt: Date;
+  constructor(resetsAt: Date) {
+    super(`Twelve Data daily cap reached — resets at ${resetsAt.toISOString()}`);
+    this.name = 'TwelveDataDailyCapError';
+    this.resetsAt = resetsAt;
+  }
+}
+
 // ==================== RESILIENCE UTILITIES ====================
 
 /** Wrap an async fetcher with a time-based cache. */
@@ -240,9 +256,7 @@ export async function fetchCandles(
   //    the daily cap. Twelve Data still counts post-exhaustion calls, so this
   //    is how we stop bleeding credits (and log noise) until UTC midnight.
   if (isDailyCapTripped()) {
-    throw new Error(
-      `Twelve Data daily cap reached — resets at ${new Date(twelveDataDailyCap!.resetsAt).toISOString()}`
-    );
+    throw new TwelveDataDailyCapError(new Date(twelveDataDailyCap!.resetsAt));
   }
 
   // 4. Await a rate-limit token. Throws RateLimitQueuedError if the 60s wait

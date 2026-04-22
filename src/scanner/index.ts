@@ -18,7 +18,7 @@
 // older markets[0] heuristic and contains ETF/weekend contracts for 4 entries;
 // the epic field here is the source of truth.
 
-import { fetchCandles } from '../mcp-server/market-data.js';
+import { fetchCandles, TwelveDataDailyCapError } from '../mcp-server/market-data.js';
 import { getNewsScore } from '../news/index.js';
 import type { Candle, RankedInstrument } from '../types.js';
 
@@ -279,11 +279,11 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           // every subsequent fetchCandles will also fail for the rest of
           // the UTC day. Ops needs to see that once, loudly, so they can
           // investigate why credits were consumed early.
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes('daily cap reached')) {
+          if (err instanceof TwelveDataDailyCapError) {
             console.error(
               `[Scanner] Twelve Data daily cap tripped while scoring ${inst.ticker} — ` +
-                `remaining scanner cycles today will return mostly-neutral bias.`,
+                `resets at ${err.resetsAt.toISOString()}. Remaining cycles today ` +
+                `will return mostly-neutral bias.`,
             );
           }
           return null;
