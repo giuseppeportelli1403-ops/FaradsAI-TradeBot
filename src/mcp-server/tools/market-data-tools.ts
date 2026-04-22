@@ -139,7 +139,12 @@ export function registerMarketDataTools(server: McpServer): void {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('get_correlation_matrix', async ({ instrument, compare_with }) => {
-      const defaults = ['DXY', 'SPX', 'NAS100', 'XAUUSD', 'USOIL', 'EURUSD'];
+      // DXY / SPX / NAS100 are TWELVE_DATA_UNAVAILABLE on the current tier —
+      // the correlation call for each would return neutral (0). USDJPY is a
+      // workable USD-strength proxy that IS available on Grow, so swap it in
+      // for DXY's macro slot. SPX/NAS100 have no clean substitute at this
+      // tier, so we drop them rather than burn cycles on known-zero results.
+      const defaults = ['USDJPY', 'XAUUSD', 'USOIL', 'EURUSD'];
       const comparisons = compare_with || defaults.filter(d => d !== instrument);
       const correlations = await Promise.all(
         comparisons.map(other => computeCorrelation(instrument, other))

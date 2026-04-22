@@ -136,8 +136,6 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
   OIL_CRUDE: 'WTI/USD',
   GOLD: 'XAU/USD',
   SILVER: 'XAG/USD',
-  // Macro — DXY is USDX or DX on TD
-  DXY: 'DX',
   // Aliases — LLM agents and correlation defaults sometimes reach for the
   // common cross-broker names rather than Farad's universe tickers. Map them
   // to the same TD destinations so an "XAUUSD" / "USOIL" call doesn't fall
@@ -157,7 +155,16 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
 // and SPX resolves to a Toronto penny stock. Returning [] makes the scanner
 // and correlation fallbacks degrade cleanly instead of throwing "symbol or
 // figi missing" or, worse, silently scoring on unrelated listings.
-const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX', 'NAS100', 'SPX']);
+//
+// DXY is here for the same class of reason — the previous 'DX' mapping
+// actually resolved to a NYSE REIT (not the ICE dollar index), and the
+// Grow-tier alternatives 'USDX' / 'USD' are both WisdomTree/Invesco ETFs
+// that track DXY *directionally* but trade around 25–70 in dollar terms
+// (real DXY is ~99). Rather than ship a misleading absolute level to the
+// researcher brief, we return dxy=0/flat and let the agent treat USD as a
+// neutral signal. A future Pro-tier upgrade or alternative provider
+// (Fixer.io, Finnhub) can restore real DXY.
+const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX', 'NAS100', 'SPX', 'DXY']);
 
 /** Exposed for tests — expose the mapper to verify coverage. */
 export function _mapToTwelveDataSymbol(ticker: string): string | null {

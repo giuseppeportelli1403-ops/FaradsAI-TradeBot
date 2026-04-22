@@ -157,9 +157,8 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('UK100')).toBe('UKX');
   });
 
-  it('maps OIL_CRUDE and DXY', () => {
+  it('maps OIL_CRUDE to WTI/USD', () => {
     expect(_mapToTwelveDataSymbol('OIL_CRUDE')).toBe('WTI/USD');
-    expect(_mapToTwelveDataSymbol('DXY')).toBe('DX');
   });
 
   it('maps GOLD and SILVER to TD spot symbols (not the unrelated NYSE/BSE listings)', () => {
@@ -174,10 +173,16 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('WTIUSD')).toBe('WTI/USD');
   });
 
-  it('returns null for VIX and US equity indices (unavailable on Grow tier)', () => {
+  it('returns null for VIX, US equity indices, and DXY (unavailable on Grow tier)', () => {
     expect(_mapToTwelveDataSymbol('VIX')).toBeNull();
     expect(_mapToTwelveDataSymbol('NAS100')).toBeNull();
     expect(_mapToTwelveDataSymbol('SPX')).toBeNull();
+    // DXY's previous 'DX' mapping resolved to a NYSE REIT, not the dollar
+    // index. Grow-tier alternatives (USDX, USD) are directional ETF proxies
+    // with absolute levels 25–70x off real DXY (~99). Marked unavailable so
+    // fetchDxy returns dxy=0/flat rather than shipping misleading numbers
+    // to the researcher brief.
+    expect(_mapToTwelveDataSymbol('DXY')).toBeNull();
   });
 
   it('passes through natively-accepted TD symbols', () => {
