@@ -1,123 +1,109 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-21 (end of Day 2 — 9 PRs shipped, cost optimised, auto-deploy live)
+Last updated: 2026-04-22 (end of Day 3 — 5 PRs shipped, TD audit complete, strategy loosened, AV routing ready for verification)
 Project: BetterOpsAI Trading Bot ("Farad")
-Branch: **master** (now the default; `main` deleted today. Repo: https://github.com/giuseppeportelli1403-ops/FaradsAI-TradeBot)
-Last commit on master: `d7ed32a` — "perf: tighten iteration + output-token caps; swap AAPL/US30 for OIL/SILVER"
-VPS head: `d7ed32a` (same as master — auto-deploy working)
-pm2 state: restart #16, PID 50271, online
+Branch: **master**
+Last commit on master: `c885c21` — "fix: sync kill-switch thresholds to 6% daily / 10% weekly everywhere"
+VPS head: `c885c21` (synced — auto-deploy working)
+pm2 state: restart #26, PID 59591, online, ~100 MB, no errors in post-deploy log
 
 ## 🌅 FIRST THING TO READ NEXT SESSION
 
-**Bot is fully configured and running on its leanest production setup.** 9 PRs merged today across infrastructure, architecture, and cost. Nothing pending. Key items to be aware of:
+**Start the session by reading `C:\Users\user\.claude\projects\C--Program-Files-Git\memory\project_farad_av_verification_2026_04_23.md`** — there's a saved reminder about two AV-mapping verification items that need attention tomorrow morning. Giuseppe flagged them as important.
 
-1. **Auto-deploy is live.** Push to master (via PR + admin merge) triggers CI + SSH + pm2 restart in ~90 seconds. No more manual `pm2 restart` trips.
-2. **Branch protection + ruleset active on master.** Direct pushes blocked (except admin override). Justin opens PRs, Giuseppe reviews/approves/merges.
-3. **All agents on Claude Sonnet 4.6.** Zero Opus usage in production code. Expected daily burn €8-18.
-4. **3-leg split-position is live** — schema, monitor, alerts, and prompts all aligned. Orphan-trade bug from Day 1 is eliminated.
-5. **10-instrument universe** — tight-spread core only (4 FX majors, 3 indices, 3 commodities).
+**Bot state is healthy but has still not placed a single trade** in 3 days of demo. Today's work addressed every systemic blocker we could identify (data routing, credential leaks, scoring thresholds, bias detection). The remaining bottleneck is news score (pinned at 0 for every instrument due to AV ticker-format issue) — fixed in code today but not yet verifiable (AV quota exhausted). First live test tomorrow morning once quota resets at UTC midnight.
 
-## 📋 What shipped today (9 PRs)
+## 📋 What shipped today — 5 PRs, 22 commits
 
-| PR | Commit | Purpose |
+| PR | Commit range | Purpose |
 |---|---|---|
-| 1 | `2bfc0e1` | CI npm install fix + revert "No position cap" agent hint |
-| 2 | `b726086` | CODEOWNERS (auto-route PRs to Giuseppe) |
-| 3 | `d26d217` | pull_request trigger for CI (fixes required-status-check chicken-egg) |
-| 4 | `475f2d7` | **3-leg architecture** (schema + monitor + alerts + agent log_trade; 5 phases, 660+ LOC) |
-| 5 | `7ff76cd` | Remove Asian Open kill zone + 02:30 UTC researcher |
-| 6 | `cb52f40` | ICT Opus→Sonnet, ICT effort→medium, drop 4H cron, skip out-of-killzone |
-| 7 | `d416a7c` | All Opus → Sonnet (Swing + Review) |
-| 8 | `4d51387` | Universe 25→10 + Swing mgmt 7×→3× + Swing effort→medium |
-| 9 | `d7ed32a` | maxIter 15→8, max_tokens 16k→12k, swap AAPL/US30 for OIL/SILVER |
+| #13 | `4bea63b` → `1cea32b` | TD symbol map fix (GOLD/SILVER were NYSE stock / Indian ETF, now XAU/USD / XAG/USD) + scheduler credential-leak fix (summarizeError helper) |
+| #14 | `f4bcb96` → `bd75c39` | P0/P1 audit bundle (7 commits): 9 more credential-leak vectors fixed, DXY→'DX' REIT retired, backtest symbol map synced, scanner daily-cap signal surfaced, cache-key aliasing fixed, NaN guards added |
+| #15 | `58ce54b` → `43c6991` | P2 cleanup (4 commits): indices → UNAVAILABLE (were wrong ETFs), TwelveDataDailyCapError typed class, fetchNewsContext withFallback + AV rate-limit detection, reviewer tidy |
+| #16 | `ce339a8` → `11dda14` | Strategy loosening (5 commits): Tier 3 50→45, base 25→30, slope-based bias clarity fallback, AV ticker routing (FOREX:X/GLD/SLV/USO), prompt sync |
+| #17 | `9c6f259` | Kill-switch consistency sync to 6% daily / 10% weekly across all refs |
 
-Every PR: CI-tested, admin-merged, auto-deployed. Zero direct pushes to master.
+Every PR: reviewer-swept → CI-green → admin-merged → auto-deployed → live-verified.
 
-## 🎯 Final production config
+## 🎯 Current production config (post-today)
 
-**Agents — all Claude Sonnet 4.6:**
-| Agent | Effort | maxIter | max_tokens |
-|---|---|---|---|
-| ICT | medium | 8 | 12,000 |
-| Swing | medium | 8 | 12,000 |
-| Review | max | — | 12,000 |
-| Analyst | medium | — | 2,000 |
-| Reflection | high | — | 4,000 |
-| Researcher | medium | — | 1,000 |
-
-**Universe (10):**
-- Indices: US100, US500, DE40
-- Commodities: GOLD, SILVER, OIL_CRUDE
+**Universe (7 — indices removed):**
+- Commodities: GOLD, SILVER, OIL_CRUDE (all correctly routed to spot)
 - FX Majors: EURUSD, GBPUSD, USDJPY, AUDUSD
 
-**Cron schedule (live):**
-```
-*/5 * * * *       ICT monitor + candle close (KILL-ZONE GATED)
-*/8 * * * *       Capital keep-alive
-30 5 * * *        Researcher daily pre-London
-0 22 * * 0        Researcher weekly
-30 21 * * 1-5     Swing daily
-0 6 * * 1         Swing weekly outlook
-0 8,13,17 * * 1-5 Swing mgmt (session boundaries: London Open / NY Open / London Close)
-0 0 * * 0         Weekly Review (Sunday)
-```
+**TWELVE_DATA_UNAVAILABLE set (9 symbols):**
+- VIX (Pro tier required)
+- NAS100, SPX, US30, US100, US500, DE40, UK100 (no reliable Grow-tier index feed)
+- DXY (was resolving to NYSE REIT; real DXY needs Pro tier or alt provider)
 
-**Flags:**
-- `DEMO_RELAXED_GATES=true` — Tier 3 active, kill-zone bonus +10 outside, R:R 1.5:1 for tight-spread symbols
-- TD Grow paid plan active (5,000 credits/day)
+**Scanner scoring:**
+- Base: 30 (was 25)
+- Clarity: 0 / 10 / **15 (new slope-fallback)** / 20
+- Kill-zone bonus: +15 in / +10 out (demo-relaxed)
+- News: -15 to +20 (still pinned at 0; AV routing live tomorrow)
+- Spread bonus: +5 if tight
+- Tiers: Tier 1 ≥80 (1.5% risk), Tier 2 ≥60 (1% risk), Tier 3 ≥45 (0.5% risk) — was Tier 3 ≥50
 
-## 💰 Cost projection
+**Kill switches:**
+- Daily: -6% (code-enforced in trading-agent / swing-agent / DB log / dead MCP path)
+- Weekly: -10% (prompt-advisory only — no code enforcement)
 
-| Stage | €/day |
-|---|---|
-| Morning baseline (all Opus, 25 instruments, no gates) | 100-130 |
-| End of day config (all cuts) | **8-18** |
+**Agents — all Claude Sonnet 4.6:** ICT (medium / 8 iter / 12k tok), Swing (medium / 8 / 12k), Researcher (medium), Analyst (medium), Reflection (high), Review (max).
 
-For the remaining 12 demo days: **~€100-220 total**. Under the €200 target Giuseppe originally budgeted for 2 weeks.
+**Cron schedule:** unchanged from 2026-04-21. `*/5` ICT kill-zone-gated, `30 5` Researcher daily, `30 21 Mon-Fri` Swing daily, hourly Swing mgmt, Sunday 00:00 Review.
 
-Twelve Data paid tier: $79/mo ongoing.
+## 🧪 Test suite
 
-## 🚧 Known open item — 3-leg trading behaviour unproven in live
+**167/167 passing** (was 145 start of day). +22 new regression tests across:
+- `tests/error-summary.test.ts` (6) — credential-leak regression
+- `tests/market-data.test.ts` (+10) — symbol map coverage, cache aliasing, state reset, NaN filter, AV rate-limit detection, withFallback, normalizeForAlphaVantage routing
+- `tests/scanner.test.ts` (+4) — slope-based bias clarity fallback
+- `tests/instrument-universe.test.ts` (+1) — invariant: universe ⊆ non-null mapper
+- `tests/scheduler.test.ts` (updated ping-failure assertion) — credential-leak shape regression
+- `tests/demo-gates.test.ts` (updated) — Tier 3 45-59 + 6%/10% kill switch literals
 
-The 3-leg architecture (schema + monitor + Telegram) is fully implemented and tested (143 vitest cases pass including specific TP1/TP2/TP3 handler regressions). But the bot hasn't fired a real 3-leg trade yet — Day 2 passed without a qualifying setup after all the infrastructure work. First live 3-leg trade will validate the whole end-to-end chain (agent opens 3 Capital positions → log_trade records A+B+C → monitor tracks → TP1 moves B+C to BE → etc.).
+## 🚧 Known open items
 
-**Watch tomorrow's Telegram for** 🟢 *NEW TRADE* showing Leg A/B/C with TP1/TP2/TP3 R:R.
+**1. AV ticker-format verification (HIGH PRIORITY — do first thing tomorrow).**
+- Memory file saved at `project_farad_av_verification_2026_04_23.md` will auto-surface on next session.
+- Two items: (a) confirm each Farad ticker returns >0 AV articles via the new `[Market Data] AV news for ... : N articles` log lines; (b) decide whether GLD/SLV/USO ETF-proxy news is real commodity sentiment or fund-flow noise — if noise, switch to AV's `topics=economy_macro`.
+
+**2. MCP server dead code** (`src/mcp-server/index.ts`, `tools/*.ts`, `logger.ts`).
+- Confirmed: pm2 runs `dist/index.js` which never imports these. Agents call `fetchCandles`/etc. directly.
+- Decision needed post-demo: (a) delete, (b) wire up as optional stdio endpoint for external agents, (c) keep with "NOT WIRED" header.
+- 0 `[MCP]` log lines in prod — explained by this. Not a bug, dead-code artifact.
+
+**3. Zero trades in 3 days.**
+- Loosening shipped today (Approach 2). Slope clarity resolves today's morning bias conflicts; Tier 3 threshold dropped to 45; prompts synced.
+- NY Open 13:00 UTC is the first cycle post-loosening (fires ~3 minutes after this doc is written).
+- Failure-escalation plan per spec: if 3 consecutive kill-zone cycles still all-SKIP on bias conflicts → escalate to Approach 3 (R:R relaxation + iteration 8→12 + longer kill zones).
+
+**4. Weekly 10% kill switch is advisory only** (prompt-driven). No code enforcement. If you ever want hard weekly enforcement, it's a separate implementation (~30 lines in trading-agent/swing-agent's `get_daily_pnl` executeTool).
 
 ## 🛡️ Infrastructure state
 
-- **Branch protection on master:** PR required, 1 approval required, required `Build + Test` status check, no force-push, no delete
-- **Ruleset blocking `main` recreation:** active
-- **GitHub Pro:** active (€4/mo for private-repo branch protection)
-- **Auto-deploy:** GitHub Actions `.github/workflows/deploy.yml` — CI test gate + restricted-command SSH deploy key
-- **Deploy key on VPS:** `~/.ssh/github_deploy` (never leaves VPS). `authorized_keys` has `command="/home/bot/deploy.sh"` restriction
-- **3 secrets in GitHub:** VPS_HOST, VPS_USER, VPS_SSH_KEY
-- **CODEOWNERS:** `* @giuseppeportelli1403-ops`
+No infrastructure changes today. Same as 2026-04-21:
+- Auto-deploy via `.github/workflows/deploy.yml` (CI gate + restricted SSH deploy key)
+- Branch protection: master requires PR + 1 approval + CI green. Admin-merge used throughout today (GitHub forbids self-approval by PR author).
+- CODEOWNERS: `* @giuseppeportelli1403-ops`
+- 26 pm2 restarts lifetime; 4 deploys today, each <3s downtime.
 
-## 🤝 Justin's merge — what survived vs what got reverted
+## 📚 Reference docs added today
 
-From Justin's commit `9e095b0` (merged PR #67e67d9 earlier today):
+- `docs/superpowers/specs/2026-04-22-strategy-loosening-approach-2-design.md` (241 lines)
+- `docs/superpowers/plans/2026-04-22-strategy-loosening-approach-2.md` (686 lines)
 
-**Kept in production:** 3-leg architecture (now code-complete), backtest engine, Tier 2 at 60, Tier 3 permanent at 50, outside kill-zone bonus +5, scanner cache TTL 15 min, per-instrument coordination lock, ICT + Swing prompt updates.
-
-**Reverted during cost work:** Asian Open kill zone + 02:30 researcher (PR #5), 4H ICT cron (PR #6), Swing mgmt 7×/day (PR #8 back to 3×), "No position cap" agent hint (PR #1), 25-instrument universe (PR #8 trimmed to 10).
-
-**Replaced:** Justin's deploy workflow (no CI gate, no restricted key) replaced with our CI-gated workflow.
-
-Justin's real contributions (3-leg + backtest engine) survived. His risky behavioural changes (Asian sprawl, no-cap hint, 7×/day mgmt) were walked back.
-
-## 📚 Reference docs (all in `audit/`)
-
-- `audit/BENCHMARK_REPORT.md` / `.docx` — full benchmark vs Jesse/Freqtrade/Backtrader/Hummingbot (498 lines)
-- `audit/ARCHITECTURE_offline_replay.md` / `.docx` — architecture spec for offline backtest harness (~700 lines, option (C) from the 3-leg decision — Justin ended up building this separately and we merged it)
-- `audit/build_docx.py` / `build_architecture_docx.py` — pypandoc scripts to regenerate .docx from .md
+These shipped with PR #16 for traceability.
 
 ## 🚦 Next session priorities
 
-1. **Check tomorrow morning:** `"what did the bot do overnight?"` — pull pm2 logs, confirm kill-zone gate is skipping dead hours
-2. **First 3-leg live trade** will be the infrastructure validation moment
-3. **Anthropic dashboard** — confirm daily burn lands at €8-18 (steady state after today's dev restarts settle)
-4. **Twelve Data dashboard** — confirm paid tier is working normally, no cap-exhaust errors
-5. **Review agent Sunday 00:00 UTC** — first post-3-leg-upgrade weekly review
+1. **[AUTO-SURFACED] AV news verification** — memory file will prompt Claude to raise this.
+2. **Morning status check** — "what did the bot do overnight?" — pull pm2-out.log for ICT / Swing cycles since deploy, check equity, check for first `place_order` call.
+3. **First trade watch** — if it happened, inspect the 3-leg Telegram alert + reflection-agent output; if not, evaluate whether to escalate to Approach 3.
+4. **Anthropic + TD dashboards** — confirm daily burn holds at €8-18, TD credit usage well under 800/day cap.
+5. **Post-demo MCP dead-code decision** (not urgent this week, flag when demo wraps).
 
 ## 🧘 Session close state
 
-Everything merged, deployed, healthy. Bot armed for tomorrow's London Open. Zero pending work items. Repo clean at `d7ed32a`, VPS synced.
+5 PRs merged, 22 commits deployed, 22 new regression tests, all reviewer-swept, all live-verified. Bot is on the cleanest, most consistent state it's been in. Equity $996.67 unchanged; TP1 verification still pending. Strategy loosening is the last remaining lever before we'd need to either extend kill zones or reduce R:R floors (Approach 3 territory).
+
+Repo clean at `c885c21`, VPS synced, memory reminder armed.
