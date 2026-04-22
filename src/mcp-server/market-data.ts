@@ -97,6 +97,17 @@ export function _resetTwelveDataDailyCap(): void {
   twelveDataDailyCap = null;
 }
 
+/**
+ * Exposed for tests — reset BOTH the daily-cap breaker AND the candle cache.
+ * Safer than calling _resetTwelveDataDailyCap alone, which leaves cached
+ * candles in place and can poison the next test case with stale data.
+ * Prefer this helper in beforeEach blocks going forward.
+ */
+export function _resetTwelveDataState(): void {
+  twelveDataDailyCap = null;
+  candleCache.clear();
+}
+
 /** Exposed for tests/monitoring — current breaker state. */
 export function _getTwelveDataDailyCap(): { resetsAt: number } | null {
   return twelveDataDailyCap;
@@ -182,23 +193,30 @@ export async function fetchCandles(
   if (!apiKey) { console.error('[Market Data] TWELVE_DATA_API_KEY not set'); return []; }
 
   const interval = TIMEFRAME_INTERVAL[timeframe];
-  const cacheKey = CandleCache.key(symbol, interval, outputSize);
 
-  // 1. Cache first — if we already fetched this (symbol,interval,size) inside
-  //    the TTL window, serve it without burning a credit.
-  const cached = candleCache.get(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
-  // 2. Map to Twelve Data's symbol format. Returns null for symbols not
-  //    available on the current tier (e.g. VIX needs Pro). We return an empty
-  //    array in that case so callers like fetchVix degrade gracefully instead
-  //    of the Market Researcher crashing on an unhandled throw.
+  // 1. Map to Twelve Data's symbol format FIRST. Two reasons:
+  //
+  //    (a) UNAVAILABLE symbols (VIX / NAS100 / SPX / DXY on Grow tier) short-
+  //        circuit here without consulting cache or network — fast path.
+  //
+  //    (b) The cache is keyed on the TD-side symbol so that aliases share
+  //        entries. Pre-2026-04-22, fetchCandles('GOLD', ...) and
+  //        fetchCandles('XAUUSD', ...) both mapped to TD's XAU/USD but were
+  //        cached separately — ~2x credits for identical data. Routing the
+  //        cache key through the mapper collapses that duplication.
   const tdSymbol = _mapToTwelveDataSymbol(symbol);
   if (tdSymbol === null) {
     console.warn(`[Market Data] ${symbol} is not available on the current Twelve Data plan tier — returning empty candles.`);
     return [];
+  }
+
+  const cacheKey = CandleCache.key(tdSymbol, interval, outputSize);
+
+  // 2. Cache next — if we already fetched this (tdSymbol,interval,size)
+  //    inside the TTL window, serve it without burning a credit.
+  const cached = candleCache.get(cacheKey);
+  if (cached) {
+    return cached;
   }
 
   // 3. Circuit-breaker: skip the network call entirely if we've already hit

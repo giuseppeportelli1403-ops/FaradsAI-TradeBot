@@ -10,6 +10,7 @@ import {
   computeCorrelation,
   _getTwelveDataDailyCap,
   _resetTwelveDataDailyCap,
+  _resetTwelveDataState,
   _getCandleCache,
   _mapToTwelveDataSymbol,
 } from '../src/mcp-server/market-data.js';
@@ -201,6 +202,61 @@ describe('Twelve Data symbol mapping', () => {
   it('is case-insensitive on input', () => {
     expect(_mapToTwelveDataSymbol('eurusd')).toBe('EUR/USD');
     expect(_mapToTwelveDataSymbol('EurUsd')).toBe('EUR/USD');
+  });
+});
+
+describe('fetchCandles cache keying by mapped TD symbol', () => {
+  const originalKey = process.env.TWELVE_DATA_API_KEY;
+
+  beforeEach(() => {
+    process.env.TWELVE_DATA_API_KEY = 'test-key';
+    _resetTwelveDataState();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env.TWELVE_DATA_API_KEY;
+    else process.env.TWELVE_DATA_API_KEY = originalKey;
+    _resetTwelveDataState();
+    vi.restoreAllMocks();
+  });
+
+  it('GOLD and XAUUSD share a cache entry (both resolve to XAU/USD at TD)', async () => {
+    // Mock one TD response; if the second call comes from cache, axios.get
+    // fires exactly once even though we call fetchCandles with different
+    // Farad tickers.
+    const getSpy = vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [
+          { datetime: '2026-04-22 17:00:00', open: '4759', high: '4762', low: '4758', close: '4760', volume: '0' },
+        ],
+      },
+    });
+
+    const goldCandles = await fetchCandles('GOLD', '1h', 5);
+    const xauCandles = await fetchCandles('XAUUSD', '1h', 5);
+
+    expect(goldCandles).toEqual(xauCandles);
+    // The critical assertion: TD was hit exactly once. Pre-fix both aliases
+    // triggered separate network calls, doubling credit usage.
+    expect(getSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('_resetTwelveDataState clears BOTH the daily-cap breaker and the candle cache', async () => {
+    // Prime the cache with a fetch.
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [{ datetime: '2026-04-22 17:00:00', open: '1', high: '1', low: '1', close: '1', volume: '0' }],
+      },
+    });
+    await fetchCandles('EURUSD', '1h', 5);
+    expect(_getCandleCache().size()).toBeGreaterThan(0);
+
+    _resetTwelveDataState();
+    expect(_getCandleCache().size()).toBe(0);
+    expect(_getTwelveDataDailyCap()).toBeNull();
   });
 });
 
