@@ -2,7 +2,7 @@
 // Three relaxations:
 //   1. loadPromptWithDemoContext appends a rule-override block when flag is on
 //   2. Scanner kill-zone bonus goes from 15/0 to 15/10 when flag is on
-//   3. Scanner Tier 3 bracket (score 50-64) activates when flag is on
+//   3. Scanner Tier 3 bracket (score 45-59) activates when flag is on
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { loadPrompt, loadPromptWithDemoContext } from '../src/agents/load-prompt.js';
 
@@ -47,7 +47,9 @@ describe('loadPromptWithDemoContext', () => {
     expect(wrapped).toContain('R:R minimum');
     expect(wrapped).toContain('1.5:1');
     expect(wrapped).toContain('Tier 3 bracket');
-    expect(wrapped).toContain('50-64');
+    // Tier 3 band moved 50-64 → 45-59 on 2026-04-22 when Tier 3 threshold
+    // dropped to 45 in commit ce339a8.
+    expect(wrapped).toContain('45-59');
     expect(wrapped).toContain('0.5% risk');
     expect(wrapped).toContain('Kill-zone score bonus');
   });
