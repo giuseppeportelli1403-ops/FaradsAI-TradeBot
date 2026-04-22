@@ -129,16 +129,35 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
   US30: 'DJIA',
   DE40: 'DAX',
   UK100: 'UKX',
-  // Commodities — OIL_CRUDE isn't a TD symbol; WTI/USD is
+  // Commodities — Farad/Capital tickers → TD spot symbols. Raw "GOLD" / "SILVER"
+  // resolve on TD to a NYSE common stock (Barrick Gold) and a Bombay-listed ETF
+  // respectively, not the spot metal — scanner bias was being computed from
+  // unrelated series before 2026-04-22. WTI/USD is TD's crude oil spot.
   OIL_CRUDE: 'WTI/USD',
+  GOLD: 'XAU/USD',
+  SILVER: 'XAG/USD',
   // Macro — DXY is USDX or DX on TD
   DXY: 'DX',
+  // Aliases — LLM agents and correlation defaults sometimes reach for the
+  // common cross-broker names rather than Farad's universe tickers. Map them
+  // to the same TD destinations so an "XAUUSD" / "USOIL" call doesn't fall
+  // through to a raw ticker TD rejects with "symbol or figi missing".
+  XAUUSD: 'XAU/USD',
+  XAGUSD: 'XAG/USD',
+  USOIL: 'WTI/USD',
+  WTIUSD: 'WTI/USD',
 };
 
 // Symbols that are simply not available on the Grow tier. If we see one of
 // these, return empty candles (which downstream consumers handle gracefully —
 // e.g. fetchVix returns vix=0). Upgrading to Pro tier ($229/mo) unlocks VIX.
-const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX']);
+//
+// NAS100 / SPX are here because TD's Grow tier has no reliable US equity
+// index feed — IXIC is rejected outright, NDX resolves to a Frankfurt ADR,
+// and SPX resolves to a Toronto penny stock. Returning [] makes the scanner
+// and correlation fallbacks degrade cleanly instead of throwing "symbol or
+// figi missing" or, worse, silently scoring on unrelated listings.
+const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX', 'NAS100', 'SPX']);
 
 /** Exposed for tests — expose the mapper to verify coverage. */
 export function _mapToTwelveDataSymbol(ticker: string): string | null {
