@@ -152,10 +152,16 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('AUDUSD')).toBe('AUD/USD');
   });
 
-  it('maps broker-style indices to TD index codes', () => {
-    expect(_mapToTwelveDataSymbol('US30')).toBe('DJIA');
-    expect(_mapToTwelveDataSymbol('DE40')).toBe('DAX');
-    expect(_mapToTwelveDataSymbol('UK100')).toBe('UKX');
+  it('returns null for all equity indices (Grow tier has no reliable index feed)', () => {
+    // Pre-2026-04-22: US30→DJIA, DE40→DAX, UK100→UKX. Each of those TD symbols
+    // resolves to an ETF tracking the index at a completely different price
+    // level (~$40 ETF vs ~$38k index, etc.), so the scanner was computing 1H
+    // bias on unrelated series. Moved to UNAVAILABLE alongside US100/US500/SPX/NAS100.
+    expect(_mapToTwelveDataSymbol('US30')).toBeNull();
+    expect(_mapToTwelveDataSymbol('US100')).toBeNull();
+    expect(_mapToTwelveDataSymbol('US500')).toBeNull();
+    expect(_mapToTwelveDataSymbol('DE40')).toBeNull();
+    expect(_mapToTwelveDataSymbol('UK100')).toBeNull();
   });
 
   it('maps OIL_CRUDE to WTI/USD', () => {
@@ -186,17 +192,11 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('DXY')).toBeNull();
   });
 
-  it('passes through natively-accepted TD symbols', () => {
+  it('passes through natively-accepted TD symbols (individual US stocks)', () => {
     expect(_mapToTwelveDataSymbol('AAPL')).toBe('AAPL');
     expect(_mapToTwelveDataSymbol('MSFT')).toBe('MSFT');
     expect(_mapToTwelveDataSymbol('NVDA')).toBe('NVDA');
     expect(_mapToTwelveDataSymbol('TSLA')).toBe('TSLA');
-    // US100 / US500 aren't in the map and aren't in UNAVAILABLE either — they
-    // currently pass through to TD raw. TD happens to resolve them to Euronext
-    // ETF listings (wrong, but non-empty), so keeping status-quo here rather
-    // than risking a broader rework of the scanner's index handling mid-demo.
-    expect(_mapToTwelveDataSymbol('US100')).toBe('US100');
-    expect(_mapToTwelveDataSymbol('US500')).toBe('US500');
   });
 
   it('is case-insensitive on input', () => {

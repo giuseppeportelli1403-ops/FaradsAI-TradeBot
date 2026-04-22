@@ -136,10 +136,6 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
   USDCHF: 'USD/CHF',
   EURJPY: 'EUR/JPY',
   EURGBP: 'EUR/GBP',
-  // Indices — TD uses academic/exchange tickers, not broker-style
-  US30: 'DJIA',
-  DE40: 'DAX',
-  UK100: 'UKX',
   // Commodities — Farad/Capital tickers → TD spot symbols. Raw "GOLD" / "SILVER"
   // resolve on TD to a NYSE common stock (Barrick Gold) and a Bombay-listed ETF
   // respectively, not the spot metal — scanner bias was being computed from
@@ -175,7 +171,24 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
 // researcher brief, we return dxy=0/flat and let the agent treat USD as a
 // neutral signal. A future Pro-tier upgrade or alternative provider
 // (Fixer.io, Finnhub) can restore real DXY.
-const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX', 'NAS100', 'SPX', 'DXY']);
+//
+// US30 / US100 / US500 / DE40 / UK100 are here because every Grow-tier TD
+// symbol we've tested for them resolves to an unrelated ETF:
+//   - US30 → DJIA              → NYSE ARCX ETF (Dow Jones-tracking, but
+//                                 traded at ~$40 in USD, not the ~$38k index)
+//   - DE40 → DAX               → NASDAQ XNMS ETF in USD (~$45)
+//   - UK100 → UKX              → Euronext XPAR ETF in EUR (~€120)
+//   - US100 / US500 raw         → Euronext XPAR ETFs in EUR
+// The scanner was computing 1H bias on these wrong series for weeks. Returning
+// [] via UNAVAILABLE gives the scanner a clean 'neutral' for indices, matching
+// the DXY/SPX/NAS100 handling. Re-enable when a real index feed is wired
+// (Pro-tier TD has the indices; or add Finnhub's /indices endpoint).
+const TWELVE_DATA_UNAVAILABLE = new Set<string>([
+  'VIX',
+  'NAS100', 'SPX',
+  'DXY',
+  'US30', 'US100', 'US500', 'DE40', 'UK100',
+]);
 
 /** Exposed for tests — expose the mapper to verify coverage. */
 export function _mapToTwelveDataSymbol(ticker: string): string | null {
