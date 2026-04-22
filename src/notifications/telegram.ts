@@ -6,7 +6,7 @@
 //   2. TP1 hit (Position A closed, Position B SL moved to BE)
 //   3. TP2 hit / full trade complete (final P&L in R)
 //   4. SL hit
-//   5. Kill switch activated (daily 4% or weekly 8%)
+//   5. Kill switch activated (daily 6% or weekly 10%)
 //   6. Weekly performance report
 //   7. System alerts (researcher warnings, system review)
 

@@ -61,8 +61,8 @@ documented above. Every other rule remains in force.
    but it no longer hard-gates entry viability.
 
 **NOT relaxed under any circumstance:**
-- Daily 4% loss kill switch — still fires, still halts new trades.
-- Weekly 8% loss kill switch — unchanged.
+- Daily 6% loss kill switch — still fires, still halts new trades.
+- Weekly 10% loss kill switch — unchanged.
 - Coordination lock — ICT and Swing may still NOT open simultaneous positions
   on the same instrument.
 - Split-position method — every trade is still two legs (Position A + B),

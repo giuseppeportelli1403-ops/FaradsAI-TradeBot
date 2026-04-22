@@ -689,7 +689,11 @@ export function deactivateSlTpOrder(tradeId: string, leg: string): void {
 export function upsertDailyPnl(date: string, realised: number, unrealised: number, equity: number): void {
   const total = realised + unrealised;
   const pct = equity > 0 ? (total / equity) * 100 : 0;
-  const killSwitch = pct <= -4 ? 1 : 0;
+  // Daily kill-switch threshold: -6%. Matches the runtime gate in
+  // trading-agent.ts and swing-agent.ts (both use `pct <= -6`). Pre-2026-04-22
+  // this DB column logged -4; the trading agents had been overriding that in
+  // their own executeTool paths, so the DB record lagged the real gate.
+  const killSwitch = pct <= -6 ? 1 : 0;
 
   db.run(`
     INSERT INTO daily_pnl_log (date, realised_pnl, unrealised_pnl, total_pnl, equity, pnl_pct, kill_switch_triggered)

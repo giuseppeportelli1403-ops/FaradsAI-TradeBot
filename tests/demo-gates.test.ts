@@ -57,8 +57,11 @@ describe('loadPromptWithDemoContext', () => {
   it('demo block explicitly preserves the three hard-guards', () => {
     process.env.DEMO_RELAXED_GATES = 'true';
     const wrapped = loadPromptWithDemoContext('ict-agent.md');
-    expect(wrapped).toContain('Daily 4% loss kill switch');
-    expect(wrapped).toContain('Weekly 8% loss kill switch');
+    // Kill-switch values synced to 6% daily / 10% weekly on 2026-04-22 —
+    // matches the runtime gate (pct <= -6) that trading-agent.ts and
+    // swing-agent.ts have enforced for a while.
+    expect(wrapped).toContain('Daily 6% loss kill switch');
+    expect(wrapped).toContain('Weekly 10% loss kill switch');
     expect(wrapped).toContain('Coordination lock');
     expect(wrapped).toContain('Split-position method');
     expect(wrapped).toContain('Live-trading opt-in gate');
