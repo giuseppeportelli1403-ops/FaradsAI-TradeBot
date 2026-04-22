@@ -143,6 +143,29 @@ export function detectBias(candles: Candle[]): BiasResult {
     }
   }
 
+  // ============== SLOPE-BASED CLARITY FALLBACK (2026-04-22) ==============
+  // If formal swing structure is inconclusive, check whether the last 10
+  // closes are strongly monotonic. >=7 of the 9 transitions in the same
+  // direction earns clarity=15 — weaker than clean HH+HL (20) but stronger
+  // than a single partial-swing signal (10). Added to resolve the "scanner
+  // says bearish, 1H says bullish" conflicts that dominated morning SKIP
+  // decisions on 2026-04-22.
+  const last10 = recent.slice(0, 10);
+  let upTransitions = 0;
+  let downTransitions = 0;
+  for (let i = 0; i < last10.length - 1; i++) {
+    // last10 is reverse-chronological: index i is newer than index i+1.
+    if (last10[i].close > last10[i + 1].close) upTransitions++;
+    else if (last10[i].close < last10[i + 1].close) downTransitions++;
+  }
+  if (upTransitions >= 7) {
+    return { bias: 'bullish', clarity: 15, recent_high: recentHigh, recent_low: recentLow, atr };
+  }
+  if (downTransitions >= 7) {
+    return { bias: 'bearish', clarity: 15, recent_high: recentHigh, recent_low: recentLow, atr };
+  }
+  // ============== END SLOPE FALLBACK ==============
+
   return { bias: 'neutral', clarity: 0, recent_high: recentHigh, recent_low: recentLow, atr };
 }
 
@@ -182,9 +205,13 @@ const TIER_1_THRESHOLD = 80;
 // Tier 2 lowered from 65 → 60 to capture more high-quality setups.
 const TIER_2_THRESHOLD = 60;
 // Tier 3 is now permanent (was demo-only). 0.5% risk, requires score 50-59.
-const TIER_3_THRESHOLD = 50;
+// Tier 3 lowered from 50 → 45 (2026-04-22) as part of Approach 2 loosening
+// to unblock observable trade cycles during the demo window. Both demo and
+// non-demo paths now use the same value — the demo-flag split no longer
+// serves a purpose since the production bar should match the demo bar.
+const TIER_3_THRESHOLD = 45;
 function tier3Threshold(): number {
-  return demoRelaxedGatesActive() ? 50 : TIER_3_THRESHOLD;
+  return TIER_3_THRESHOLD;
 }
 
 // Hourly ranking cache. During the free-tier demo window, the scanner's full
@@ -257,8 +284,11 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           score += newsScore;                                                    // -15 to +20
           score += inst.spread_quality === 'tight' ? 5 : 0;                    // Bonus for tight spreads
 
-          // Base score of 25 so Tier 2 (65+) is achievable with moderate signals
-          score += 25;
+          // Base score lifted 25 → 30 (2026-04-22) as part of Approach 2 loosening.
+          // Combined with the Tier 3 threshold drop to 45, any instrument that had
+          // clarity>=10 in a kill zone now clears Tier 3 (base 30 + clarity 10 +
+          // kz 15 + spread 5 = 60, a clean Tier 2).
+          score += 30;
 
           const tier: 1 | 2 | 3 | null =
             score >= TIER_1_THRESHOLD ? 1 :

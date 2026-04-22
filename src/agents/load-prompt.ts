@@ -48,8 +48,8 @@ documented above. Every other rule remains in force.
    an R:R to TP2 of **>= 1.5:1** is acceptable (previously 2:1 for ICT / 3:1
    for Swing). All other symbols keep their original R:R minima.
 
-2. **Tier 3 bracket (composite score 50-64).** The scanner now returns
-   instruments with score 50-64 tagged \`tier: 3\`. You MAY take Tier 3 trades
+2. **Tier 3 bracket (composite score 45-59).** The scanner now returns
+   instruments with score 45-59 tagged \`tier: 3\`. You MAY take Tier 3 trades
    at **0.5% risk** (half of Tier 2's 1%). Tier 3 trades are allowed only if
    bias is clear (clarity >= 10), news score is non-negative, and the
    Analyst Agent approves.
