@@ -162,8 +162,22 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('DXY')).toBe('DX');
   });
 
-  it('returns null for VIX (unavailable on Grow tier)', () => {
+  it('maps GOLD and SILVER to TD spot symbols (not the unrelated NYSE/BSE listings)', () => {
+    expect(_mapToTwelveDataSymbol('GOLD')).toBe('XAU/USD');
+    expect(_mapToTwelveDataSymbol('SILVER')).toBe('XAG/USD');
+  });
+
+  it('resolves common cross-broker aliases to the same TD destinations', () => {
+    expect(_mapToTwelveDataSymbol('XAUUSD')).toBe('XAU/USD');
+    expect(_mapToTwelveDataSymbol('XAGUSD')).toBe('XAG/USD');
+    expect(_mapToTwelveDataSymbol('USOIL')).toBe('WTI/USD');
+    expect(_mapToTwelveDataSymbol('WTIUSD')).toBe('WTI/USD');
+  });
+
+  it('returns null for VIX and US equity indices (unavailable on Grow tier)', () => {
     expect(_mapToTwelveDataSymbol('VIX')).toBeNull();
+    expect(_mapToTwelveDataSymbol('NAS100')).toBeNull();
+    expect(_mapToTwelveDataSymbol('SPX')).toBeNull();
   });
 
   it('passes through natively-accepted TD symbols', () => {
@@ -171,10 +185,12 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('MSFT')).toBe('MSFT');
     expect(_mapToTwelveDataSymbol('NVDA')).toBe('NVDA');
     expect(_mapToTwelveDataSymbol('TSLA')).toBe('TSLA');
+    // US100 / US500 aren't in the map and aren't in UNAVAILABLE either — they
+    // currently pass through to TD raw. TD happens to resolve them to Euronext
+    // ETF listings (wrong, but non-empty), so keeping status-quo here rather
+    // than risking a broader rework of the scanner's index handling mid-demo.
     expect(_mapToTwelveDataSymbol('US100')).toBe('US100');
     expect(_mapToTwelveDataSymbol('US500')).toBe('US500');
-    expect(_mapToTwelveDataSymbol('GOLD')).toBe('GOLD');
-    expect(_mapToTwelveDataSymbol('SILVER')).toBe('SILVER');
   });
 
   it('is case-insensitive on input', () => {
