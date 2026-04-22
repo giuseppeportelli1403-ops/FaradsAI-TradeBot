@@ -58,6 +58,96 @@ describe('detectBias', () => {
     expect(result.recent_low).toBeGreaterThan(0);
     expect(result.recent_high).toBeGreaterThanOrEqual(result.recent_low);
   });
+
+  it('assigns slope-based clarity=15 when closes are >=7/9 monotonic up but swings are mixed', () => {
+    // 20 candles needed for the code to attempt analysis. First 10 (newest)
+    // have mixed highs/lows (no valid swing structure) but closes are
+    // strongly uptrending — 8 of 9 transitions go up.
+    const candles: Candle[] = [];
+    // Candles are reverse-chronological (newest first). Build a steady
+    // climb in closes with noisy highs/lows to prevent formal swings from
+    // registering.
+    for (let i = 0; i < 20; i++) {
+      const close = 100 - i * 0.5; // newer closes are HIGHER (i=0 is newest)
+      candles.push({
+        datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
+        open: close,
+        high: close + (i % 2 === 0 ? 0.1 : 0.8), // alternating spikes, no clean swing highs
+        low: close - (i % 2 === 0 ? 0.8 : 0.1),
+        close,
+        volume: 0,
+      });
+    }
+    const result = detectBias(candles);
+    expect(result.bias).toBe('bullish');
+    expect(result.clarity).toBe(15);
+  });
+
+  it('assigns slope-based clarity=15 when closes are >=7/9 monotonic down but swings are mixed', () => {
+    const candles: Candle[] = [];
+    for (let i = 0; i < 20; i++) {
+      const close = 100 + i * 0.5; // newer closes are LOWER (i=0 is newest)
+      candles.push({
+        datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
+        open: close,
+        high: close + (i % 2 === 0 ? 0.1 : 0.8),
+        low: close - (i % 2 === 0 ? 0.8 : 0.1),
+        close,
+        volume: 0,
+      });
+    }
+    const result = detectBias(candles);
+    expect(result.bias).toBe('bearish');
+    expect(result.clarity).toBe(15);
+  });
+
+  it('returns neutral when closes are noisy (fewer than 7/9 monotonic)', () => {
+    // Alternating up/down closes: 5 ups, 4 downs (or vice versa) — below
+    // the 7/9 threshold.
+    const candles: Candle[] = [];
+    for (let i = 0; i < 20; i++) {
+      const close = 100 + (i % 2 === 0 ? 0.5 : -0.5);
+      candles.push({
+        datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
+        open: close,
+        high: close + 0.2,
+        low: close - 0.2,
+        close,
+        volume: 0,
+      });
+    }
+    const result = detectBias(candles);
+    expect(result.bias).toBe('neutral');
+    expect(result.clarity).toBe(0);
+  });
+
+  it('prefers formal swing-structure clarity=20 over slope fallback when both qualify', () => {
+    // Monotonic closes alone can't produce formal swings (the detector looks
+    // at local extrema of high[] and low[], not of close[]). To stress the
+    // precedence rule, we inject genuine local peaks into `high` and troughs
+    // into `low` at specific indices while keeping closes strictly monotonic.
+    // Local peak at i=3 and i=8 with peak[3] > peak[8] → HH. Local troughs at
+    // i=5 and i=10 with trough[5] > trough[10] → HL. Formal path fires with
+    // clarity=20; slope fallback would also qualify (closes are pure trend)
+    // but the formal return happens first.
+    const candles: Candle[] = [];
+    for (let i = 0; i < 20; i++) {
+      const base = 100 - i * 1.0; // newest close highest (bullish)
+      const isPeak = i === 3 || i === 8;
+      const isTrough = i === 5 || i === 10;
+      candles.push({
+        datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
+        open: base,
+        high: base + (isPeak ? 3 : 0.5),
+        low: base - (isTrough ? 3 : 0.5),
+        close: base,
+        volume: 0,
+      });
+    }
+    const result = detectBias(candles);
+    expect(result.bias).toBe('bullish');
+    expect(result.clarity).toBe(20);
+  });
 });
 
 describe('getCurrentKillZone', () => {

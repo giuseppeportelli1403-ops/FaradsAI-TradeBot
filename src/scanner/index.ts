@@ -143,6 +143,29 @@ export function detectBias(candles: Candle[]): BiasResult {
     }
   }
 
+  // ============== SLOPE-BASED CLARITY FALLBACK (2026-04-22) ==============
+  // If formal swing structure is inconclusive, check whether the last 10
+  // closes are strongly monotonic. >=7 of the 9 transitions in the same
+  // direction earns clarity=15 — weaker than clean HH+HL (20) but stronger
+  // than a single partial-swing signal (10). Added to resolve the "scanner
+  // says bearish, 1H says bullish" conflicts that dominated morning SKIP
+  // decisions on 2026-04-22.
+  const last10 = recent.slice(0, 10);
+  let upTransitions = 0;
+  let downTransitions = 0;
+  for (let i = 0; i < last10.length - 1; i++) {
+    // last10 is reverse-chronological: index i is newer than index i+1.
+    if (last10[i].close > last10[i + 1].close) upTransitions++;
+    else if (last10[i].close < last10[i + 1].close) downTransitions++;
+  }
+  if (upTransitions >= 7) {
+    return { bias: 'bullish', clarity: 15, recent_high: recentHigh, recent_low: recentLow, atr };
+  }
+  if (downTransitions >= 7) {
+    return { bias: 'bearish', clarity: 15, recent_high: recentHigh, recent_low: recentLow, atr };
+  }
+  // ============== END SLOPE FALLBACK ==============
+
   return { bias: 'neutral', clarity: 0, recent_high: recentHigh, recent_low: recentLow, atr };
 }
 
