@@ -97,6 +97,17 @@ export function _resetTwelveDataDailyCap(): void {
   twelveDataDailyCap = null;
 }
 
+/**
+ * Exposed for tests — reset BOTH the daily-cap breaker AND the candle cache.
+ * Safer than calling _resetTwelveDataDailyCap alone, which leaves cached
+ * candles in place and can poison the next test case with stale data.
+ * Prefer this helper in beforeEach blocks going forward.
+ */
+export function _resetTwelveDataState(): void {
+  twelveDataDailyCap = null;
+  candleCache.clear();
+}
+
 /** Exposed for tests/monitoring — current breaker state. */
 export function _getTwelveDataDailyCap(): { resetsAt: number } | null {
   return twelveDataDailyCap;
@@ -136,8 +147,6 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
   OIL_CRUDE: 'WTI/USD',
   GOLD: 'XAU/USD',
   SILVER: 'XAG/USD',
-  // Macro — DXY is USDX or DX on TD
-  DXY: 'DX',
   // Aliases — LLM agents and correlation defaults sometimes reach for the
   // common cross-broker names rather than Farad's universe tickers. Map them
   // to the same TD destinations so an "XAUUSD" / "USOIL" call doesn't fall
@@ -157,13 +166,26 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
 // and SPX resolves to a Toronto penny stock. Returning [] makes the scanner
 // and correlation fallbacks degrade cleanly instead of throwing "symbol or
 // figi missing" or, worse, silently scoring on unrelated listings.
-const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX', 'NAS100', 'SPX']);
+//
+// DXY is here for the same class of reason — the previous 'DX' mapping
+// actually resolved to a NYSE REIT (not the ICE dollar index), and the
+// Grow-tier alternatives 'USDX' / 'USD' are both WisdomTree/Invesco ETFs
+// that track DXY *directionally* but trade around 25–70 in dollar terms
+// (real DXY is ~99). Rather than ship a misleading absolute level to the
+// researcher brief, we return dxy=0/flat and let the agent treat USD as a
+// neutral signal. A future Pro-tier upgrade or alternative provider
+// (Fixer.io, Finnhub) can restore real DXY.
+const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX', 'NAS100', 'SPX', 'DXY']);
 
 /** Exposed for tests — expose the mapper to verify coverage. */
 export function _mapToTwelveDataSymbol(ticker: string): string | null {
   const upper = ticker.toUpperCase();
   if (TWELVE_DATA_UNAVAILABLE.has(upper)) return null;
-  return TWELVE_DATA_SYMBOL_MAP[upper] ?? ticker;
+  // Fall through to the uppercased ticker (NOT the raw input) so that
+  // fetchCandles('aapl') and fetchCandles('AAPL') resolve to the same TD
+  // symbol and share the candle cache. Pre-2026-04-22 this returned the
+  // raw `ticker` which created silent cache misses on lowercase inputs.
+  return TWELVE_DATA_SYMBOL_MAP[upper] ?? upper;
 }
 
 export async function fetchCandles(
@@ -175,23 +197,30 @@ export async function fetchCandles(
   if (!apiKey) { console.error('[Market Data] TWELVE_DATA_API_KEY not set'); return []; }
 
   const interval = TIMEFRAME_INTERVAL[timeframe];
-  const cacheKey = CandleCache.key(symbol, interval, outputSize);
 
-  // 1. Cache first — if we already fetched this (symbol,interval,size) inside
-  //    the TTL window, serve it without burning a credit.
-  const cached = candleCache.get(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
-  // 2. Map to Twelve Data's symbol format. Returns null for symbols not
-  //    available on the current tier (e.g. VIX needs Pro). We return an empty
-  //    array in that case so callers like fetchVix degrade gracefully instead
-  //    of the Market Researcher crashing on an unhandled throw.
+  // 1. Map to Twelve Data's symbol format FIRST. Two reasons:
+  //
+  //    (a) UNAVAILABLE symbols (VIX / NAS100 / SPX / DXY on Grow tier) short-
+  //        circuit here without consulting cache or network — fast path.
+  //
+  //    (b) The cache is keyed on the TD-side symbol so that aliases share
+  //        entries. Pre-2026-04-22, fetchCandles('GOLD', ...) and
+  //        fetchCandles('XAUUSD', ...) both mapped to TD's XAU/USD but were
+  //        cached separately — ~2x credits for identical data. Routing the
+  //        cache key through the mapper collapses that duplication.
   const tdSymbol = _mapToTwelveDataSymbol(symbol);
   if (tdSymbol === null) {
     console.warn(`[Market Data] ${symbol} is not available on the current Twelve Data plan tier — returning empty candles.`);
     return [];
+  }
+
+  const cacheKey = CandleCache.key(tdSymbol, interval, outputSize);
+
+  // 2. Cache next — if we already fetched this (tdSymbol,interval,size)
+  //    inside the TTL window, serve it without burning a credit.
+  const cached = candleCache.get(cacheKey);
+  if (cached) {
+    return cached;
   }
 
   // 3. Circuit-breaker: skip the network call entirely if we've already hit
@@ -234,14 +263,50 @@ export async function fetchCandles(
     throw new Error(`Twelve Data error: ${data.message}`);
   }
 
-  const candles: Candle[] = (data.values || []).map((v: Record<string, string>) => ({
-    datetime: v.datetime,
-    open: parseFloat(v.open),
-    high: parseFloat(v.high),
-    low: parseFloat(v.low),
-    close: parseFloat(v.close),
-    volume: parseFloat(v.volume || '0'),
-  }));
+  // Parse + validate. Twelve Data returns all numeric fields as strings;
+  // parseFloat on a missing/empty field yields NaN, and NaN in a Candle
+  // silently poisons every downstream consumer:
+  //   - detectBias comparisons (NaN > x is always false → scanner bias flips
+  //     silently to 'neutral' and the instrument gets filtered out)
+  //   - ATR / SL / TP math (NaN * x = NaN → agent posts unplaceable orders)
+  //   - computeCorrelation reducer (NaN propagates through mean / variance
+  //     → returns correlation_30d = NaN → rounded to NaN)
+  //
+  // So: drop candles with any non-finite OHLC value. Volume defaulting to 0
+  // is still allowed (TD omits it for FX pairs, which is fine — downstream
+  // code already treats volume==0 as "unknown, not empty"). Finite-OHLC is
+  // the contract Candle consumers rely on.
+  const candles: Candle[] = [];
+  let malformedCount = 0;
+  for (const v of data.values || []) {
+    const open = parseFloat(v.open);
+    const high = parseFloat(v.high);
+    const low = parseFloat(v.low);
+    const close = parseFloat(v.close);
+    const volume = parseFloat(v.volume || '0');
+    if (
+      !Number.isFinite(open) ||
+      !Number.isFinite(high) ||
+      !Number.isFinite(low) ||
+      !Number.isFinite(close)
+    ) {
+      malformedCount++;
+      continue;
+    }
+    candles.push({
+      datetime: v.datetime,
+      open,
+      high,
+      low,
+      close,
+      volume: Number.isFinite(volume) ? volume : 0,
+    });
+  }
+  if (malformedCount > 0) {
+    console.warn(
+      `[Market Data] Dropped ${malformedCount} malformed ${tdSymbol} ${interval} candle(s) with non-finite OHLC values.`,
+    );
+  }
 
   candleCache.set(cacheKey, candles, CandleCache.ttlFor(interval));
   return candles;

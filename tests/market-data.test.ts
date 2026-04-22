@@ -10,6 +10,7 @@ import {
   computeCorrelation,
   _getTwelveDataDailyCap,
   _resetTwelveDataDailyCap,
+  _resetTwelveDataState,
   _getCandleCache,
   _mapToTwelveDataSymbol,
 } from '../src/mcp-server/market-data.js';
@@ -157,9 +158,8 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('UK100')).toBe('UKX');
   });
 
-  it('maps OIL_CRUDE and DXY', () => {
+  it('maps OIL_CRUDE to WTI/USD', () => {
     expect(_mapToTwelveDataSymbol('OIL_CRUDE')).toBe('WTI/USD');
-    expect(_mapToTwelveDataSymbol('DXY')).toBe('DX');
   });
 
   it('maps GOLD and SILVER to TD spot symbols (not the unrelated NYSE/BSE listings)', () => {
@@ -174,10 +174,16 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('WTIUSD')).toBe('WTI/USD');
   });
 
-  it('returns null for VIX and US equity indices (unavailable on Grow tier)', () => {
+  it('returns null for VIX, US equity indices, and DXY (unavailable on Grow tier)', () => {
     expect(_mapToTwelveDataSymbol('VIX')).toBeNull();
     expect(_mapToTwelveDataSymbol('NAS100')).toBeNull();
     expect(_mapToTwelveDataSymbol('SPX')).toBeNull();
+    // DXY's previous 'DX' mapping resolved to a NYSE REIT, not the dollar
+    // index. Grow-tier alternatives (USDX, USD) are directional ETF proxies
+    // with absolute levels 25–70x off real DXY (~99). Marked unavailable so
+    // fetchDxy returns dxy=0/flat rather than shipping misleading numbers
+    // to the researcher brief.
+    expect(_mapToTwelveDataSymbol('DXY')).toBeNull();
   });
 
   it('passes through natively-accepted TD symbols', () => {
@@ -196,6 +202,95 @@ describe('Twelve Data symbol mapping', () => {
   it('is case-insensitive on input', () => {
     expect(_mapToTwelveDataSymbol('eurusd')).toBe('EUR/USD');
     expect(_mapToTwelveDataSymbol('EurUsd')).toBe('EUR/USD');
+  });
+});
+
+describe('fetchCandles cache keying by mapped TD symbol', () => {
+  const originalKey = process.env.TWELVE_DATA_API_KEY;
+
+  beforeEach(() => {
+    process.env.TWELVE_DATA_API_KEY = 'test-key';
+    _resetTwelveDataState();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env.TWELVE_DATA_API_KEY;
+    else process.env.TWELVE_DATA_API_KEY = originalKey;
+    _resetTwelveDataState();
+    vi.restoreAllMocks();
+  });
+
+  it('GOLD and XAUUSD share a cache entry (both resolve to XAU/USD at TD)', async () => {
+    // Mock one TD response; if the second call comes from cache, axios.get
+    // fires exactly once even though we call fetchCandles with different
+    // Farad tickers.
+    const getSpy = vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [
+          { datetime: '2026-04-22 17:00:00', open: '4759', high: '4762', low: '4758', close: '4760', volume: '0' },
+        ],
+      },
+    });
+
+    const goldCandles = await fetchCandles('GOLD', '1h', 5);
+    const xauCandles = await fetchCandles('XAUUSD', '1h', 5);
+
+    expect(goldCandles).toEqual(xauCandles);
+    // The critical assertion: TD was hit exactly once. Pre-fix both aliases
+    // triggered separate network calls, doubling credit usage.
+    expect(getSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops candles with non-finite OHLC values instead of poisoning downstream math with NaN', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [
+          // Good candle.
+          { datetime: '2026-04-22 17:00:00', open: '1.175', high: '1.176', low: '1.174', close: '1.175', volume: '0' },
+          // Missing close — parseFloat → NaN. Must be dropped.
+          { datetime: '2026-04-22 16:00:00', open: '1.174', high: '1.176', low: '1.173', close: '', volume: '0' },
+          // Good candle.
+          { datetime: '2026-04-22 15:00:00', open: '1.173', high: '1.175', low: '1.172', close: '1.174', volume: '0' },
+          // Garbage string in high — parseFloat('abc') → NaN. Must be dropped.
+          { datetime: '2026-04-22 14:00:00', open: '1.172', high: 'abc', low: '1.170', close: '1.173', volume: '0' },
+        ],
+      },
+    });
+
+    const candles = await fetchCandles('EURUSD', '1h', 10);
+
+    // Only the two well-formed candles survive.
+    expect(candles).toHaveLength(2);
+    for (const c of candles) {
+      expect(Number.isFinite(c.open)).toBe(true);
+      expect(Number.isFinite(c.high)).toBe(true);
+      expect(Number.isFinite(c.low)).toBe(true);
+      expect(Number.isFinite(c.close)).toBe(true);
+    }
+    // Ops gets a visible warning when candles are dropped.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Dropped 2 malformed'),
+    );
+  });
+
+  it('_resetTwelveDataState clears BOTH the daily-cap breaker and the candle cache', async () => {
+    // Prime the cache with a fetch.
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [{ datetime: '2026-04-22 17:00:00', open: '1', high: '1', low: '1', close: '1', volume: '0' }],
+      },
+    });
+    await fetchCandles('EURUSD', '1h', 5);
+    expect(_getCandleCache().size()).toBeGreaterThan(0);
+
+    _resetTwelveDataState();
+    expect(_getCandleCache().size()).toBe(0);
+    expect(_getTwelveDataDailyCap()).toBeNull();
   });
 });
 

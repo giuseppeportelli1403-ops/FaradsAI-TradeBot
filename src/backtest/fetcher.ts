@@ -6,20 +6,27 @@ import axios from 'axios';
 import fs from 'fs';
 import path from 'path';
 import type { Candle } from '../types.js';
+import { _mapToTwelveDataSymbol } from '../mcp-server/market-data.js';
 
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const CACHE_DIR = path.resolve('backtest-data');
 
-const SYMBOL_MAP: Record<string, string> = {
-  EURUSD: 'EUR/USD', GBPUSD: 'GBP/USD', USDJPY: 'USD/JPY',
-  GBPJPY: 'GBP/JPY', AUDUSD: 'AUD/USD', NZDUSD: 'NZD/USD',
-  USDCAD: 'USD/CAD', USDCHF: 'USD/CHF', EURJPY: 'EUR/JPY',
-  EURGBP: 'EUR/GBP', US30: 'DJIA', DE40: 'DAX', UK100: 'UKX',
-  OIL_CRUDE: 'WTI/USD',
-};
-
-function mapSymbol(ticker: string): string {
-  return SYMBOL_MAP[ticker.toUpperCase()] ?? ticker;
+// Single source of truth for TD routing lives in market-data.ts; importing
+// the mapper keeps backtest in sync with live (including GOLD→XAU/USD,
+// SILVER→XAG/USD, and the UNAVAILABLE cohort for VIX/NAS100/SPX/DXY).
+// The original local SYMBOL_MAP here was missing GOLD/SILVER and the alias
+// coverage, so backtest was scoring commodities against the wrong TD
+// listings (Barrick Gold common stock, NSE-listed silver ETF in INR).
+function resolveTdSymbol(ticker: string): string {
+  const mapped = _mapToTwelveDataSymbol(ticker);
+  if (mapped === null) {
+    throw new Error(
+      `[Backtest] ${ticker} is unavailable on the current Twelve Data tier ` +
+        `(see TWELVE_DATA_UNAVAILABLE in market-data.ts). Either upgrade the ` +
+        `plan or pick a different ticker.`,
+    );
+  }
+  return mapped;
 }
 
 function cachePath(ticker: string, interval: string): string {
@@ -99,7 +106,7 @@ export async function fetchHistorical(
     }
   }
 
-  const tdSymbol = mapSymbol(ticker);
+  const tdSymbol = resolveTdSymbol(ticker);
   const all: Candle[] = [];
 
   // Walk year by year to stay within 5000-candle limit per request (1h: ~8760/yr)

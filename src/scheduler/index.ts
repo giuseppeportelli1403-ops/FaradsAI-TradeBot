@@ -219,7 +219,9 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
         d.deactivateSlTpOrder(order.trade_id, 'A');
       }
     } catch (error) {
-      console.error(`[Monitor] Error processing Leg A for trade ${order.trade_id}:`, error);
+      // summarizeError — see error-summary.ts. Prevents credential leaks
+      // when the error originates from a Capital.com axios call.
+      console.error(`[Monitor] Error processing Leg A for trade ${order.trade_id}: ${summarizeError(error)}`);
     }
   }
 
@@ -243,7 +245,7 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
         await handleSlOnLeg(trade, order.trade_id, 'B', d);
       }
     } catch (error) {
-      console.error(`[Monitor] Error processing Leg B for trade ${order.trade_id}:`, error);
+      console.error(`[Monitor] Error processing Leg B for trade ${order.trade_id}: ${summarizeError(error)}`);
     }
   }
 
@@ -265,17 +267,27 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
         // Full positive outcome — reflection fires once all 3 legs are closed
         // (which they are after handleTp3Hit deactivates C).
         if (!deps) {
-          setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
+          setTimeout(
+            () => runReflectionAgent(order.trade_id).catch(
+              (e) => console.error(`[Reflection] runReflectionAgent failed: ${summarizeError(e)}`),
+            ),
+            1000,
+          );
         }
       } else {
         // SL or OTHER on Leg C: trailing SL at TP1 triggered, or just a normal SL.
         await handleSlOnLeg(trade, order.trade_id, 'C', d);
         if (!deps) {
-          setTimeout(() => runReflectionAgent(order.trade_id).catch(console.error), 1000);
+          setTimeout(
+            () => runReflectionAgent(order.trade_id).catch(
+              (e) => console.error(`[Reflection] runReflectionAgent failed: ${summarizeError(e)}`),
+            ),
+            1000,
+          );
         }
       }
     } catch (error) {
-      console.error(`[Monitor] Error processing Leg C for trade ${order.trade_id}:`, error);
+      console.error(`[Monitor] Error processing Leg C for trade ${order.trade_id}: ${summarizeError(error)}`);
     }
   }
 }
@@ -297,7 +309,7 @@ export async function handleTp1Hit(
       await d.capital.updatePosition(trade.position_b_id, { stopLevel: trade.entry });
       console.log(`[TP1] ${trade.instrument} — Position B SL moved to BE (${trade.entry})`);
     } catch (error) {
-      console.error(`[TP1] Failed to move Position B SL to BE for ${tradeId}:`, error);
+      console.error(`[TP1] Failed to move Position B SL to BE for ${tradeId}: ${summarizeError(error)}`);
     }
   }
 
@@ -308,14 +320,14 @@ export async function handleTp1Hit(
       await d.capital.updatePosition(trade.position_c_id, { stopLevel: trade.entry });
       console.log(`[TP1] ${trade.instrument} — Position C SL moved to BE (${trade.entry})`);
     } catch (error) {
-      console.error(`[TP1] Failed to move Position C SL to BE for ${tradeId}:`, error);
+      console.error(`[TP1] Failed to move Position C SL to BE for ${tradeId}: ${summarizeError(error)}`);
     }
   }
 
   try {
     if (d.alertTp1Hit) await d.alertTp1Hit(trade);
   } catch (e) {
-    console.error('[Monitor] Telegram TP1 alert failed:', e);
+    console.error(`[Monitor] Telegram TP1 alert failed: ${summarizeError(e)}`);
   }
 }
 
@@ -339,7 +351,7 @@ export async function handleTp2Hit(
     try {
       if (d.alertTp2Hit) await d.alertTp2Hit(trade);
     } catch (e) {
-      console.error('[Monitor] Telegram TP2 (legacy 2-leg) alert failed:', e);
+      console.error(`[Monitor] Telegram TP2 (legacy 2-leg) alert failed: ${summarizeError(e)}`);
     }
     return;
   }
@@ -352,13 +364,13 @@ export async function handleTp2Hit(
       `[TP2] ${trade.instrument} — Position C SL moved to TP1 trailing level (${trade.tp1})`,
     );
   } catch (error) {
-    console.error(`[TP2] Failed to trail Position C SL to TP1 for ${tradeId}:`, error);
+    console.error(`[TP2] Failed to trail Position C SL to TP1 for ${tradeId}: ${summarizeError(error)}`);
   }
 
   try {
     if (d.alertTp2Hit) await d.alertTp2Hit(trade);
   } catch (e) {
-    console.error('[Monitor] Telegram TP2 alert failed:', e);
+    console.error(`[Monitor] Telegram TP2 alert failed: ${summarizeError(e)}`);
   }
 }
 
@@ -378,7 +390,7 @@ export async function handleTp3Hit(
     if (d.alertTp3Hit) await d.alertTp3Hit(trade);
     else if (d.alertTp2Hit) await d.alertTp2Hit(trade); // fallback if alertTp3Hit not wired
   } catch (e) {
-    console.error('[Monitor] Telegram TP3 alert failed:', e);
+    console.error(`[Monitor] Telegram TP3 alert failed: ${summarizeError(e)}`);
   }
 }
 
@@ -424,7 +436,7 @@ export async function handleSlOnLeg(
       if (d.alertTp2Hit) await d.alertTp2Hit(trade);
     }
   } catch (e) {
-    console.error('[Monitor] Telegram SL-close alert failed:', e);
+    console.error(`[Monitor] Telegram SL-close alert failed: ${summarizeError(e)}`);
   }
 }
 
@@ -451,12 +463,12 @@ export async function pingKeepAlive(deps?: PingDeps): Promise<void> {
   try {
     await d.capital.ping();
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.error('[Scheduler] Capital ping failed:', error);
+    const summary = summarizeError(error);
+    console.error(`[Scheduler] Capital ping failed: ${summary}`);
     try {
-      await d.alertSystemWarning(`Capital.com ping failed: ${msg}`);
+      await d.alertSystemWarning(`Capital.com ping failed: ${summary}`);
     } catch (alertError) {
-      console.error('[Scheduler] Telegram alert for ping failure also failed:', alertError);
+      console.error(`[Scheduler] Telegram alert for ping failure also failed: ${summarizeError(alertError)}`);
     }
   }
 }
@@ -469,7 +481,7 @@ async function safeRun(name: string, fn: () => Promise<unknown>): Promise<void> 
     await fn();
     console.log(`[Scheduler] ${name} complete.`);
   } catch (error) {
-    console.error(`[Scheduler] ${name} failed:`, error);
+    console.error(`[Scheduler] ${name} failed: ${summarizeError(error)}`);
   }
 }
 

@@ -66,7 +66,14 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
     case 'get_prices': return JSON.stringify(await fetchCandles(input.instrument as string, input.timeframe as '15m' | '1h' | '4h' | '1d' | '1w', Number(input.count) || 100));
     case 'get_news_context': return JSON.stringify(await fetchNewsRaw(input.instrument as string));
     case 'get_economic_calendar': return JSON.stringify(await fetchEconomicCalendar(Number(input.days_ahead) || 5));
-    case 'get_correlation_matrix': return JSON.stringify(await computeCorrelation(input.instrument as string, 'DXY'));
+    case 'get_correlation_matrix':
+      // Was 'DXY' — TD's Grow tier has no real dollar-index feed (see
+      // TWELVE_DATA_UNAVAILABLE comment in market-data.ts). EURUSD is the
+      // inverse USD-strength proxy, so a negative correlation against
+      // EURUSD ≈ positive correlation against DXY. The agent's prompt
+      // reads this as a USD-relationship signal — the sign flip is
+      // documented in the swing agent's system prompt.
+      return JSON.stringify(await computeCorrelation(input.instrument as string, 'EURUSD'));
     case 'get_sector_strength': return JSON.stringify(await fetchSectorStrength());
     case 'get_lessons': {
       const lessons = getLessons({ setup_type: input.setup_type as string | undefined, instrument_category: input.instrument_category as string | undefined, strategy_tag: 'SWING' });
