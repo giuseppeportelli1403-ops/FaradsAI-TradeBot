@@ -259,14 +259,50 @@ export async function fetchCandles(
     throw new Error(`Twelve Data error: ${data.message}`);
   }
 
-  const candles: Candle[] = (data.values || []).map((v: Record<string, string>) => ({
-    datetime: v.datetime,
-    open: parseFloat(v.open),
-    high: parseFloat(v.high),
-    low: parseFloat(v.low),
-    close: parseFloat(v.close),
-    volume: parseFloat(v.volume || '0'),
-  }));
+  // Parse + validate. Twelve Data returns all numeric fields as strings;
+  // parseFloat on a missing/empty field yields NaN, and NaN in a Candle
+  // silently poisons every downstream consumer:
+  //   - detectBias comparisons (NaN > x is always false → scanner bias flips
+  //     silently to 'neutral' and the instrument gets filtered out)
+  //   - ATR / SL / TP math (NaN * x = NaN → agent posts unplaceable orders)
+  //   - computeCorrelation reducer (NaN propagates through mean / variance
+  //     → returns correlation_30d = NaN → rounded to NaN)
+  //
+  // So: drop candles with any non-finite OHLC value. Volume defaulting to 0
+  // is still allowed (TD omits it for FX pairs, which is fine — downstream
+  // code already treats volume==0 as "unknown, not empty"). Finite-OHLC is
+  // the contract Candle consumers rely on.
+  const candles: Candle[] = [];
+  let malformedCount = 0;
+  for (const v of data.values || []) {
+    const open = parseFloat(v.open);
+    const high = parseFloat(v.high);
+    const low = parseFloat(v.low);
+    const close = parseFloat(v.close);
+    const volume = parseFloat(v.volume || '0');
+    if (
+      !Number.isFinite(open) ||
+      !Number.isFinite(high) ||
+      !Number.isFinite(low) ||
+      !Number.isFinite(close)
+    ) {
+      malformedCount++;
+      continue;
+    }
+    candles.push({
+      datetime: v.datetime,
+      open,
+      high,
+      low,
+      close,
+      volume: Number.isFinite(volume) ? volume : 0,
+    });
+  }
+  if (malformedCount > 0) {
+    console.warn(
+      `[Market Data] Dropped ${malformedCount} malformed ${tdSymbol} ${interval} candle(s) with non-finite OHLC values.`,
+    );
+  }
 
   candleCache.set(cacheKey, candles, CandleCache.ttlFor(interval));
   return candles;

@@ -243,6 +243,40 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(getSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('drops candles with non-finite OHLC values instead of poisoning downstream math with NaN', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [
+          // Good candle.
+          { datetime: '2026-04-22 17:00:00', open: '1.175', high: '1.176', low: '1.174', close: '1.175', volume: '0' },
+          // Missing close — parseFloat → NaN. Must be dropped.
+          { datetime: '2026-04-22 16:00:00', open: '1.174', high: '1.176', low: '1.173', close: '', volume: '0' },
+          // Good candle.
+          { datetime: '2026-04-22 15:00:00', open: '1.173', high: '1.175', low: '1.172', close: '1.174', volume: '0' },
+          // Garbage string in high — parseFloat('abc') → NaN. Must be dropped.
+          { datetime: '2026-04-22 14:00:00', open: '1.172', high: 'abc', low: '1.170', close: '1.173', volume: '0' },
+        ],
+      },
+    });
+
+    const candles = await fetchCandles('EURUSD', '1h', 10);
+
+    // Only the two well-formed candles survive.
+    expect(candles).toHaveLength(2);
+    for (const c of candles) {
+      expect(Number.isFinite(c.open)).toBe(true);
+      expect(Number.isFinite(c.high)).toBe(true);
+      expect(Number.isFinite(c.low)).toBe(true);
+      expect(Number.isFinite(c.close)).toBe(true);
+    }
+    // Ops gets a visible warning when candles are dropped.
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Dropped 2 malformed'),
+    );
+  });
+
   it('_resetTwelveDataState clears BOTH the daily-cap breaker and the candle cache', async () => {
     // Prime the cache with a fetch.
     vi.spyOn(axios, 'get').mockResolvedValue({
