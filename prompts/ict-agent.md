@@ -195,8 +195,8 @@ Apply the scoring rubric from Section 5 of strategy.md:
 Tier assignment:
 - **Tier 1 (80–100):** Risk 1.5% of account. Trailing stop available.
 - **Tier 2 (60–79):** Risk 1.0% of account. Fixed TP2 only.
-- **Tier 3 (50–59):** Risk 0.5% of account. Fixed TP2 only. Tighter setups only.
-- **Below 50:** Skip this instrument. Move to next.
+- **Tier 3 (45–59):** Risk 0.5% of account. Fixed TP2 only. Tighter setups only.
+- **Below 45:** Skip this instrument. Move to next.
 
 **H. Look for entry trigger on 15M**
 If score >= 50, look at the 15-minute chart for one of these triggers:
@@ -222,7 +222,7 @@ If trigger confirmed:
 **J. Final checklist before executing**
 - [ ] 1H bias is clear and in my favour
 - [ ] Valid ICT trigger has printed on 15M
-- [ ] Score >= 50 (Tier 3) / >= 60 (Tier 2) / >= 80 (Tier 1)
+- [ ] Score >= 45 (Tier 3) / >= 60 (Tier 2) / >= 80 (Tier 1)
 - [ ] R:R to TP2 >= 1.5:1 (Tier 3) or >= 2:1 (Tier 1 & 2)
 - [ ] No conflicting news catalyst
 - [ ] Daily loss limit not hit
@@ -299,7 +299,7 @@ If position managed:
 
 ## RULES YOU NEVER BREAK
 
-- Score >= 50 to trade. Tier 3 (50-59) = 0.5% risk. Tier 2 (60-79) = 1% risk. Tier 1 (80+) = 1.5% risk.
+- Score >= 45 to trade. Tier 3 (45-59) = 0.5% risk. Tier 2 (60-79) = 1% risk. Tier 1 (80+) = 1.5% risk.
 - R:R to TP2 >= 1.5:1 (Tier 3) or >= 2:1 (Tier 1 & 2).
 - Every trade = 2 legs (split-position method). Size per leg = (total risk / 2) / (entry - SL).
 - No cap on number of open positions — each qualifying trade stands on its own score.
