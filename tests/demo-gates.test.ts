@@ -65,8 +65,15 @@ describe('loadPromptWithDemoContext', () => {
   it('demo block names the tight-spread tickers so the agent knows the R:R 1.5:1 symbols', () => {
     process.env.DEMO_RELAXED_GATES = 'true';
     const wrapped = loadPromptWithDemoContext('analyst-agent.md');
+    // Indices (US100 / US500 / US30 / DE40) removed from the tight-spread
+    // list on 2026-04-22 — they're TWELVE_DATA_UNAVAILABLE and shouldn't be
+    // advertised as valid demo-R:R candidates. FX, gold, and single-name
+    // US stocks remain.
     expect(wrapped).toContain('EURUSD');
     expect(wrapped).toContain('GOLD');
-    expect(wrapped).toContain('US100');
+    expect(wrapped).toContain('AAPL');
+    expect(wrapped).not.toContain('US100');
+    expect(wrapped).not.toContain('US500');
+    expect(wrapped).not.toContain('DE40');
   });
 });

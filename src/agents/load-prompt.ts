@@ -22,9 +22,15 @@ export function loadStrategy(filename: string): string {
 // Kept in sync with scanner by convention; drift is caught by the demo-context
 // block which references them by name, so the agent will flag any mismatch
 // against the ranked list it sees at runtime.
+//
+// Indices (US30 / US100 / US500 / DE40) removed 2026-04-22 — each routes to
+// an unrelated ETF on Twelve Data Grow tier and is now in
+// TWELVE_DATA_UNAVAILABLE. Letting the LLM believe those are valid R:R 1.5:1
+// candidates would be a back-door into place_order calls the scanner never
+// sanity-checked. Re-add when a real index feed is wired.
 const TIGHT_SPREAD_TICKERS = [
   'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD',
-  'GOLD', 'US100', 'US500', 'US30', 'DE40',
+  'GOLD',
   'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META',
 ].join(', ');
 

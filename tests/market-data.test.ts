@@ -13,6 +13,8 @@ import {
   _resetTwelveDataState,
   _getCandleCache,
   _mapToTwelveDataSymbol,
+  _resetAlphaVantageRateLimitFlag,
+  fetchNewsContext,
 } from '../src/mcp-server/market-data.js';
 
 describe('withCache', () => {
@@ -152,10 +154,16 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('AUDUSD')).toBe('AUD/USD');
   });
 
-  it('maps broker-style indices to TD index codes', () => {
-    expect(_mapToTwelveDataSymbol('US30')).toBe('DJIA');
-    expect(_mapToTwelveDataSymbol('DE40')).toBe('DAX');
-    expect(_mapToTwelveDataSymbol('UK100')).toBe('UKX');
+  it('returns null for all equity indices (Grow tier has no reliable index feed)', () => {
+    // Pre-2026-04-22: US30→DJIA, DE40→DAX, UK100→UKX. Each of those TD symbols
+    // resolves to an ETF tracking the index at a completely different price
+    // level (~$40 ETF vs ~$38k index, etc.), so the scanner was computing 1H
+    // bias on unrelated series. Moved to UNAVAILABLE alongside US100/US500/SPX/NAS100.
+    expect(_mapToTwelveDataSymbol('US30')).toBeNull();
+    expect(_mapToTwelveDataSymbol('US100')).toBeNull();
+    expect(_mapToTwelveDataSymbol('US500')).toBeNull();
+    expect(_mapToTwelveDataSymbol('DE40')).toBeNull();
+    expect(_mapToTwelveDataSymbol('UK100')).toBeNull();
   });
 
   it('maps OIL_CRUDE to WTI/USD', () => {
@@ -186,17 +194,11 @@ describe('Twelve Data symbol mapping', () => {
     expect(_mapToTwelveDataSymbol('DXY')).toBeNull();
   });
 
-  it('passes through natively-accepted TD symbols', () => {
+  it('passes through natively-accepted TD symbols (individual US stocks)', () => {
     expect(_mapToTwelveDataSymbol('AAPL')).toBe('AAPL');
     expect(_mapToTwelveDataSymbol('MSFT')).toBe('MSFT');
     expect(_mapToTwelveDataSymbol('NVDA')).toBe('NVDA');
     expect(_mapToTwelveDataSymbol('TSLA')).toBe('TSLA');
-    // US100 / US500 aren't in the map and aren't in UNAVAILABLE either — they
-    // currently pass through to TD raw. TD happens to resolve them to Euronext
-    // ETF listings (wrong, but non-empty), so keeping status-quo here rather
-    // than risking a broader rework of the scanner's index handling mid-demo.
-    expect(_mapToTwelveDataSymbol('US100')).toBe('US100');
-    expect(_mapToTwelveDataSymbol('US500')).toBe('US500');
   });
 
   it('is case-insensitive on input', () => {
@@ -275,6 +277,48 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('Dropped 2 malformed'),
     );
+  });
+
+  it('fetchNewsContext returns [] + logs once when AV rate-limit response is detected', async () => {
+    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
+    _resetAlphaVantageRateLimitFlag();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Exact shape AV returns on free-tier exhaustion — HTTP 200, {Information}
+    // body, no `feed`. Pre-fix this fell through `!data.feed` → silent [].
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        Information:
+          'We have detected your API key as ABCDEFGH and our standard API rate limit is 25 requests per day. Please subscribe to any of the premium plans...',
+      },
+    });
+
+    const first = await fetchNewsContext('EURUSD');
+    const second = await fetchNewsContext('GOLD');
+    const third = await fetchNewsContext('OIL_CRUDE');
+
+    // All three return [] gracefully — no throws.
+    expect(first).toEqual([]);
+    expect(second).toEqual([]);
+    expect(third).toEqual([]);
+
+    // Loud log fires exactly once — not three times. Ops sees the signal
+    // without the log being flooded by every cycle's worth of calls.
+    const rateLimitLogCalls = errSpy.mock.calls.filter((args) =>
+      typeof args[0] === 'string' && args[0].includes('Alpha Vantage daily rate limit reached'),
+    );
+    expect(rateLimitLogCalls).toHaveLength(1);
+  });
+
+  it('fetchNewsContext wraps in withFallback — axios throws degrade to []', async () => {
+    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(axios, 'get').mockRejectedValue(new Error('Network outage'));
+
+    // Pre-fix (unwrapped), this throw would propagate to the caller and
+    // crash researcher-agent's Promise.all. Post-fix: silent empty.
+    const result = await fetchNewsContext('EURUSD');
+    expect(result).toEqual([]);
   });
 
   it('_resetTwelveDataState clears BOTH the daily-cap breaker and the candle cache', async () => {
