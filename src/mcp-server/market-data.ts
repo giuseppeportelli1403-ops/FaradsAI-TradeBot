@@ -591,11 +591,20 @@ const ALPHA_VANTAGE_BASE = 'https://www.alphavantage.co/query';
 // time it's observed in this process, then fall silent on repeat responses.
 // Same UX goal as the TwelveData daily-cap error — let ops see it without
 // flooding the log when every subsequent cycle hits the same cap.
-let alphaVantageRateLimitLogged = false;
+//
+// Stores the UTC date (YYYY-MM-DD) of the last loud log so the flag
+// auto-resets across day boundaries — otherwise a long-running process would
+// only announce the FIRST day's exhaustion and silently swallow every
+// subsequent day's. `null` = never logged.
+let alphaVantageRateLimitLoggedForUtcDate: string | null = null;
+
+function currentUtcDateString(): string {
+  return new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
+}
 
 /** Exposed for tests — reset the one-shot AV rate-limit log flag. */
 export function _resetAlphaVantageRateLimitFlag(): void {
-  alphaVantageRateLimitLogged = false;
+  alphaVantageRateLimitLoggedForUtcDate = null;
 }
 
 // TODO(next-session, 2026-04-23+): Farad tickers are passed raw to Alpha
@@ -640,13 +649,17 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
     // treats this as "empty news" — which silently masks the fact that
     // the integration has stopped working entirely. Detect the signature
     // and surface it once per process so ops notices.
-    if (!data.feed && typeof data.Information === 'string' && /rate limit|requests per day|standard api rate limit/i.test(data.Information)) {
-      if (!alphaVantageRateLimitLogged) {
+    // Anchor regex to the full documented AV phrase so we don't false-positive
+    // on unrelated "Information" payloads (e.g. endpoint deprecation notices
+    // or premium-plan marketing copy that happens to mention "rate limit").
+    if (!data.feed && typeof data.Information === 'string' && /standard api rate limit is \d+ requests per day/i.test(data.Information)) {
+      const today = currentUtcDateString();
+      if (alphaVantageRateLimitLoggedForUtcDate !== today) {
         console.error(
           `[Market Data] Alpha Vantage daily rate limit reached (25 req/day on free tier). ` +
             `News scores will be zero for the rest of the UTC day. Quota resets at UTC midnight.`,
         );
-        alphaVantageRateLimitLogged = true;
+        alphaVantageRateLimitLoggedForUtcDate = today;
       }
       return [];
     }

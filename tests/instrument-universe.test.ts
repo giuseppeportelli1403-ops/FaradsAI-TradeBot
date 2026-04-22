@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { INSTRUMENT_UNIVERSE } from '../src/scanner/index.js';
+import { _mapToTwelveDataSymbol } from '../src/mcp-server/market-data.js';
 
 describe('INSTRUMENT_UNIVERSE', () => {
   it('every entry has a non-empty epic string', () => {
@@ -38,6 +39,24 @@ describe('INSTRUMENT_UNIVERSE', () => {
   it('epic === ticker for every entry (researcher-agent contract)', () => {
     for (const inst of INSTRUMENT_UNIVERSE) {
       expect(inst.epic).toBe(inst.ticker);
+    }
+  });
+
+  // Load-bearing invariant added post-2026-04-22 audit. Every ticker the
+  // scanner scores MUST resolve to a non-null Twelve Data symbol; otherwise
+  // fetchCandles returns [] for that ticker on every cycle, the scanner
+  // silently drops it, and the agent never sees it in ranked results — but
+  // the LLM may still try to trade it if the TIGHT_SPREAD_TICKERS list (in
+  // load-prompt.ts) advertises it. Catching drift here at build time is
+  // cheaper than finding out at runtime via a place_order call on an
+  // instrument we have no market data for.
+  it('every ticker resolves to a non-null Twelve Data symbol (no UNAVAILABLE entries in universe)', () => {
+    for (const inst of INSTRUMENT_UNIVERSE) {
+      const mapped = _mapToTwelveDataSymbol(inst.ticker);
+      expect(
+        mapped,
+        `INSTRUMENT_UNIVERSE lists "${inst.ticker}" as tradeable, but it's in TWELVE_DATA_UNAVAILABLE. Either remove from the universe or add a real TD routing.`,
+      ).not.toBeNull();
     }
   });
 });

@@ -45,15 +45,17 @@ export const INSTRUMENT_UNIVERSE: Array<{
   category: string;
   spread_quality: 'tight' | 'medium' | 'wide';
 }> = [
-  // Core 10 (trimmed from 25 on 2026-04-21 for focus + cleaner ICT setups).
+  // Core 7 (post-2026-04-22 audit: indices removed).
   // All tight-spread, deepest-liquidity instruments where ICT structure reads
-  // cleanest. See commit history for the full 25-instrument predecessor if
-  // you want to restore minor pairs or additional US stocks.
+  // cleanest. See commit history for the 10/25-instrument predecessors if
+  // you want to restore indices or minor pairs.
   //
-  // Indices (3) — US30 removed 2026-04-21 (swapped for commodities)
-  { ticker: 'US100', epic: 'US100', name: 'Nasdaq 100', category: 'index', spread_quality: 'tight' },
-  { ticker: 'US500', epic: 'US500', name: 'S&P 500', category: 'index', spread_quality: 'tight' },
-  { ticker: 'DE40', epic: 'DE40', name: 'DAX 40', category: 'index', spread_quality: 'tight' },
+  // Indices (US30/US100/US500/DE40/UK100) removed 2026-04-22: each one routes
+  // to an unrelated Euronext/NASDAQ ETF on Twelve Data Grow tier, so the
+  // scanner was scoring bias on wrong underlyings. Added to
+  // TWELVE_DATA_UNAVAILABLE and removed from this universe so agents don't
+  // ship place_order calls for instruments we have no reliable bias for.
+  // Re-add when a real index feed is wired (Pro-tier TD or Finnhub /indices).
 
   // Commodities (3) — OIL_CRUDE + SILVER restored 2026-04-21. Gold-silver
   // ratio + gold-oil correlation give the agent useful cross-asset macro
