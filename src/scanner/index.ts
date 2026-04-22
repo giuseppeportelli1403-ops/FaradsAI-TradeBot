@@ -271,7 +271,21 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
             bias: biasResult.bias as 'bullish' | 'bearish' | 'neutral',
             tier,
           } satisfies RankedInstrument;
-        } catch {
+        } catch (err) {
+          // Per-instrument failures are expected (TD outage on a single
+          // symbol, rate-limit queue timeout on one call, etc.) and the
+          // scanner's job is to score what it can. But the daily-cap
+          // breaker tripping is a DIFFERENT class of signal — it means
+          // every subsequent fetchCandles will also fail for the rest of
+          // the UTC day. Ops needs to see that once, loudly, so they can
+          // investigate why credits were consumed early.
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes('daily cap reached')) {
+            console.error(
+              `[Scanner] Twelve Data daily cap tripped while scoring ${inst.ticker} — ` +
+                `remaining scanner cycles today will return mostly-neutral bias.`,
+            );
+          }
           return null;
         }
       })
