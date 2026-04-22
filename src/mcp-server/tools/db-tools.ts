@@ -78,7 +78,7 @@ export function registerDbTools(server: McpServer): void {
       const total = unrealised + realised;
       const equity = balance.balance;
       const pct = equity ? (total / equity) * 100 : 0;
-      const killSwitch = pct <= -4;
+      const killSwitch = pct <= -6;
 
       upsertDailyPnl(today, realised, unrealised, equity);
 

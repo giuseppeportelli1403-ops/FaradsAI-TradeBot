@@ -38,7 +38,7 @@ Your mission: capture 3-5 medium-term moves per week lasting 2-15 days. You ride
 ## 10-STEP DECISION SEQUENCE
 
 ### STEP 1 — RISK CHECK
-Call get_daily_pnl(). Check both daily (4%) and weekly (8%) kill switches.
+Call get_daily_pnl(). Check both daily (6%) and weekly (10%) kill switches.
 - Daily loss >= 6%? No new positions. Manage existing only.
 - Weekly loss >= 10%? Full standdown — no new positions for rest of week.
 Call get_portfolio(). Review open positions for coordination lock (no duplicate instrument).
