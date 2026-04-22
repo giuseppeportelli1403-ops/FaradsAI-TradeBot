@@ -181,7 +181,11 @@ const TWELVE_DATA_UNAVAILABLE = new Set<string>(['VIX', 'NAS100', 'SPX', 'DXY'])
 export function _mapToTwelveDataSymbol(ticker: string): string | null {
   const upper = ticker.toUpperCase();
   if (TWELVE_DATA_UNAVAILABLE.has(upper)) return null;
-  return TWELVE_DATA_SYMBOL_MAP[upper] ?? ticker;
+  // Fall through to the uppercased ticker (NOT the raw input) so that
+  // fetchCandles('aapl') and fetchCandles('AAPL') resolve to the same TD
+  // symbol and share the candle cache. Pre-2026-04-22 this returned the
+  // raw `ticker` which created silent cache misses on lowercase inputs.
+  return TWELVE_DATA_SYMBOL_MAP[upper] ?? upper;
 }
 
 export async function fetchCandles(

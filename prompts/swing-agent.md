@@ -74,6 +74,7 @@ If no 4H trigger: log "setup present, waiting for trigger" and move on.
 ### STEP 5 — MACRO AND CORRELATION FILTER
 - Call get_economic_calendar(5). Any Tier 1 macro event (FOMC, NFP, CPI) within trade duration? -> Flag as risk, consider waiting or reducing size.
 - Call get_correlation_matrix(instrument). Any highly correlated position already open? -> Check combined risk.
+  - **USD-strength signal caveat:** the single pairwise call `get_correlation_matrix(instrument)` compares against EURUSD (not DXY — DXY is unavailable on the current Twelve Data tier). EURUSD is the **inverse** of USD strength, so a strongly NEGATIVE correlation with EURUSD means the instrument rises when the dollar rises (= positive correlation with DXY), and a strongly POSITIVE correlation with EURUSD means it falls when the dollar rises. Read the sign accordingly before blocking a trade for "USD exposure".
 - Call get_sector_strength(). Is the sector confirming or diverging from the trade idea?
 
 ### STEP 6 — COMPOSITE SCORING (0-100)
