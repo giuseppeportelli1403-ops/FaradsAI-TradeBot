@@ -37,6 +37,7 @@ import {
   alertSystemWarning as realAlertSystemWarning,
 } from '../notifications/telegram.js';
 import type { CapitalPosition, Activity, TradeRecord, TradeStatus } from '../types.js';
+import { summarizeError } from './error-summary.js';
 
 const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
@@ -170,7 +171,11 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
       d.capital.getActivityHistory(),
     ]);
   } catch (error) {
-    console.error('[Monitor] Failed to fetch Capital state this tick:', error);
+    // Don't pass the raw error as a second arg — util.inspect on an
+    // AxiosError leaks live auth headers (CST / X-SECURITY-TOKEN /
+    // X-CAP-API-KEY) into pm2-err.log. summarizeError keeps the HTTP
+    // signal but drops headers and the ClientRequest chain.
+    console.error(`[Monitor] Failed to fetch Capital state this tick: ${summarizeError(error)}`);
     return;
   }
 
