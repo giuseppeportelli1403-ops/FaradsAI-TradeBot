@@ -749,10 +749,18 @@ describe('pingKeepAlive', () => {
     expect(alertSystemWarning).toHaveBeenCalledWith(
       expect.stringContaining('HTTP 401 error.invalid.session'),
     );
+    // Log is now a single sanitized string (via summarizeError) so an
+    // AxiosError won't leak the auth config. The Error message must still
+    // be present for ops readability.
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      '[Scheduler] Capital ping failed:',
-      pingError,
+      expect.stringContaining('[Scheduler] Capital ping failed:'),
     );
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('HTTP 401 error.invalid.session'),
+    );
+    // No second argument — summarizeError collapses to one string so Node
+    // never invokes util.inspect on a raw error object.
+    expect(consoleErrorSpy.mock.calls[0]).toHaveLength(1);
   });
 
   it('if BOTH ping and alertSystemWarning fail, swallows both and logs each — never re-throws', async () => {
