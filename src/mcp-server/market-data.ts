@@ -607,7 +607,53 @@ let alphaVantageBurstLimitLoggedForUtcDate: string | null = null;
 // no caller changes are needed. Confirmed 2026-04-23 via live probe: with 3
 // parallel AV calls, only the first succeeded; #2 and #3 came back with
 // "spread out your requests more sparingly (1 request per second)".
-const alphaVantageBurstBucket = new TokenBucket(1, 1100);
+//
+// `let` (not const) so tests can swap to a permissive bucket — 22 sequential
+// fetchNewsContext calls would otherwise take 24+ seconds at prod throttle,
+// timing out the 10-second vitest default.
+let alphaVantageBurstBucket = new TokenBucket(1, 1100);
+
+/**
+ * Exposed for tests — swap the AV burst bucket for a permissive one that
+ * won't gate sequential test calls. Call with no args to restore defaults.
+ */
+export function _setAlphaVantageBurstBucketForTests(
+  bucket: TokenBucket = new TokenBucket(1, 1100),
+): void {
+  alphaVantageBurstBucket = bucket;
+}
+
+// ========== News-resilience layers (added 2026-04-23) ==========
+//
+// Problem being solved: the AV free tier is 25 req/day. The bot was burning
+// ~100/day (agent re-invokes get_news_context mid-reasoning; scanner + swing
+// + researcher all call independently). Once exhausted, fetchNewsContext
+// returned [] for EVERY ticker for the rest of the UTC day. With the news
+// component contributing -15..+20 to composite score, that meant the bot
+// was trading news-blind through the NY Open kill zone — including trading
+// INTO bearish news it couldn't see.
+//
+// Layered defense:
+//   1. Per-ticker 30-min TTL cache — repeat calls in the same window skip AV
+//   2. Stale-cache extension — when AV returns exhausted OR burst-retry fails,
+//      serve cached items up to 4 h old with stale_minutes tagged for scoring
+//   3. Daily soft-cap at 22/25 — stops hitting AV past 22 calls per UTC day,
+//      preserves headroom for the 05:30 Researcher + 21:30 Swing runs
+//   4. stale_minutes tag on NewsItem flows to scoring — src/news/index.ts
+//      dampens bearish aggregates when age > 60 min to prevent news-blind
+//      bearish trades
+//   5. One-shot Telegram alert per UTC day when news availability degrades
+
+const NEWS_CACHE_FRESH_MS = 30 * 60 * 1000;         // 30 min — serve as-is
+const NEWS_CACHE_STALE_MAX_MS = 4 * 60 * 60 * 1000; // 4 h — max tolerable staleness
+const ALPHA_VANTAGE_DAILY_SOFT_CAP = 22;            // of 25 — reserve 3 for
+                                                    // Researcher + Swing + buffer
+
+type CachedNewsEntry = { fetchedAt: number; value: NewsItem[] };
+const newsCache = new Map<string, CachedNewsEntry>();
+
+let alphaVantageCallsByUtcDate: { date: string; count: number } | null = null;
+let newsDegradedAlertFiredForUtcDate: string | null = null;
 
 function currentUtcDateString(): string {
   return new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
@@ -617,6 +663,81 @@ function currentUtcDateString(): string {
 export function _resetAlphaVantageRateLimitFlag(): void {
   alphaVantageRateLimitLoggedForUtcDate = null;
   alphaVantageBurstLimitLoggedForUtcDate = null;
+}
+
+/** Exposed for tests — clear news cache + daily counter + alert flag. */
+export function _resetNewsResilienceState(): void {
+  newsCache.clear();
+  alphaVantageCallsByUtcDate = null;
+  newsDegradedAlertFiredForUtcDate = null;
+}
+
+/** Exposed for tests — peek at current AV daily call count. */
+export function _getAlphaVantageCallCount(): number {
+  const today = currentUtcDateString();
+  if (alphaVantageCallsByUtcDate?.date !== today) return 0;
+  return alphaVantageCallsByUtcDate.count;
+}
+
+function bumpAlphaVantageCallCounter(): void {
+  const today = currentUtcDateString();
+  if (alphaVantageCallsByUtcDate?.date !== today) {
+    alphaVantageCallsByUtcDate = { date: today, count: 0 };
+  }
+  alphaVantageCallsByUtcDate.count += 1;
+}
+
+function isAlphaVantageDailyCapReached(): boolean {
+  const today = currentUtcDateString();
+  if (alphaVantageCallsByUtcDate?.date !== today) return false;
+  return alphaVantageCallsByUtcDate.count >= ALPHA_VANTAGE_DAILY_SOFT_CAP;
+}
+
+/**
+ * Fire a Telegram alert (at most once per UTC day) that news availability is
+ * degraded. Caller passes a short reason for the alert body. Dynamically
+ * imported to avoid a static cycle with the notifications module and to keep
+ * market-data.ts unit-testable without a Telegram mock.
+ */
+function fireNewsDegradedAlertOncePerDay(reason: string): void {
+  const today = currentUtcDateString();
+  if (newsDegradedAlertFiredForUtcDate === today) return;
+  newsDegradedAlertFiredForUtcDate = today;
+  console.error(
+    `[Market Data] News feed degraded: ${reason}. Serving cached/empty for the rest of the UTC day.`,
+  );
+  // Fire-and-forget. Import dynamically so tests that don't configure
+  // Telegram credentials aren't coupled to the notifications module. Any
+  // failure is swallowed with a log — Telegram being down must not take
+  // down the news fetch path.
+  import('../notifications/telegram.js')
+    .then(({ alertSystemWarning }) =>
+      alertSystemWarning(
+        `Farad news feed degraded — ${reason}. ` +
+          `Serving stale cache where available, empty otherwise. ` +
+          `Quota resets at UTC midnight.`,
+      ),
+    )
+    .catch((err) => {
+      console.error(`[Market Data] Telegram news-degraded alert failed: ${(err as Error).message}`);
+    });
+}
+
+/**
+ * Serve cached news items with their real age tagged in stale_minutes.
+ * Returns [] if no cache or cache older than NEWS_CACHE_STALE_MAX_MS.
+ */
+function serveStaleOrEmpty(instrument: string): NewsItem[] {
+  const key = instrument.toUpperCase();
+  const cached = newsCache.get(key);
+  if (!cached) return [];
+  const ageMs = Date.now() - cached.fetchedAt;
+  if (ageMs > NEWS_CACHE_STALE_MAX_MS) return [];
+  const staleMinutes = Math.floor(ageMs / 60_000);
+  console.log(
+    `[Market Data] AV news for ${instrument}: serving stale cache (${staleMinutes} min old, ${cached.value.length} articles)`,
+  );
+  return cached.value.map((item) => ({ ...item, stale_minutes: staleMinutes }));
 }
 
 /**
@@ -667,24 +788,47 @@ export function normalizeForAlphaVantage(instrument: string): string {
 }
 
 export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> {
-  // withFallback wrapper: any axios error, parse failure, or unexpected
-  // response shape returns an empty NewsItem[] instead of bubbling. Important
-  // because unwrapped throws from this function propagate into scanner /
-  // researcher Promise.all blocks and can tear down an entire cycle. Pattern
-  // matches fetchVix/fetchDxy/fetchYieldCurve etc. The console.error from
-  // withFallback itself gives ops a visible trail when things go wrong.
-  return withFallback(async () => {
+  const mappedTicker = normalizeForAlphaVantage(instrument);
+  const cacheKey = instrument.toUpperCase();
+
+  // ===== Layer 1 — 30-min fresh cache =====
+  // Absorb the agent's multi-call-per-cycle pattern (the ICT agent re-invokes
+  // get_news_context several times within a single reasoning chain — logs
+  // showed 5 SILVER + 4 GOLD calls in 90 min on 2026-04-23 morning). This is
+  // the biggest burn reducer.
+  const cached = newsCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < NEWS_CACHE_FRESH_MS) {
+    return cached.value.map((item) => ({ ...item, stale_minutes: 0 }));
+  }
+
+  // ===== Layer 3 — daily soft-cap at 22/25 =====
+  // Stop hitting AV past 22 calls/day so the 05:30 Researcher + 21:30 Swing
+  // runs always have headroom. On cap-hit, fall through to stale cache then
+  // []. Alert fires once per UTC day.
+  if (isAlphaVantageDailyCapReached()) {
+    fireNewsDegradedAlertOncePerDay(
+      `daily soft cap of ${ALPHA_VANTAGE_DAILY_SOFT_CAP}/25 AV calls reached`,
+    );
+    const stale = serveStaleOrEmpty(instrument);
+    if (stale.length === 0) {
+      console.log(
+        `[Market Data] AV news for ${instrument} (as ${mappedTicker}): 0 articles [daily soft-cap reached, no cache]`,
+      );
+    }
+    return stale;
+  }
+
+  // ===== Fresh fetch path =====
+  // Inline error handling (was withFallback) so we can route exceptions to
+  // the stale-cache fallback instead of []. Any throw lands in the catch
+  // and serves cached-if-available.
+  try {
     const apiKey = process.env.ALPHA_VANTAGE_API_KEY;
     if (!apiKey) {
       console.error('[Market Data] ALPHA_VANTAGE_API_KEY not set');
-      return [];
+      return serveStaleOrEmpty(instrument);
     }
 
-    const mappedTicker = normalizeForAlphaVantage(instrument);
-
-    // Acquire a token before EVERY AV call — TokenBucket queues concurrent
-    // callers so Promise.all-style scanner fanout lands serialised at 1 req/
-    // ~1.1 s, staying under AV's free-tier burst limit.
     await alphaVantageBurstBucket.acquire(10_000);
 
     const avCall = () =>
@@ -697,38 +841,35 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
         },
       });
 
+    bumpAlphaVantageCallCounter();
     let { data } = await avCall();
 
-    // AV's "daily quota exhausted" signal comes back as HTTP 200 + a lone
-    // {Information: "We have detected your API key as ... 25 requests per
-    // day ..."} object with no `feed`. The pre-existing `!data.feed` guard
-    // treats this as "empty news" — which silently masks the fact that
-    // the integration has stopped working entirely. Detect the signature
-    // and surface it once per process so ops notices.
-    // Anchor regex to the full documented AV phrase so we don't false-positive
-    // on unrelated "Information" payloads (e.g. endpoint deprecation notices
-    // or premium-plan marketing copy that happens to mention "rate limit").
-    if (!data.feed && typeof data.Information === 'string' && /standard api rate limit is \d+ requests per day/i.test(data.Information)) {
+    // ===== Layer 2 trigger — AV daily quota exhausted =====
+    // Fall through to stale cache (up to 4 h old) instead of []. Alert Giuseppe
+    // once. Previously this returned [] silently for the rest of the UTC day.
+    if (
+      !data.feed &&
+      typeof data.Information === 'string' &&
+      /standard api rate limit is \d+ requests per day/i.test(data.Information)
+    ) {
       const today = currentUtcDateString();
       if (alphaVantageRateLimitLoggedForUtcDate !== today) {
         console.error(
           `[Market Data] Alpha Vantage daily rate limit reached (25 req/day on free tier). ` +
-            `News scores will be zero for the rest of the UTC day. Quota resets at UTC midnight.`,
+            `Serving stale cache for the rest of the UTC day. Quota resets at UTC midnight.`,
         );
         alphaVantageRateLimitLoggedForUtcDate = today;
       }
-      console.log(
-        `[Market Data] AV news for ${instrument} (as ${mappedTicker}): 0 articles [daily-quota exhausted]`,
-      );
-      return [];
+      fireNewsDegradedAlertOncePerDay('AV daily quota (25/day) exhausted');
+      return serveStaleOrEmpty(instrument);
     }
 
-    // AV's "burst limit" signal is a separate Information message that says to
-    // spread requests out more sparingly (free tier = 1 req/sec). The bucket
-    // above should prevent this, but if it fires anyway — module reloaded,
-    // multiple processes sharing the key, clock skew after a host resume —
-    // log once per UTC day, wait past the minute refill, and retry ONCE.
-    if (!data.feed && typeof data.Information === 'string' && /more sparingly|1 request per second/i.test(data.Information)) {
+    // ===== Burst limit detection + single retry (unchanged from 2026-04-23 fix) =====
+    if (
+      !data.feed &&
+      typeof data.Information === 'string' &&
+      /more sparingly|1 request per second/i.test(data.Information)
+    ) {
       const today = currentUtcDateString();
       if (alphaVantageBurstLimitLoggedForUtcDate !== today) {
         console.error(
@@ -739,48 +880,51 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
       }
       await new Promise((r) => setTimeout(r, 1500));
       await alphaVantageBurstBucket.acquire(10_000);
+      bumpAlphaVantageCallCounter();
       ({ data } = await avCall());
     }
 
     if (!Array.isArray(data.feed)) {
-      // Always log so ops can see which mapping came back with a non-feed
-      // response — previously this fell through silently and a throttled or
-      // misconfigured ticker produced no log line at all.
       console.log(
         `[Market Data] AV news for ${instrument} (as ${mappedTicker}): 0 articles [unexpected response shape]`,
       );
-      return [];
+      return serveStaleOrEmpty(instrument);
     }
 
-    // Observability: record the mapping outcome so tomorrow's first-call
-    // verification can see at a glance which mapping entries return real
-    // data. Low volume: scanner runs ~1× per kill-zone candle-close, 7
-    // universe instruments, so ~28 lines/day.
+    // ===== Success path — parse, cache, return fresh =====
     console.log(
-      `[Market Data] AV news for ${instrument} (as ${mappedTicker}): ` +
-        `${data.feed.length} articles`,
+      `[Market Data] AV news for ${instrument} (as ${mappedTicker}): ${data.feed.length} articles`,
     );
 
-    return data.feed.map((article: Record<string, unknown>) => {
-    const score = parseFloat(String(article.overall_sentiment_score || '0'));
-    const absScore = Math.abs(score);
+    const items: NewsItem[] = data.feed.map((article: Record<string, unknown>) => {
+      const score = parseFloat(String(article.overall_sentiment_score || '0'));
+      const absScore = Math.abs(score);
 
-    let category: 'A' | 'B' | 'C';
-    if (absScore >= 0.35) category = 'A';
-    else if (absScore >= 0.15) category = 'B';
-    else category = 'C';
+      let category: 'A' | 'B' | 'C';
+      if (absScore >= 0.35) category = 'A';
+      else if (absScore >= 0.15) category = 'B';
+      else category = 'C';
 
-    return {
-      title: article.title as string,
-      source: article.source as string,
-      published_at: article.time_published as string,
-      sentiment_score: score,
-      relevance_score: parseFloat(String(
-        (article.ticker_sentiment as Array<Record<string, string>>)?.[0]?.relevance_score || '0'
-      )),
-      category,
-      summary: article.summary as string,
-    };
-  });
-  }, [] as NewsItem[]);
+      return {
+        title: article.title as string,
+        source: article.source as string,
+        published_at: article.time_published as string,
+        sentiment_score: score,
+        relevance_score: parseFloat(
+          String((article.ticker_sentiment as Array<Record<string, string>>)?.[0]?.relevance_score || '0'),
+        ),
+        category,
+        summary: article.summary as string,
+        stale_minutes: 0,
+      };
+    });
+
+    newsCache.set(cacheKey, { fetchedAt: Date.now(), value: items });
+    return items;
+  } catch (err) {
+    console.error(
+      `[Market Data] AV news for ${instrument}: fetch error — ${(err as Error).message}. Falling back to cache.`,
+    );
+    return serveStaleOrEmpty(instrument);
+  }
 }

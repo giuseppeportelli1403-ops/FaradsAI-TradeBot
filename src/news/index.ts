@@ -26,7 +26,24 @@ export interface ScoredNews {
   dominant_sentiment: 'bullish' | 'bearish' | 'neutral';
   opposing_direction: boolean;    // True if strong news opposes likely trade direction
   summary: string;
+  // Added 2026-04-23 (news-resilience Layer 4). Max stale_minutes across items
+  // in this batch. 0 on fresh AV hits. Non-zero when served from stale cache
+  // during AV quota exhaustion. `stale_dampened` is true when the overall_score
+  // was attenuated because stale bearish news is unreliable signal — see
+  // STALE_BEARISH_DAMPEN_MINUTES constant below.
+  stale_minutes: number;
+  stale_dampened: boolean;
 }
+
+// If cached news is older than this AND the aggregate is bearish, its
+// magnitude is halved. Rationale: during AV quota exhaustion the bot serves
+// cached news up to 4 h old. Stale BULLISH news that's still in the cache is
+// at worst "missed the boost" — conservative. Stale BEARISH news that the
+// market has since moved past, however, would cause the bot to skip good
+// setups OR worse, if the news has flipped and the bot can't see it, trade
+// INTO unseen fresh bullish news. Halving magnitude lets the bot still
+// respect obviously-bearish cached signal without treating it as gospel.
+export const STALE_BEARISH_DAMPEN_MINUTES = 60;
 
 export async function getNewsContext(instrument: string): Promise<ScoredNews> {
   let items: NewsItem[];
@@ -41,6 +58,8 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
       dominant_sentiment: 'neutral',
       opposing_direction: false,
       summary: 'No news data available',
+      stale_minutes: 0,
+      stale_dampened: false,
     };
   }
 
@@ -52,6 +71,8 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
       dominant_sentiment: 'neutral',
       opposing_direction: false,
       summary: 'No recent news for this instrument',
+      stale_minutes: 0,
+      stale_dampened: false,
     };
   }
 
@@ -82,6 +103,26 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
     overallScore = avgSentiment > 0 ? 10 : avgSentiment < 0 ? -5 : 0;
   }
 
+  // ===== Layer 4 — stale-bearish dampening =====
+  // During AV quota exhaustion, fetchNewsContext serves cached items up to
+  // 4 h old. Bearish stale news is dangerous: the market may have moved past
+  // the catalyst, or the news may have flipped. Halve the magnitude when
+  // items are > STALE_BEARISH_DAMPEN_MINUTES old AND the aggregate is bearish.
+  // Bullish stale news is untouched — worst case is "missed boost", which is
+  // conservative. Pure-positive and pure-neutral stale news flow through
+  // unchanged.
+  const staleMinutes = items.reduce((max, item) => Math.max(max, item.stale_minutes ?? 0), 0);
+  let staleDampened = false;
+  if (staleMinutes > STALE_BEARISH_DAMPEN_MINUTES && overallScore < 0) {
+    const before = overallScore;
+    overallScore = Math.round(overallScore * 0.5);
+    staleDampened = true;
+    console.log(
+      `[News] Stale-bearish dampening engaged for ${instrument}: ` +
+        `${staleMinutes} min old, score ${before} → ${overallScore}`,
+    );
+  }
+
   // Build summary from top news items
   const topItems = items
     .filter(i => i.category === 'A' || i.category === 'B')
@@ -89,13 +130,21 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
     .map(i => i.title)
     .join(' | ');
 
+  const summary = staleDampened
+    ? `[stale ${staleMinutes}min, bearish-dampened] ${topItems || 'No significant news catalysts'}`
+    : (staleMinutes > 0
+        ? `[stale ${staleMinutes}min] ${topItems || 'No significant news catalysts'}`
+        : (topItems || 'No significant news catalysts'));
+
   return {
     items,
     overall_score: overallScore,
     dominant_category: dominantCategory,
     dominant_sentiment: dominantSentiment,
     opposing_direction: false, // Agent determines this based on their bias analysis
-    summary: topItems || 'No significant news catalysts',
+    summary,
+    stale_minutes: staleMinutes,
+    stale_dampened: staleDampened,
   };
 }
 

@@ -14,9 +14,13 @@ import {
   _getCandleCache,
   _mapToTwelveDataSymbol,
   _resetAlphaVantageRateLimitFlag,
+  _resetNewsResilienceState,
+  _getAlphaVantageCallCount,
+  _setAlphaVantageBurstBucketForTests,
   fetchNewsContext,
   normalizeForAlphaVantage,
 } from '../src/mcp-server/market-data.js';
+import { TokenBucket } from '../src/mcp-server/rate-limiter.js';
 
 describe('withCache', () => {
   it('returns cached value on second call without re-invoking fetcher', async () => {
@@ -281,8 +285,7 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
   });
 
   it('fetchNewsContext returns [] + logs once when AV rate-limit response is detected', async () => {
-    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
-    _resetAlphaVantageRateLimitFlag();
+    resetNewsTest();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Exact shape AV returns on free-tier exhaustion — HTTP 200, {Information}
@@ -312,7 +315,7 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
   });
 
   it('fetchNewsContext wraps in withFallback — axios throws degrade to []', async () => {
-    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
+    resetNewsTest();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(axios, 'get').mockRejectedValue(new Error('Network outage'));
 
@@ -322,7 +325,228 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(result).toEqual([]);
   });
 
+  // ========== News-resilience layered defense (added 2026-04-23 pm) ==========
+  // See market-data.ts "News-resilience layers" block for the full architecture.
+  // Each layer has its own test below. All tests call `resetNewsTest()` first
+  // to: (a) clear prior axios.get spies so call counts reset, (b) reset the
+  // AV rate-limit / cache / counter state, (c) install a permissive burst
+  // bucket so 22-call scenarios don't time out at 1-req/1.1-sec prod throttle.
+
+  const resetNewsTest = () => {
+    vi.restoreAllMocks();
+    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
+    _resetAlphaVantageRateLimitFlag();
+    _resetNewsResilienceState();
+    _setAlphaVantageBurstBucketForTests(new TokenBucket(100_000, 1));
+  };
+
+  it('Layer 1: serves fresh cache without hitting AV on repeat calls within TTL', async () => {
+    // The ICT agent re-invokes get_news_context several times within a single
+    // reasoning chain (logs showed 5 SILVER calls in 90 min on 2026-04-23 am).
+    // Each repeat must be absorbed by the cache — otherwise the 25/day quota
+    // burns before NY Open.
+    resetNewsTest();
+
+    const successResponse = {
+      data: {
+        feed: [{
+          title: 'Headline A',
+          url: 'https://example.com',
+          time_published: '20260423T080000',
+          source: 'Wire',
+          summary: 'S',
+          overall_sentiment_score: '0.2',
+          ticker_sentiment: [{ relevance_score: '0.9' }],
+        }],
+      },
+    };
+    const getSpy = vi.spyOn(axios, 'get').mockResolvedValue(successResponse);
+
+    const first = await fetchNewsContext('EURUSD');
+    const second = await fetchNewsContext('EURUSD');
+    const third = await fetchNewsContext('EURUSD');
+
+    // Exactly one axios hit — the other two served from cache.
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    expect(first[0]?.title).toBe('Headline A');
+    expect(second[0]?.title).toBe('Headline A');
+    expect(third[0]?.title).toBe('Headline A');
+    // stale_minutes stays 0 on fresh cache hits (< 30 min old).
+    expect(first[0]?.stale_minutes).toBe(0);
+    expect(second[0]?.stale_minutes).toBe(0);
+    expect(third[0]?.stale_minutes).toBe(0);
+    // Cache hits do NOT count against the daily quota — only real AV calls do.
+    expect(_getAlphaVantageCallCount()).toBe(1);
+  });
+
+  it('Layer 1: cache is per-ticker — EURUSD cache does not short-circuit GBPUSD', async () => {
+    resetNewsTest();
+
+    const mkFeed = (title: string) => ({
+      data: {
+        feed: [{
+          title, url: 'u', time_published: '20260423T080000', source: 'Wire',
+          summary: 'S', overall_sentiment_score: '0.1', ticker_sentiment: [{ relevance_score: '0.5' }],
+        }],
+      },
+    });
+    const getSpy = vi.spyOn(axios, 'get')
+      .mockResolvedValueOnce(mkFeed('EUR-news'))
+      .mockResolvedValueOnce(mkFeed('GBP-news'));
+
+    const eur = await fetchNewsContext('EURUSD');
+    const gbp = await fetchNewsContext('GBPUSD');
+
+    expect(getSpy).toHaveBeenCalledTimes(2);
+    expect(eur[0]?.title).toBe('EUR-news');
+    expect(gbp[0]?.title).toBe('GBP-news');
+  });
+
+  it('Layer 2: serves stale cache (with stale_minutes tagged) when AV daily quota exhausts', async () => {
+    // The critical layer. Primes the cache with a successful fetch, then the
+    // next call returns daily-quota-exhausted. Bot must keep seeing news, not
+    // fall off the cliff at 0.
+    resetNewsTest();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Prime the cache at a timestamp 90 min ago so the next read is beyond
+    // the 30-min fresh window (forcing a real AV attempt), but within the
+    // 4-h stale window (so stale-fallback should serve it).
+    const NINETY_MIN_AGO = Date.now() - 90 * 60 * 1000;
+    const realNow = Date.now;
+    vi.spyOn(Date, 'now').mockImplementation(() => NINETY_MIN_AGO);
+
+    const successResponse = {
+      data: {
+        feed: [{
+          title: 'Cached-USDJPY-headline',
+          url: 'u', time_published: '20260423T060000', source: 'Wire',
+          summary: 'S', overall_sentiment_score: '0.3', ticker_sentiment: [{ relevance_score: '0.8' }],
+        }],
+      },
+    };
+    vi.spyOn(axios, 'get').mockResolvedValueOnce(successResponse);
+    await fetchNewsContext('USDJPY');  // primes cache
+
+    // Restore time, then return daily-quota-exhausted on the next call.
+    vi.mocked(Date.now).mockImplementation(realNow);
+    vi.mocked(axios.get).mockResolvedValueOnce({
+      data: {
+        Information:
+          'We have detected your API key as XYZ and our standard API rate limit is 25 requests per day...',
+      },
+    });
+
+    const stale = await fetchNewsContext('USDJPY');
+
+    // Should NOT be [] — stale cache served instead.
+    expect(stale).toHaveLength(1);
+    expect(stale[0]?.title).toBe('Cached-USDJPY-headline');
+    // stale_minutes tagged with the real age of the cache.
+    expect(stale[0]?.stale_minutes).toBeGreaterThanOrEqual(89);
+    expect(stale[0]?.stale_minutes).toBeLessThanOrEqual(91);
+
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  it('Layer 2: falls through to [] when cache is older than 4 h (stale-max exceeded)', async () => {
+    resetNewsTest();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Prime cache 5 h ago — beyond the stale-max.
+    const FIVE_H_AGO = Date.now() - 5 * 60 * 60 * 1000;
+    const realNow = Date.now;
+    vi.spyOn(Date, 'now').mockImplementation(() => FIVE_H_AGO);
+
+    vi.spyOn(axios, 'get').mockResolvedValueOnce({
+      data: {
+        feed: [{ title: 'Old', url: 'u', time_published: 't', source: 's', summary: 's', overall_sentiment_score: '0.1', ticker_sentiment: [{ relevance_score: '0.5' }] }],
+      },
+    });
+    await fetchNewsContext('AUDUSD');  // primes 5 h-old cache
+
+    vi.mocked(Date.now).mockImplementation(realNow);
+    vi.mocked(axios.get).mockResolvedValueOnce({
+      data: { Information: 'our standard API rate limit is 25 requests per day...' },
+    });
+
+    const result = await fetchNewsContext('AUDUSD');
+    expect(result).toEqual([]);  // too stale to serve
+
+    vi.mocked(Date.now).mockRestore();
+  });
+
+  it('Layer 3: daily soft-cap at 22 — 23rd attempt skips axios and serves stale/[] instead', async () => {
+    resetNewsTest();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    // Feed 22 successful calls across 22 distinct tickers so each populates
+    // the counter without being absorbed by the per-ticker cache.
+    const mkSuccess = (t: string) => ({
+      data: {
+        feed: [{ title: t, url: 'u', time_published: 't', source: 's', summary: 's', overall_sentiment_score: '0.1', ticker_sentiment: [{ relevance_score: '0.5' }] }],
+      },
+    });
+    const getSpy = vi.spyOn(axios, 'get');
+    for (let i = 0; i < 22; i++) getSpy.mockResolvedValueOnce(mkSuccess(`T${i}`));
+
+    for (let i = 0; i < 22; i++) {
+      await fetchNewsContext(`TICKER${i}`);
+    }
+    expect(_getAlphaVantageCallCount()).toBe(22);
+    expect(getSpy).toHaveBeenCalledTimes(22);
+
+    // 23rd call for a new, uncached ticker. Must NOT hit axios (cap reached).
+    const result = await fetchNewsContext('TICKER_23');
+    expect(getSpy).toHaveBeenCalledTimes(22);     // still 22 — no axios hit
+    expect(result).toEqual([]);                     // no cache for this ticker
+    expect(_getAlphaVantageCallCount()).toBe(22); // counter not bumped on skip
+  });
+
+  it('Layer 3: cache hits do not count against the daily cap', async () => {
+    resetNewsTest();
+
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        feed: [{ title: 't', url: 'u', time_published: 't', source: 's', summary: 's', overall_sentiment_score: '0.1', ticker_sentiment: [{ relevance_score: '0.5' }] }],
+      },
+    });
+
+    // 100 repeat calls for the same ticker — only the first hits AV.
+    for (let i = 0; i < 100; i++) {
+      await fetchNewsContext('GOLD');
+    }
+    expect(_getAlphaVantageCallCount()).toBe(1);
+  });
+
+  it('Layer 5: news-degraded Telegram alert fires at most once per UTC day', async () => {
+    // Whether triggered by daily-quota exhaustion OR soft-cap hit, the alert
+    // must be idempotent — Giuseppe should not get N Telegram pings per day.
+    resetNewsTest();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // 5 consecutive quota-exhausted responses
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: { Information: 'our standard API rate limit is 25 requests per day...' },
+    });
+
+    await fetchNewsContext('T1');
+    await fetchNewsContext('T2');
+    await fetchNewsContext('T3');
+    await fetchNewsContext('T4');
+    await fetchNewsContext('T5');
+
+    // Exactly one "News feed degraded" loud log — the gate for the Telegram
+    // call, which is the same one-shot state.
+    const degradedLogs = errSpy.mock.calls.filter((args) =>
+      typeof args[0] === 'string' && args[0].includes('News feed degraded'),
+    );
+    expect(degradedLogs).toHaveLength(1);
+  });
+
   it('fetchNewsContext detects AV burst-limit message, retries once, and logs once per day', async () => {
+    resetNewsTest();
     // Regression for 2026-04-23 finding: AV free tier enforces a 1 req/sec
     // burst limit in addition to the 25 req/day daily quota. Parallel scanner
     // calls (Promise.all across N tickers) landed all-but-first inside that
