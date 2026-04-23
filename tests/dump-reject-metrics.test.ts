@@ -9,6 +9,9 @@ import {
   extractInstrument,
   extractKillZone,
   UNIVERSE,
+  aggregateLog,
+  renderMarkdown,
+  type MetricsReport,
 } from '../scripts/dump-reject-metrics.js';
 
 describe('classifyLine — skip categories (priority-ordered, first match wins)', () => {
@@ -149,5 +152,150 @@ describe('extractKillZone', () => {
   it('matches KZ_ABBREV format too (e.g., NY_Open as it appears in some logs)', () => {
     expect(extractKillZone(['"kill_zone":"NY_Open"'])).toBe('NY Open');
     expect(extractKillZone(['kill_zone=London_Open'])).toBe('London Open');
+  });
+});
+
+describe('aggregateLog', () => {
+  it('filters to the target UTC date and counts events', () => {
+    const logLines = [
+      '2026-04-22 23:59:00 +00:00: [Scheduler] kill zone: NY Open',
+      '2026-04-22 23:59:00 +00:00: ICT Trading Agent decision cycle complete.',
+      '2026-04-23 07:00:00 +00:00: current kill zone: London Open',
+      '2026-04-23 07:00:00 +00:00: Processing GBPUSD for setup',
+      '2026-04-23 07:00:01 +00:00: NO ENTRY TRIGGER CONFIRMED ON 15M — GOLD',
+      '2026-04-23 07:00:02 +00:00: ICT Trading Agent decision cycle complete.',
+      '2026-04-23 08:00:00 +00:00: [ICT Agent] Calling tool: place_order',
+      '2026-04-23 23:59:59 +00:00: ICT Trading Agent decision cycle complete.',
+      '2026-04-24 00:00:01 +00:00: ICT Trading Agent decision cycle complete.', // next day
+    ];
+    const report = aggregateLog(logLines, '2026-04-23');
+
+    expect(report.date).toBe('2026-04-23');
+    expect(report.totalCycles).toBe(2); // 2 complete markers on 2026-04-23 (07:00:02 + 23:59:59)
+    expect(report.placeOrderCount).toBe(1);
+    expect(report.skipsByCategory.no_trigger).toBe(1);
+    expect(report.skipsByCategory.analyst_reject).toBe(0);
+    expect(report.skipsByCategory.news_opposing).toBe(0);
+  });
+
+  it('attributes skips to instrument via 10-line window', () => {
+    const logLines = [
+      '2026-04-23 07:00:00 +00:00: current kill zone: London Open',
+      '2026-04-23 07:00:00 +00:00: Processing GBPUSD for setup',
+      '2026-04-23 07:00:01 +00:00: NO ENTRY TRIGGER CONFIRMED ON 15M — GBPUSD',
+      '2026-04-23 07:00:02 +00:00: ICT Trading Agent decision cycle complete.',
+    ];
+    const report = aggregateLog(logLines, '2026-04-23');
+
+    expect(report.skipsByInstrumentAndCategory.GBPUSD?.no_trigger).toBe(1);
+  });
+
+  it('attributes cycles to kill zones from the window', () => {
+    const logLines = [
+      '2026-04-23 07:00:00 +00:00: current kill zone: London Open',
+      '2026-04-23 07:00:01 +00:00: ICT Trading Agent decision cycle complete.',
+      '2026-04-23 13:00:00 +00:00: current kill zone: NY Open',
+      '2026-04-23 13:00:01 +00:00: ICT Trading Agent decision cycle complete.',
+      '2026-04-23 20:00:00 +00:00: skipping ICT cycle (outside kill zone: outside)',
+      '2026-04-23 20:00:01 +00:00: ICT Trading Agent decision cycle complete.',
+    ];
+    const report = aggregateLog(logLines, '2026-04-23');
+
+    expect(report.cyclesByKillZone['London Open'].cycles).toBe(1);
+    expect(report.cyclesByKillZone['NY Open'].cycles).toBe(1);
+    expect(report.cyclesByKillZone['outside'].cycles).toBe(1);
+  });
+
+  it('counts log_trade success vs failure separately', () => {
+    const logLines = [
+      '2026-04-23 14:00:00 +00:00: [ICT Agent] Calling tool: log_trade',
+      '2026-04-23 14:00:01 +00:00: [ICT Agent] Tool log_trade failed: insertTrade: required fields missing',
+      '2026-04-23 14:00:02 +00:00: [ICT Agent] Calling tool: log_trade',
+      '2026-04-23 14:00:03 +00:00: ICT Trading Agent decision cycle complete.',
+    ];
+    const report = aggregateLog(logLines, '2026-04-23');
+
+    // log_trade_attempted is 2 (both calls), log_trade_failed is 1 (one explicitly failed).
+    expect(report.logTradeAttempted).toBe(2);
+    expect(report.logTradeFailed).toBe(1);
+    expect(report.logTradeSucceeded).toBe(1); // 2 attempted - 1 failed = 1 presumed succeeded
+  });
+
+  it('captures executed-trade detail (capped at 20)', () => {
+    const logLines: string[] = [
+      '2026-04-23 07:00:00 +00:00: current kill zone: London Open',
+      '2026-04-23 07:00:00 +00:00: Processing USDJPY',
+      '2026-04-23 07:00:01 +00:00: [ICT Agent] Calling tool: place_order',
+    ];
+    const report = aggregateLog(logLines, '2026-04-23');
+
+    expect(report.executedTrades).toHaveLength(1);
+    expect(report.executedTrades[0].timestamp).toBe('2026-04-23 07:00:01');
+    expect(report.executedTrades[0].instrument).toBe('USDJPY');
+  });
+});
+
+describe('renderMarkdown', () => {
+  it('produces a well-formed markdown file from a MetricsReport', () => {
+    const report: MetricsReport = {
+      date: '2026-04-23',
+      totalCycles: 664,
+      placeOrderCount: 5,
+      logTradeAttempted: 3,
+      logTradeFailed: 3,
+      logTradeSucceeded: 0,
+      skipsByCategory: {
+        outside_kill_zone: 181,
+        bias_unclear: 52,
+        no_trigger: 47,
+        rr_fail: 8,
+        news_opposing: 3,
+        score_too_low: 2,
+        analyst_reject: 1,
+      },
+      skipsByInstrumentAndCategory: {},
+      cyclesByKillZone: {
+        'London Open': { cycles: 120, executed: 2, skipped: 118 },
+        'NY Open':     { cycles: 90,  executed: 3, skipped: 87  },
+        'London Close':{ cycles: 40,  executed: 0, skipped: 40  },
+        'outside':     { cycles: 414, executed: 0, skipped: 414 },
+      },
+      executedTrades: [],
+    };
+    const md = renderMarkdown(report, '2026-04-24T00:05:00Z');
+
+    expect(md).toContain('# Farad Reject Metrics — 2026-04-23 (UTC)');
+    expect(md).toContain('Generated: 2026-04-24T00:05:00Z');
+    expect(md).toContain('**664**'); // total cycles
+    expect(md).toContain('**5**');   // place_order count
+    expect(md).toContain('Execute rate: 0.75%'); // 5/664 = 0.75%
+    expect(md).toContain('outside_kill_zone');
+    expect(md).toContain('181');
+    expect(md).toContain('London Open');
+  });
+
+  it('handles zero cycles gracefully (no divide-by-zero)', () => {
+    const report: MetricsReport = {
+      date: '2026-04-23',
+      totalCycles: 0,
+      placeOrderCount: 0,
+      logTradeAttempted: 0,
+      logTradeFailed: 0,
+      logTradeSucceeded: 0,
+      skipsByCategory: {
+        outside_kill_zone: 0, bias_unclear: 0, no_trigger: 0, rr_fail: 0,
+        news_opposing: 0, score_too_low: 0, analyst_reject: 0,
+      },
+      skipsByInstrumentAndCategory: {},
+      cyclesByKillZone: {
+        'London Open': { cycles: 0, executed: 0, skipped: 0 },
+        'NY Open':     { cycles: 0, executed: 0, skipped: 0 },
+        'London Close':{ cycles: 0, executed: 0, skipped: 0 },
+        'outside':     { cycles: 0, executed: 0, skipped: 0 },
+      },
+      executedTrades: [],
+    };
+    const md = renderMarkdown(report, '2026-04-24T00:05:00Z');
+    expect(md).toContain('Execute rate: n/a'); // no cycles → n/a rather than NaN
   });
 });
