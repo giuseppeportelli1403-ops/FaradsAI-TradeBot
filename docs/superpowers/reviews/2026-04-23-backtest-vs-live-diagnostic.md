@@ -247,3 +247,64 @@ Source: `pm2-out.log:43964-43966` (3 `place_order` calls, 14:18:49, 14:18:50, 14
 Applying all three deltas sequentially: **1671 R → −1569 R** (worst-plausible).
 
 **Sensitivity:** halving the slippage assumption (0.12 R on USDJPY vs 0.24 R) moves the stacked result to **~0 to +100 R**. With limit orders fully deployed, realistic ceiling is **+400 to +600 R over 6.5 years**.
+
+---
+
+## Appendix D — Post-implementation calibration (added 2026-04-23 pm)
+
+**After the diagnostic shipped**, P3 (backtest realism patch) was implemented
+per spec `docs/superpowers/specs/2026-04-23-backtest-realism-design.md`.
+Running the patched engine on a fresh 2019-2025 fetch (37,336 trades vs γ's
+14,918-trade cached run) revealed **γ's per-instrument R-cost estimates
+were optimistic on 3 instruments**:
+
+### Gross vs Net, same 37,336-trade dataset
+
+| Metric | Gross (no realism) | Net (with P3 patch) | Cost applied |
+|---|---|---|---|
+| Total R | +3,881 | −9,999 | −13,880 |
+| Avg R/trade | +0.10 | −0.27 | −0.37 |
+| Profit factor | 1.16 | 0.71 | — |
+| Win rate | 34.0% | 33.4% | unchanged |
+
+The **gross +0.10 R/trade** validates γ's original +0.11 R/trade assumption
+for the base strategy edge. The strategy DOES have an edge before friction.
+
+### Per-instrument friction reality vs γ's prediction
+
+| Ticker | Actual R-cost/trade | γ's prediction | Ratio |
+|---|---|---|---|
+| GBPUSD | 0.125 | 0.22 | 0.57× (cheaper) |
+| AUDUSD | 0.156 | 0.20 | 0.78× (cheaper) |
+| EURUSD | 0.117 | 0.15 | 0.78× (cheaper) |
+| GOLD | 0.274 | 0.20 | 1.37× |
+| OIL_CRUDE | 0.420 | 0.18 | **2.33× 🚨** |
+| SILVER | 0.570 | 0.18 | **3.17× 🚨** |
+| USDJPY | 0.940 | 0.29 | **3.24× 🚨** |
+
+### Root cause
+
+γ assumed each instrument's typical stop distance was 1.5×ATR, pairing
+that with the realism-constant totals to derive per-trade R-cost. The
+backtest engine's actual SL formula — `recent_low/high ± 0.5×ATR` —
+produces **tighter stops than γ assumed** on USDJPY, SILVER, and
+OIL_CRUDE, inflating per-trade R-cost (each pip of slippage divided by
+a smaller stop number). The realism **constants are not wrong**; they
+are anchored to the 2026-04-22 USDJPY live observation (14.6 pips of
+entry slippage). What's "wrong" is γ's optimistic typical-stop
+assumption for those 3 instruments.
+
+### Implication
+
+- **FX majors (EURUSD / GBPUSD / AUDUSD) have the best shot at live-executable profitability.** Actual friction is ~30% cheaper than γ predicted; the strategy edge (+0.10 R/trade gross) mostly survives.
+- **USDJPY / SILVER / OIL_CRUDE are slippage-catastrophic with market orders.** Each trade pays 0.4-0.9 R in friction against a 0.10 R/trade gross edge. The strategy cannot work on these three with market-order execution.
+- **P1 (limit orders) is even more important than the original diagnostic suggested.** Limit orders at the OB midpoint eliminate most entry slippage, which is the dominant R-cost component — expected to move USDJPY/SILVER/OIL_CRUDE from catastrophic to marginal-break-even, and FX majors from marginal to meaningfully profitable.
+
+### Test hygiene
+
+The `_internalsForTest.expectedRCostAtTypicalStop` map in `src/backtest/realism.ts`
+was updated post-run to reflect actual observed engine stops rather than
+γ's original "typical 1.5×ATR" assumption. The 11-case realism test
+suite continues to pass (sanity-checking that constants produce the
+observed R-cost at the observed stop). This is a **test-only hygiene
+change** — the runtime realism constants themselves are unchanged.

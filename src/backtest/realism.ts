@@ -86,22 +86,38 @@ export function computeExecutionCost(ticker: string, stopDistance: number): numb
  * obvious these are not part of the public runtime surface.
  *
  *   - `warnedTickers`:         the live Set, for inspecting/asserting warn state
- *   - `expectedRCostAtTypicalStop`: γ's per-instrument typical-stop assumption
- *                              paired with the R-cost γ expects at that stop.
- *                              Used by tests to sanity-check that the constants
- *                              above produce γ's headline numbers.
+ *   - `expectedRCostAtTypicalStop`: per-instrument typical stop distance
+ *                              (observed from the actual backtest engine SL
+ *                              formula `recent_low/high ± 0.5×ATR`) paired
+ *                              with the R-cost the realism constants produce
+ *                              at that stop. Used by tests as a regression
+ *                              guard against future changes to the realism
+ *                              constants.
+ *
+ *                              **2026-04-23 calibration:** values updated from
+ *                              γ's original "typical 1.5×ATR" assumptions
+ *                              after the first full 2019-2025 backtest run
+ *                              revealed γ's stop-width estimates were
+ *                              optimistic on 3 instruments (USDJPY/SILVER/
+ *                              OIL_CRUDE — actual engine stops ~3× tighter
+ *                              than γ assumed, pushing per-trade R-cost
+ *                              correspondingly higher). See
+ *                              docs/superpowers/reviews/2026-04-23-backtest-vs-live-diagnostic.md
+ *                              Appendix D for the gross-vs-net comparison
+ *                              that produced these calibration numbers.
+ *
  *   - `resetWarnings`:         clears warnedTickers for test isolation.
  */
 export const _internalsForTest = {
   warnedTickers,
   expectedRCostAtTypicalStop: {
-    EURUSD:    { typicalStop: 0.00130, expectedRCost: 0.15 },
-    GBPUSD:    { typicalStop: 0.00125, expectedRCost: 0.22 },
-    USDJPY:    { typicalStop: 0.71,    expectedRCost: 0.29 },
-    AUDUSD:    { typicalStop: 0.00120, expectedRCost: 0.20 },
-    GOLD:      { typicalStop: 7.25,    expectedRCost: 0.20 },
-    SILVER:    { typicalStop: 0.47,    expectedRCost: 0.18 },
-    OIL_CRUDE: { typicalStop: 0.83,    expectedRCost: 0.18 },
+    EURUSD:    { typicalStop: 0.00162, expectedRCost: 0.117 },
+    GBPUSD:    { typicalStop: 0.00216, expectedRCost: 0.125 },
+    USDJPY:    { typicalStop: 0.219,   expectedRCost: 0.940 },
+    AUDUSD:    { typicalStop: 0.00154, expectedRCost: 0.156 },
+    GOLD:      { typicalStop: 5.29,    expectedRCost: 0.274 },
+    SILVER:    { typicalStop: 0.149,   expectedRCost: 0.570 },
+    OIL_CRUDE: { typicalStop: 0.357,   expectedRCost: 0.420 },
   } as Record<string, { typicalStop: number; expectedRCost: number }>,
   resetWarnings: (): void => {
     warnedTickers.clear();
