@@ -24,7 +24,6 @@ export interface ScoredNews {
   overall_score: number;          // -15 to +20 for composite scoring
   dominant_category: 'A' | 'B' | 'C' | 'none';
   dominant_sentiment: 'bullish' | 'bearish' | 'neutral';
-  opposing_direction: boolean;    // True if strong news opposes likely trade direction
   summary: string;
   // Added 2026-04-23 (news-resilience Layer 4). Max stale_minutes across items
   // in this batch. 0 on fresh AV hits. Non-zero when served from stale cache
@@ -56,7 +55,6 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
       overall_score: 0,
       dominant_category: 'none',
       dominant_sentiment: 'neutral',
-      opposing_direction: false,
       summary: 'No news data available',
       stale_minutes: 0,
       stale_dampened: false,
@@ -69,7 +67,6 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
       overall_score: 0,
       dominant_category: 'none',
       dominant_sentiment: 'neutral',
-      opposing_direction: false,
       summary: 'No recent news for this instrument',
       stale_minutes: 0,
       stale_dampened: false,
@@ -141,7 +138,6 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
     overall_score: overallScore,
     dominant_category: dominantCategory,
     dominant_sentiment: dominantSentiment,
-    opposing_direction: false, // Agent determines this based on their bias analysis
     summary,
     stale_minutes: staleMinutes,
     stale_dampened: staleDampened,
@@ -176,4 +172,30 @@ export function isNewsOpposing(
     (tradeBias === 'bullish' && newsSentiment === 'bearish') ||
     (tradeBias === 'bearish' && newsSentiment === 'bullish')
   );
+}
+
+/**
+ * Returns the position-size multiplier to apply when the trade is otherwise
+ * valid. 1.0 = full size, 0.5 = half size (opposing Cat-A news, P2 softening),
+ * 0.0 = do not take the trade.
+ *
+ * Current policy (post-P2, 2026-04-23):
+ *   - Opposing Cat-A news → 0.5 (half-size; softened from former hard SKIP)
+ *   - Everything else → 1.0 (full size)
+ *
+ * The 0.0 value is reserved for future hard-SKIP cases (e.g. extreme
+ * opposing news, kill-switch active) but is not returned by any current
+ * path. Callers should treat 0.0 as "do not trade".
+ *
+ * This function is exposed for BOTH: (a) future code-level enforcement,
+ * and (b) clarity in the ICT agent prompt (the prompt references the
+ * function name so the LLM and the code are aligned semantically).
+ */
+export function getNewsRiskFactor(
+  newsSentiment: 'bullish' | 'bearish' | 'neutral',
+  newsCategory: 'A' | 'B' | 'C' | 'none',
+  tradeBias: 'bullish' | 'bearish',
+): 1.0 | 0.5 | 0.0 {
+  if (isNewsOpposing(newsSentiment, newsCategory, tradeBias)) return 0.5;
+  return 1.0;
 }

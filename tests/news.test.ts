@@ -1,6 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import axios from 'axios';
-import { getNewsContext, isNewsOpposing, STALE_BEARISH_DAMPEN_MINUTES } from '../src/news/index.js';
+import {
+  getNewsContext,
+  isNewsOpposing,
+  getNewsRiskFactor,
+  STALE_BEARISH_DAMPEN_MINUTES,
+} from '../src/news/index.js';
 import {
   _resetNewsResilienceState,
   _resetAlphaVantageRateLimitFlag,
@@ -54,6 +59,47 @@ describe('isNewsOpposing', () => {
   it('Category none + any direction → false', () => {
     expect(isNewsOpposing('bearish', 'none', 'bullish')).toBe(false);
     expect(isNewsOpposing('bullish', 'none', 'bearish')).toBe(false);
+  });
+});
+
+describe('getNewsRiskFactor (P2 softening — 2026-04-23)', () => {
+  // Post-P2 policy: opposing Cat-A news no longer hard-SKIPs the trade.
+  // Instead, position size is halved (0.5 multiplier) when the setup is
+  // otherwise valid. Cat B, Cat C, neutral sentiment, and aligned news all
+  // leave size untouched (1.0).
+
+  it('bullish trade + bearish Cat-A news → 0.5 (opposing, soften)', () => {
+    expect(getNewsRiskFactor('bearish', 'A', 'bullish')).toBe(0.5);
+  });
+
+  it('bearish trade + bullish Cat-A news → 0.5 (opposing, soften)', () => {
+    expect(getNewsRiskFactor('bullish', 'A', 'bearish')).toBe(0.5);
+  });
+
+  it('bullish trade + bullish Cat-A news → 1.0 (aligned, no softening)', () => {
+    expect(getNewsRiskFactor('bullish', 'A', 'bullish')).toBe(1.0);
+  });
+
+  it('bearish trade + bearish Cat-A news → 1.0 (aligned, no softening)', () => {
+    expect(getNewsRiskFactor('bearish', 'A', 'bearish')).toBe(1.0);
+  });
+
+  it('Cat B opposing news → 1.0 (Cat B not strong enough to trigger softening)', () => {
+    expect(getNewsRiskFactor('bearish', 'B', 'bullish')).toBe(1.0);
+    expect(getNewsRiskFactor('bullish', 'B', 'bearish')).toBe(1.0);
+  });
+
+  it('neutral sentiment → 1.0 (no directional news)', () => {
+    expect(getNewsRiskFactor('neutral', 'A', 'bullish')).toBe(1.0);
+    expect(getNewsRiskFactor('neutral', 'A', 'bearish')).toBe(1.0);
+    expect(getNewsRiskFactor('neutral', 'B', 'bullish')).toBe(1.0);
+  });
+
+  it('Cat C or "none" opposing news → 1.0 (noise, ignored)', () => {
+    expect(getNewsRiskFactor('bearish', 'C', 'bullish')).toBe(1.0);
+    expect(getNewsRiskFactor('bullish', 'C', 'bearish')).toBe(1.0);
+    expect(getNewsRiskFactor('bearish', 'none', 'bullish')).toBe(1.0);
+    expect(getNewsRiskFactor('bullish', 'none', 'bearish')).toBe(1.0);
   });
 });
 

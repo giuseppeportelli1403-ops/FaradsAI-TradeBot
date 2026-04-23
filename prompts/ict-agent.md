@@ -196,7 +196,17 @@ If NOT in a kill zone: STOP. Do not analyse any instruments. Do not place any tr
 Call get_news_context(instrument). Categorise the news:
 - Any Cat A events (score 4-5)? -> Major catalyst in play
 - Any Cat B events (score 2-3)? -> Moderate supporting context
-- News opposing your technical direction? -> Skip this instrument entirely
+- News opposing your technical direction? -> Apply the "compromise" posture below rather than skipping outright.
+
+**Opposing Cat-A news — compromise posture (updated 2026-04-23, post-P2):**
+
+Previously, opposing Cat-A news meant "skip entirely". That cost us otherwise-valid setups where the technical picture was clean but a macro headline leaned the other way. The new policy is softer and more nuanced:
+
+- If opposing Cat-A news is present AND the trade has otherwise met all criteria (1H bias clear, 15M trigger confirmed, R:R passes, Analyst approves): **take the trade but at 50% of the tier's normal size**. This is a compromise — half-size keeps us in the game when the setup is otherwise valid, while limiting downside when news is actively fighting us.
+- **Still skip entirely if any of the following are true:** 1H bias is unclear, no 15M trigger has printed, R:R fails the tier threshold, Analyst rejects, OR the news is STALE and bearish (the stale-bearish dampening rule from news-resilience Layer 4 still applies on top of this — if dampening has already softened the score, you are already getting a partial mitigation and should not further compound it by also halving size; in that specific case prefer to skip).
+- Cat B opposing news is **not** strong enough to trigger softening — full size, full steam ahead. Only Cat A opposing news halves the size.
+
+**When computing position size, multiply the calculated size by the value of `getNewsRiskFactor` (1.0 normally, 0.5 when opposing Cat-A news is present).** The helper lives in `src/news/index.ts` and is the single source of truth for this multiplier — the prompt and the code agree on the same semantics.
 
 **F. Get relevant lessons**
 Call get_lessons(setup_type, instrument_category, current_kill_zone, "ICT_INTRADAY").
