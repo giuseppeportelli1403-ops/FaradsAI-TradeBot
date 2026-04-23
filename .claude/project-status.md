@@ -1,23 +1,37 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-23 ~08:30 UTC (mid-day 4 — AV burst-limit fix + log_trade schema fix shipped)
+Last updated: 2026-04-23 ~09:05 UTC (late-morning day 4 — news-resilience shipped)
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: **master**
-Last commit on master: `5ea2214` — "fix(log_trade): accept agent payload variants, add closed_early + closure_reason"
-VPS head: `5ea2214` (synced — manual push + pull, bypassed PR-required rule)
-pm2 state: restart #28, PID 69276, online, migration ran cleanly, no startup errors
+Last commit on master: `9e312f5` — "feat(news): layered news-resilience — 30-min cache, stale-fallback, daily cap, bearish-dampening, Telegram degradation alert"
+VPS head: `9e312f5` (synced — direct push, bypassed PR rule)
+pm2 state: restart #31, PID 74038, online, preflight clean, scheduler running
 
 ## 🌅 First thing to read next session
 
-**Read this document top-to-bottom.** Yesterday's "AV verification" memory reminder has been deleted — its job is done: the mapping DID work but was being throttled by AV's 1-req/sec burst limit, which today's commits fix.
+**Read this document top-to-bottom.** Three commits shipped today across three themes: AV burst-limit fix, log_trade schema, and news-resilience layered defense.
 
-## 📋 What shipped today — 2 atomic commits
+## 📋 What shipped today — 3 atomic commits
 
 | Commit | Purpose |
 |---|---|
-| `6c347ef` | **fix(market-data):** detect Alpha Vantage burst limit (1 req/sec), throttle AV calls via TokenBucket(1, 1100ms), detect the distinct burst-limit `Information` message (separate from daily quota), retry ONCE after 1.5s delay, always-log mapping outcomes incl. 0-article / throttled / unexpected-shape cases. Regression test covers throttled → retry → success end-to-end. |
-| `5ea2214` | **fix(log_trade):** extend TradeStatus with `closed_early`, add nullable `closure_reason TEXT` column + migrations. New `normaliseTradePayload` in the MCP wrapper auto-generates missing `id` (randomUUID), maps agent's `strategy` → `strategy_tag`, derives `entry` from `actual_entry`/`intended_entry`, normalises non-canonical `closed_*` statuses into `closed_early` with reason captured. Rebuild trigger consolidated on strictest marker. |
+| `6c347ef` | **fix(market-data):** detect Alpha Vantage burst limit (1 req/sec), throttle AV calls via TokenBucket(1, 1100ms), detect the distinct burst-limit `Information` message, retry ONCE after 1.5 s, always-log mapping outcomes. |
+| `5ea2214` | **fix(log_trade):** extend TradeStatus with `closed_early`, add nullable `closure_reason TEXT` column + migrations. New `normaliseTradePayload` auto-generates missing `id`, maps `strategy`→`strategy_tag`, derives `entry` from `actual_entry`/`intended_entry`, normalises non-canonical `closed_*` statuses. |
+| `9e312f5` | **feat(news) — 5-layer resilience:** (1) 30-min per-ticker cache absorbs agent's multi-call pattern; (2) stale-cache up to 4 h serves when quota exhausts instead of []; (3) 22/25 daily soft-cap reserves headroom for Researcher + Swing; (4) stale-bearish dampening halves magnitude on news > 60 min old when aggregate is bearish; (5) one-shot Telegram degradation alert per UTC day. |
 
-Tests: **194/194 passing** (was 182 at start; +12 new regression tests across market-data + database + new trading-tools test file).
+Tests: **193/193 passing** (was 182 at start of day; +11 new — Layer 1 ×2, Layer 2 ×2, Layer 3 ×2, Layer 5 ×1, Layer 4 ×4, plus 1 trading-tools earlier).
+
+## ⚠️ Caveat for the rest of today (2026-04-23)
+
+The news-resilience deploy happened AFTER AV's daily quota already exhausted (~08:30 UTC). In-memory cache was wiped by the 08:58 pm2 restart. Result: for the remaining 15 h of today's UTC day, stale-cache-serve returns `[]` because nothing populated the cache before the quota cliff. Telegram degradation alert DID fire correctly at 09:00:34 UTC — verified in log:
+```
+[Market Data] News feed degraded: AV daily quota (25/day) exhausted. Serving cached/empty for the rest of the UTC day.
+```
+
+**From 2026-04-24 UTC midnight forward** the full 5-layer flow works as designed: cache populates during normal 00:00–08:30 operation, quota-exhaustion switches to stale-serve through NY Open, Telegram alert fires once, bearish-dampening kicks in on > 60 min stale news.
+
+## 🔄 Known open item: cache persistence across pm2 restarts
+
+`newsCache` + `alphaVantageCallsByUtcDate` are in-memory. A pm2 restart during a quota-exhausted window loses both. Minor issue most days but painful on deploy days. **Post-demo:** persist to disk (same pattern as `saveToFile` in `src/database/index.ts`) OR move cache into SQLite with a TTL column.
 
 ## 🔍 Root causes diagnosed this session
 
