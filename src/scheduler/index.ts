@@ -16,6 +16,7 @@
 // tokens idle out around 10 minutes).
 
 import cron from 'node-cron';
+import { spawn } from 'child_process';
 import { runTradingAgent } from '../agents/trading-agent.js';
 // Swing Agent removed 2026-04-23 — the subsystem used too many Claude API
 // tokens relative to its profit contribution. Historical SWING-tagged trades
@@ -549,10 +550,28 @@ export function startScheduler(): void {
     await safeRun('Weekly Review Agent', runWeeklyReviewAgent);
   });
 
+  // Daily at 00:05 UTC: dump previous day's reject metrics.
+  // Added 2026-04-23 (P4). Spawned as a detached process so the scheduler
+  // event loop isn't blocked by the ~10s log scrape. Failures swallowed
+  // via stdio:'ignore' + on('error') — observability must NEVER take
+  // down the live trading loop.
+  cron.schedule('5 0 * * *', () => {
+    const proc = spawn('npx', ['tsx', 'scripts/dump-reject-metrics.ts'], {
+      cwd: process.cwd(),
+      detached: true,
+      stdio: 'ignore',
+    });
+    proc.unref();
+    proc.on('error', (err: Error) => {
+      console.error(`[Scheduler] Reject-metrics dump failed to spawn: ${err.message}`);
+    });
+  });
+
   console.log('Scheduler started. Cron jobs active:');
   console.log('  */5 * * * *           — Split-position monitor + candle detection → ICT Agent');
   console.log('  */8 * * * *           — Capital.com session keep-alive ping');
   console.log('  30 5 * * *            — Market Researcher (daily pre-London)');
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
   console.log('  0 0 * * 0             — Weekly Review Agent');
+  console.log('  5 0 * * *             — Reject metrics dump (previous UTC day)');
 }
