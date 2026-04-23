@@ -92,7 +92,18 @@ The Swing Agent's AAPL long from 2026-04-22 (entry ~$273.07, SL $264.22, TP1 $27
 ## 🚧 Deferred items — next session candidates
 
 1. **P1 live verification (HIGHEST PRIORITY tomorrow morning).** Code deployed + smoke-tested, but no real ICT cycle has exercised the new path yet (18:11 UTC deploy was past London Close kill zone). First real cycle: London Open 07:00 UTC tomorrow. See "First thing to read next session" above for exact verification steps.
-2. **P2 — news-opposing softening (hard SKIP → 50% risk).** Prompt + scoring change in `ict-agent.md` + news/index.ts. ~1 hour. Should be evidenced by P4 metrics before tuning — requires ≥1 week of post-P1 data to calibrate the right dampening factor.
+
+2. **P2 — news-opposing softening (hard SKIP → 50% risk).** SCHEDULED for tomorrow (2026-04-24) at **11:00-13:00 UTC (13:00-15:00 Malta)** — after London Open exercises P1, before NY Open needs stability.
+
+   **Pre-P2 checklist** (run at ~11:00 UTC tomorrow):
+   - `ssh bot@162.55.212.198 "pm2 status"` — confirm bot uptime, no crash loops
+   - `ssh bot@162.55.212.198 "grep -E 'orderType.*LIMIT|Calling tool: place_order|working order|workingOrderId' /home/bot/trading-bot/data/pm2-out.log | tail -30"` — did P1 fire? Did a limit fill or expire?
+   - Log into Capital demo UI — any dangling working orders from today? Any new fills?
+   - If P1 looks broken → rollback P1 BEFORE starting P2: `git revert ef9f4d5 df3cfbb 51b5313 --no-edit && git push origin master` and re-deploy
+
+   **If P1 looks healthy → start P2 brainstorm → spec → plan → execute.** Target: ship before NY Open (13:00 UTC / 15:00 Malta) so both P1 + P2 get exercised in the same kill zone.
+
+   **P2 scope reminder (from diagnostic recs):** soften news-opposing from hard SKIP to 50% risk. Touches `src/news/index.ts` `isNewsOpposing` function (return a factor 0.0 / 0.5 / 1.0 instead of boolean) + `prompts/ict-agent.md` Step 3E ("opposing news → skip entirely" → "opposing Cat A news → take at 50% risk"). ~1 hour of work. Caveat: 50% is the baseline rec, not a data-calibrated number (real calibration needs weeks of post-P1 data).
 3. **Swing Agent `log_trade` bug post-mortem:** the 2026-04-22 AAPL trade was never persisted. Root cause was the Swing Agent skipping the log_trade step after place_order. Now moot (Swing removed) but worth documenting in case Swing ever returns.
 4. **Backtest news-filter proxy (γ's Delta 3, credibility C):** not implemented in P3; deferred per spec §1 non-goal.
 5. **Reject-metrics polish:** (a) percentages can exceed 100% when multiple skip events per cycle (cosmetic); (b) split-leg place_orders sometimes attribute to `_unknown` when the 10-line window doesn't reach the instrument-naming line.
