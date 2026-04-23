@@ -70,6 +70,82 @@ function normaliseTradePayload(raw: Record<string, unknown>): Record<string, unk
 // Exported for tests only.
 export const _normaliseTradePayload = normaliseTradePayload;
 
+// ==================== P1 — place_order LIMIT handler ====================
+//
+// Extracted as a pure function (takes the Capital client as an argument)
+// so tests can mock the client without booting the full MCP server.
+// The in-tool registration at `registerTradingTools` below dispatches to
+// this function — one code path, tested once, running once in prod.
+
+export const _placeOrderInputSchema = z.object({
+  epic: z.string(),
+  direction: z.enum(['long', 'short']),
+  size: z.number().positive(),
+  entry_price: z.number().positive(),
+  sl: z.number(),
+  tp: z.number(),
+  label: z.string(),
+});
+
+interface PlaceOrderInput {
+  epic: string;
+  direction: 'long' | 'short';
+  size: number;
+  entry_price: number;
+  sl: number;
+  tp: number;
+  label: string;
+}
+
+interface PlaceOrderCapital {
+  createWorkingOrder: (
+    params: Parameters<CapitalClient['createWorkingOrder']>[0],
+  ) => Promise<Awaited<ReturnType<CapitalClient['createWorkingOrder']>>>;
+}
+
+export async function _placeOrderHandler(
+  capitalClient: PlaceOrderCapital,
+  input: PlaceOrderInput,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const capitalDirection = input.direction === 'long' ? 'BUY' : 'SELL';
+  // 15-minute auto-expiry. Capital expects ISO-8601 seconds (no ms,
+  // no Z suffix) in goodTillDate. Per Capital docs: "datetime in the
+  // format yyyy-MM-dd'T'HH:mm:ss" treated as UTC.
+  const goodTillDate = new Date(Date.now() + 15 * 60 * 1000)
+    .toISOString()
+    .slice(0, 19);
+
+  const confirmation = await capitalClient.createWorkingOrder({
+    direction: capitalDirection,
+    epic: input.epic,
+    size: input.size,
+    level: input.entry_price,
+    type: 'LIMIT',
+    stopLevel: input.sl,
+    profitLevel: input.tp,
+    timeInForce: 'GOOD_TILL_DATE',
+    goodTillDate,
+    guaranteedStop: false,
+    label: input.label,
+  });
+
+  return {
+    content: [{
+      type: 'text' as const,
+      text: JSON.stringify({
+        workingOrderId: confirmation.dealId ?? null,
+        dealReference: confirmation.dealReference,
+        dealStatus: confirmation.dealStatus,
+        status: confirmation.status,
+        orderType: 'LIMIT',
+        entry_price: input.entry_price,
+        expires_at: goodTillDate,
+        note: 'Limit order placed. Will auto-cancel if not filled by expires_at.',
+      }),
+    }],
+  };
+}
+
 const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
   identifier: process.env.CAPITAL_IDENTIFIER || '',
@@ -82,46 +158,25 @@ export function registerTradingTools(server: McpServer): void {
   server.registerTool(
     'place_order',
     {
-      title: 'Place Market Order',
-      description: 'Place a market order on Capital.com. Opens a single leg — call twice for split-position method. SL/TP are sent server-side to Capital.com (authoritative). Returns the dealId to use as position_a_deal_id / position_b_deal_id in log_trade.',
+      title: 'Place Limit Order',
+      description: 'Place a LIMIT order leg at entry_price (typically the OB/FVG midpoint). Auto-cancels via goodTillDate after 15 minutes if not filled. Call twice for split-position method (both legs share the same entry_price + goodTillDate). Returns the workingOrderId (NOT a dealId) — a position + dealId only exist once the limit actually fills.',
       inputSchema: {
-        epic: z.string().describe('Capital.com epic (e.g. GOLD, US100, EURUSD)'),
+        epic: z.string().describe('Capital.com epic (e.g. GOLD, EURUSD)'),
         direction: z.enum(['long', 'short']).describe('Trade direction'),
         size: z.number().positive().describe('Position size in units'),
-        sl: z.number().describe('Stop loss price (sent to Capital.com as stopLevel)'),
-        tp: z.number().describe('Take profit price (sent to Capital.com as profitLevel)'),
-        label: z.string().describe('Position label e.g. XAUUSD-A-1713300000 (local audit only)'),
+        entry_price: z.number().positive().describe(
+          'Limit price — typically the OB/FVG zone midpoint. REQUIRED. ' +
+          'The order auto-cancels via goodTillDate if not filled within 15 min.',
+        ),
+        sl: z.number().describe('Stop loss price (stopLevel on the working order)'),
+        tp: z.number().describe('Take profit price (profitLevel on the working order)'),
+        label: z.string().describe('Position label (local audit only)'),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    wrapTool('place_order', async ({ epic, direction, size, sl, tp, label }) => {
-      const capitalDirection = direction === 'long' ? 'BUY' : 'SELL';
-      const confirmation = await capital.openPosition({
-        direction: capitalDirection,
-        epic,
-        size,
-        stopLevel: sl,
-        profitLevel: tp,
-      });
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            dealId: confirmation.dealId,
-            dealReference: confirmation.dealReference,
-            dealStatus: confirmation.dealStatus,
-            status: confirmation.status,
-            direction: confirmation.direction,
-            epic: confirmation.epic,
-            size: confirmation.size,
-            level: confirmation.level,
-            stopLevel: confirmation.stopLevel,
-            profitLevel: confirmation.profitLevel,
-            local_tracking: { epic, direction, size, sl, tp, label },
-          }),
-        }],
-      };
-    })
+    wrapTool('place_order', async ({ epic, direction, size, entry_price, sl, tp, label }) =>
+      _placeOrderHandler(capital, { epic, direction, size, entry_price, sl, tp, label }),
+    )
   );
 
   server.registerTool(

@@ -10,8 +10,12 @@
 // The trade executed on Capital.com but the DB row never persisted — orphan
 // audit trail. This suite locks in the three fixes.
 
-import { describe, it, expect } from 'vitest';
-import { _normaliseTradePayload } from '../src/mcp-server/tools/trading-tools.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  _normaliseTradePayload,
+  _placeOrderInputSchema,
+  _placeOrderHandler,
+} from '../src/mcp-server/tools/trading-tools.js';
 
 describe('normaliseTradePayload (log_trade MCP wrapper)', () => {
   it('auto-generates id when the agent omits one', () => {
@@ -165,5 +169,98 @@ describe('normaliseTradePayload (log_trade MCP wrapper)', () => {
     expect(out.closure_reason).toContain('closed_rr_violation');      // original captured
     expect(out.closure_reason).toContain('14.6 pips');                // agent's reason preserved
     expect(out.entry).toBe(159.187);                                  // bonus: derived from actual_entry
+  });
+});
+
+// ==================== P1 — place_order as LIMIT ====================
+//
+// Context: ict-agent.md:212 documents "Entry: ... or limit at OB/FVG
+// midpoint if price has moved" but pre-P1 the place_order tool was
+// market-only and ignored the agent's limit intent. The 2026-04-22
+// USDJPY fill demonstrated the cost: 14.6 pips of entry slippage
+// gutted R:R from 1.7:1 to 0.5:1. P1 makes place_order limit-only
+// with a required entry_price parameter.
+
+describe('place_order tool (P1 — limit-only)', () => {
+  it('requires entry_price at the Zod schema level', () => {
+    const withoutEntryPrice = {
+      epic: 'EURUSD',
+      direction: 'long',
+      size: 1000,
+      sl: 1.08400,
+      tp: 1.08800,
+      label: 'ICT-EURUSD-A-123',
+    };
+    const result = _placeOrderInputSchema.safeParse(withoutEntryPrice);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues.some((i) => i.path.includes('entry_price'))).toBe(true);
+    }
+  });
+
+  it('accepts the full schema with a valid entry_price', () => {
+    const full = {
+      epic: 'EURUSD',
+      direction: 'long' as const,
+      size: 1000,
+      entry_price: 1.08523,
+      sl: 1.08400,
+      tp: 1.08800,
+      label: 'ICT-EURUSD-A-123',
+    };
+    const result = _placeOrderInputSchema.safeParse(full);
+    expect(result.success).toBe(true);
+  });
+
+  it('handler dispatches to createWorkingOrder with LIMIT + 15-min goodTillDate', async () => {
+    const mockClient = {
+      createWorkingOrder: vi.fn().mockResolvedValue({
+        dealReference: 'REF-P1',
+        dealId: 'WO-P1',
+        dealStatus: 'ACCEPTED',
+        status: 'ACCEPTED',
+        direction: 'BUY',
+        epic: 'EURUSD',
+        size: 1000,
+      }),
+    };
+    const t0 = Date.now();
+    const response = await _placeOrderHandler(mockClient, {
+      epic: 'EURUSD',
+      direction: 'long',
+      size: 1000,
+      entry_price: 1.08523,
+      sl: 1.08400,
+      tp: 1.08800,
+      label: 'ICT-EURUSD-A-123',
+    });
+
+    expect(mockClient.createWorkingOrder).toHaveBeenCalledTimes(1);
+    const callParams = mockClient.createWorkingOrder.mock.calls[0][0];
+    expect(callParams.direction).toBe('BUY');
+    expect(callParams.epic).toBe('EURUSD');
+    expect(callParams.size).toBe(1000);
+    expect(callParams.level).toBe(1.08523);
+    expect(callParams.type).toBe('LIMIT');
+    expect(callParams.timeInForce).toBe('GOOD_TILL_DATE');
+    expect(callParams.stopLevel).toBe(1.08400);
+    expect(callParams.profitLevel).toBe(1.08800);
+    expect(callParams.guaranteedStop).toBe(false);
+    expect(callParams.label).toBe('ICT-EURUSD-A-123');
+
+    // Assert goodTillDate is ~15 min from now (±10 sec tolerance).
+    // Capital expects ISO-seconds without Z suffix; we append Z for parsing.
+    const gtdMs = new Date(callParams.goodTillDate + 'Z').getTime();
+    const expectedMs = t0 + 15 * 60 * 1000;
+    expect(Math.abs(gtdMs - expectedMs)).toBeLessThan(10_000);
+
+    // Assert response JSON shape.
+    const body = JSON.parse(response.content[0].text);
+    expect(body.orderType).toBe('LIMIT');
+    expect(body.entry_price).toBe(1.08523);
+    expect(body.expires_at).toBe(callParams.goodTillDate);
+    expect(body.workingOrderId).toBe('WO-P1');
+    expect(body.dealReference).toBe('REF-P1');
+    expect(body.note).toContain('auto-cancel');
   });
 });
