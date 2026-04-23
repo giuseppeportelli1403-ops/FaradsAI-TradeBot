@@ -1,24 +1,29 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-23 ~09:05 UTC (late-morning day 4 — news-resilience shipped)
+Last updated: 2026-04-23 ~10:15 UTC (day 4 — Swing subsystem removed, ICT-only going forward)
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: **master**
-Last commit on master: `9e312f5` — "feat(news): layered news-resilience — 30-min cache, stale-fallback, daily cap, bearish-dampening, Telegram degradation alert"
-VPS head: `9e312f5` (synced — direct push, bypassed PR rule)
-pm2 state: restart #31, PID 74038, online, preflight clean, scheduler running
+Last commit on master: `8914b00` — "chore: remove Swing Agent subsystem — cost/yield not justified during demo"
+VPS head: `8914b00` (synced — direct push, bypassed PR rule)
+pm2 state: restart #34, PID 77721, online, preflight clean, scheduler running with 5 crons (was 8)
 
 ## 🌅 First thing to read next session
 
-**Read this document top-to-bottom.** Three commits shipped today across three themes: AV burst-limit fix, log_trade schema, and news-resilience layered defense.
+**Read this document top-to-bottom.** Four commits shipped today across four themes: AV burst-limit fix, log_trade schema, news-resilience layered defense, and **Swing subsystem removal**.
 
-## 📋 What shipped today — 3 atomic commits
+## 📋 What shipped today — 4 atomic commits
 
 | Commit | Purpose |
 |---|---|
 | `6c347ef` | **fix(market-data):** detect Alpha Vantage burst limit (1 req/sec), throttle AV calls via TokenBucket(1, 1100ms), detect the distinct burst-limit `Information` message, retry ONCE after 1.5 s, always-log mapping outcomes. |
 | `5ea2214` | **fix(log_trade):** extend TradeStatus with `closed_early`, add nullable `closure_reason TEXT` column + migrations. New `normaliseTradePayload` auto-generates missing `id`, maps `strategy`→`strategy_tag`, derives `entry` from `actual_entry`/`intended_entry`, normalises non-canonical `closed_*` statuses. |
-| `9e312f5` | **feat(news) — 5-layer resilience:** (1) 30-min per-ticker cache absorbs agent's multi-call pattern; (2) stale-cache up to 4 h serves when quota exhausts instead of []; (3) 22/25 daily soft-cap reserves headroom for Researcher + Swing; (4) stale-bearish dampening halves magnitude on news > 60 min old when aggregate is bearish; (5) one-shot Telegram degradation alert per UTC day. |
+| `9e312f5` | **feat(news) — 5-layer resilience:** (1) 30-min per-ticker cache absorbs agent's multi-call pattern; (2) stale-cache up to 4 h serves when quota exhausts instead of []; (3) 22/25 daily soft-cap reserves headroom for Researcher (Swing now removed); (4) stale-bearish dampening halves magnitude on news > 60 min old when aggregate is bearish; (5) one-shot Telegram degradation alert per UTC day. |
+| `8914b00` | **chore: remove Swing Agent subsystem.** Triggered by Giuseppe noticing an AAPL long on Capital.com opened by the Swing Agent on 2026-04-22 17:18 UTC. Two issues: (a) Claude API cost outstripping swing profit contribution; (b) Researcher prompt was generating `swing_shortlist` with US stocks, and the Swing Agent pulled from it ignoring the scanner's 7-ticker universe narrowing → AAPL trade on a stock the scanner excludes. Deleted `src/agents/swing-agent.ts` + `prompts/swing-agent.md`, removed 3 Swing cron jobs from the scheduler, dropped `swing_shortlist` generation from Researcher, kept `'SWING'` in `StrategyTag` + DB CHECK for historical queryability. |
 
-Tests: **193/193 passing** (was 182 at start of day; +11 new — Layer 1 ×2, Layer 2 ×2, Layer 3 ×2, Layer 5 ×1, Layer 4 ×4, plus 1 trading-tools earlier).
+Tests: **193/193 passing** (unchanged from 09:05 UTC — no regression from Swing removal since the enum is preserved and no tests explicitly tested Swing-agent code paths beyond the single demo-gates prompt file reference, which was retargeted to ict-agent.md).
+
+## AAPL position on Capital.com — being managed manually
+
+The Swing Agent's AAPL long from 2026-04-22 (entry ~$273.07, SL $264.22, TP1 $278, TP2 $287) is still open on Capital.com. Giuseppe opted for option **1b** (leave open, manage manually to TP/SL) when the Swing removal was planned. The bot will NOT touch this position since (a) the Swing Agent is gone and (b) the trade was never logged to the local DB (separate bug — Swing Agent skipped `log_trade` after successful `place_order`). Manual Capital UI watch.
 
 ## ⚠️ Caveat for the rest of today (2026-04-23)
 
