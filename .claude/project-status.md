@@ -1,4 +1,23 @@
 # Project Status — Auto-Updated
+
+> ## 🔔 REMINDER FOR GIUSEPPE WHEN TRAVELING (2026-04-24) 🔔
+>
+> Run this ONE command from anywhere with SSH access to the VPS:
+>
+> ```
+> ssh bot@162.55.212.198 "grep -E 'orderType.*LIMIT|Calling tool: place_order|workingOrderId|50%|news.*soften|opposing' /home/bot/trading-bot/data/pm2-out.log | grep '2026-04-24' | tail -40"
+> ```
+>
+> **Expected healthy signals:**
+> - Any line with `"orderType":"LIMIT"` → P1 firing
+> - Any line mentioning "50%" near "news" → P2 softening triggered
+> - NO line saying "opposing news → skip entirely" → the old rule is gone
+>
+> **If anything looks wrong**, reply to Claude with "rollback P1+P2" and it will run:
+> `git revert fd8afa9 ef9f4d5 df3cfbb 51b5313 --no-edit && git push origin master && ssh bot@162.55.212.198 "cd /home/bot/trading-bot && git pull && npm run build && pm2 restart trading-bot"`
+>
+> **If all clear**, reply "healthy" and enjoy your travel.
+
 Last updated: 2026-04-23 ~18:40 UTC end-of-day (day 4 of demo) — P1 + P2 BOTH shipped
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: **master**
