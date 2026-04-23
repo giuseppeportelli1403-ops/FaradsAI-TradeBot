@@ -45,8 +45,8 @@ The rule overrides below apply ONLY during the 2-week demo evaluation window
 documented above. Every other rule remains in force.
 
 1. **R:R minimum — tight-spread symbols.** For trades on ${TIGHT_SPREAD_TICKERS},
-   an R:R to TP2 of **>= 1.5:1** is acceptable (previously 2:1 for ICT / 3:1
-   for Swing). All other symbols keep their original R:R minima.
+   an R:R to TP2 of **>= 1.5:1** is acceptable (previously 2:1 for ICT).
+   All other symbols keep their original R:R minima.
 
 2. **Tier 3 bracket (composite score 45-59).** The scanner now returns
    instruments with score 45-59 tagged \`tier: 3\`. You MAY take Tier 3 trades
@@ -63,8 +63,6 @@ documented above. Every other rule remains in force.
 **NOT relaxed under any circumstance:**
 - Daily 6% loss kill switch — still fires, still halts new trades.
 - Weekly 10% loss kill switch — unchanged.
-- Coordination lock — ICT and Swing may still NOT open simultaneous positions
-  on the same instrument.
 - Split-position method — every trade is still two legs (Position A + B),
   with TP1 triggering Position B's SL-to-break-even move.
 - Max concurrent positions — unchanged.
@@ -78,10 +76,11 @@ still matters. If a Tier 3 setup looks weak, SKIP IT.
  * Loads a prompt file and appends the demo-phase relaxed-gates context
  * when DEMO_RELAXED_GATES=true. Returns the unmodified prompt otherwise.
  *
- * Use this for agent system prompts (ict-agent.md, swing-agent.md,
- * analyst-agent.md). Do NOT use for prompt files that have nothing to do
- * with trade gating (reflection, review, researcher) — for those, loadPrompt
- * directly is correct.
+ * Use this for agent system prompts that gate trade execution — currently
+ * ict-agent.md and analyst-agent.md. Do NOT use for prompt files that have
+ * nothing to do with trade gating (reflection, review, researcher) — for
+ * those, loadPrompt directly is correct. (swing-agent.md was removed
+ * 2026-04-23 with the Swing subsystem.)
  */
 export function loadPromptWithDemoContext(filename: string): string {
   const base = loadPrompt(filename);

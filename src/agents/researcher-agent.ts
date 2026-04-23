@@ -125,22 +125,20 @@ export async function runResearcherAgent(): Promise<ResearchBrief> {
   // Phase 2: Extract themes using Claude
   const themes = await extractThemes(regime, calendar, sectors);
 
-  // Phase 3: Get ranked instruments for both strategies
+  // Phase 3: Get ranked instruments for the ICT shortlist
+  //
+  // Swing shortlist removed 2026-04-23 along with the Swing Agent itself. The
+  // ResearchBrief type still has an optional `swing_shortlist` field so older
+  // JSON briefs in the DB continue to parse; new briefs simply don't populate
+  // it.
   const rankedInstruments = await getRankedInstruments(20);
 
-  // Split into ICT and Swing shortlists
   // ICT: instruments with tight spreads, active during kill zones
   const ictShortlist = rankedInstruments
     .filter(inst => {
       const universeEntry = INSTRUMENT_UNIVERSE.find(u => u.ticker === inst.ticker);
       return universeEntry?.spread_quality === 'tight';
     })
-    .slice(0, 10)
-    .map(i => i.ticker);
-
-  // Swing: instruments with strong bias (bullish or bearish, not neutral)
-  const swingShortlist = rankedInstruments
-    .filter(inst => inst.bias !== 'neutral')
     .slice(0, 10)
     .map(i => i.ticker);
 
@@ -155,14 +153,12 @@ export async function runResearcherAgent(): Promise<ResearchBrief> {
     themes,
     events_calendar: calendar.filter(e => e.impact === 'high' || e.impact === 'medium'),
     ict_shortlist: ictShortlist,
-    swing_shortlist: swingShortlist,
     warnings,
   };
 
   saveResearchBrief(brief);
   console.log(`Research brief saved: ${brief.brief_id}`);
   console.log(`ICT shortlist: ${ictShortlist.join(', ')}`);
-  console.log(`Swing shortlist: ${swingShortlist.join(', ')}`);
   console.log(`Warnings: ${warnings.length}`);
 
   return brief;

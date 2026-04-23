@@ -204,6 +204,15 @@ export type TradeStatus =
   // sanitisation-of-unknown-status, etc. The specific reason goes into the
   // separate `closure_reason` column so the enum stays small and bounded.
   | 'closed_early';
+/**
+ * Strategy identifier for a trade record. 'SWING' is retained for backward
+ * compatibility with historical trades in the DB and the Weekly Review Agent's
+ * reporting path — the Swing Agent subsystem was removed on 2026-04-23 (cost/
+ * yield not justified), so no NEW rows will be inserted with this tag, but
+ * queries and reports over historical data continue to work unchanged. The
+ * trades.strategy_tag CHECK constraint in src/database/index.ts still accepts
+ * 'SWING' for the same reason.
+ */
 export type StrategyTag = 'ICT_INTRADAY' | 'SWING';
 export type Direction = 'long' | 'short';
 
@@ -341,7 +350,13 @@ export interface ResearchBrief {
   themes: string[];
   events_calendar: EconomicEvent[];
   ict_shortlist: string[];
-  swing_shortlist: string[];
+  /**
+   * @deprecated Swing Agent removed 2026-04-23. New briefs no longer populate
+   * this field. Kept optional so historical research_briefs JSON rows in the
+   * DB continue to parse and the Weekly Review Agent can still surface past
+   * swing_shortlist content when summarising the historical record.
+   */
+  swing_shortlist?: string[];
   warnings: string[];
 }
 

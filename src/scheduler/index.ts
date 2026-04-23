@@ -17,7 +17,11 @@
 
 import cron from 'node-cron';
 import { runTradingAgent } from '../agents/trading-agent.js';
-import { runSwingAgent } from '../agents/swing-agent.js';
+// Swing Agent removed 2026-04-23 — the subsystem used too many Claude API
+// tokens relative to its profit contribution. Historical SWING-tagged trades
+// in the DB remain queryable (the StrategyTag enum and CHECK constraint still
+// allow 'SWING' for backward compat), but no new Swing trades will be
+// generated. Researcher no longer emits a swing_shortlist.
 import { runResearcherAgent } from '../agents/researcher-agent.js';
 import { runReflectionAgent } from '../agents/reflection-agent.js';
 import { runWeeklyReviewAgent } from '../agents/review-agent.js';
@@ -533,23 +537,12 @@ export function startScheduler(): void {
   // regression — every hour the 4H cron covered is also a 1H boundary the */5
   // cron detects and acts on.)
 
-  // Daily at 21:30 UTC: Swing Agent (after US close)
-  cron.schedule('30 21 * * 1-5', async () => {
-    await safeRun('Swing Trading Agent (daily)', runSwingAgent);
-  });
-
-  // Monday at 06:00 UTC: Swing Agent (weekly outlook)
-  cron.schedule('0 6 * * 1', async () => {
-    await safeRun('Swing Trading Agent (weekly outlook)', runSwingAgent);
-  });
-
-  // Swing management at 3 high-signal session boundaries: London Open (08),
-  // NY Open (13), London Close (17). Dropped from 7 fires/day on 2026-04-21
-  // cost cut — the intermediate 2H slots (09/11/15/19) rarely produced new
-  // Swing decisions and mostly re-ran management on existing positions.
-  cron.schedule('0 8,13,17 * * 1-5', async () => {
-    await safeRun('Swing Trading Agent (management)', runSwingAgent);
-  });
+  // Swing Agent crons removed 2026-04-23 (see import comment). The three
+  // schedules that previously fired here — `30 21 * * 1-5` (daily post-US-close),
+  // `0 6 * * 1` (Monday weekly outlook), and `0 8,13,17 * * 1-5` (session-
+  // boundary management at London Open / NY Open / London Close) — no longer
+  // dispatch any agent. Weekly Review still runs; it continues to report on
+  // historical SWING-tagged rows.
 
   // Sunday at 00:00 UTC: Weekly Review Agent
   cron.schedule('0 0 * * 0', async () => {
@@ -561,8 +554,5 @@ export function startScheduler(): void {
   console.log('  */8 * * * *           — Capital.com session keep-alive ping');
   console.log('  30 5 * * *            — Market Researcher (daily pre-London)');
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
-  console.log('  30 21 * * 1-5         — Swing Agent (daily)');
-  console.log('  0 6 * * 1             — Swing Agent (weekly outlook)');
-  console.log('  0 8,13,17 * * 1-5     — Swing Agent (session-boundary management)');
   console.log('  0 0 * * 0             — Weekly Review Agent');
 }

@@ -2,7 +2,9 @@
 
 ## Project Status: Feature-complete + Hardened. Awaiting API keys for testing.
 
-This is a self-learning autonomous AI trading bot built by BetterOpsAI. It runs TWO trading strategies (ICT Intraday + Swing) powered by 6 AI agents, connects to Capital.com via their REST API through an MCP server with 22 tools, and improves itself over time through structured reflection and weekly strategy evolution.
+> **2026-04-23 UPDATE:** The Swing Agent subsystem was **removed** — its Claude API cost outweighed its profit contribution during the demo. Historical SWING-tagged trades in the DB remain queryable (the `'SWING'` `StrategyTag` value and the `trades.strategy_tag` CHECK constraint are preserved for backward compat and Weekly Review reporting), but no new SWING trades will be generated. The bot now runs **one** active trading strategy (ICT Intraday) with **5 active agents** (ICT, Researcher, Analyst, Reflection, Weekly Review). The original 6-agent / 2-strategy architecture is documented below for historical context.
+
+This is a self-learning autonomous AI trading bot built by BetterOpsAI. It originally ran two trading strategies (ICT Intraday + Swing) powered by 6 AI agents; today it runs ONE active strategy (ICT Intraday) with 5 active agents. It connects to Capital.com via their REST API through an MCP server with 22 tools, and improves itself over time through structured reflection and weekly strategy evolution.
 
 **Built by:** Giuseppe Portelli (giuseppeportelli1403@gmail.com) + Claude Code
 **Codebase:** ~4,500 lines TypeScript, 43 tests, 22 commits
@@ -42,7 +44,7 @@ This is a self-learning autonomous AI trading bot built by BetterOpsAI. It runs 
 | # | Agent | File | Model | Effort | Schedule |
 |---|-------|------|-------|--------|----------|
 | 1 | ICT Intraday | trading-agent.ts | claude-opus-4-6 | high | Every 15M/1H candle close |
-| 2 | Swing Trading | swing-agent.ts | claude-opus-4-6 | high | Daily 21:30 UTC, Mon 06:00, every 4H |
+| 2 | ~~Swing Trading~~ | ~~swing-agent.ts~~ | — | — | **REMOVED 2026-04-23** |
 | 3 | Market Researcher | researcher-agent.ts | claude-sonnet-4-6 | medium | Daily 05:30 UTC, Sun 22:00 |
 | 4 | Trade Analyst | analyst-agent.ts | claude-sonnet-4-6 | medium | Before every trade |
 | 5 | Reflection | reflection-agent.ts | claude-sonnet-4-6 | high | After every trade closes |
@@ -161,18 +163,17 @@ Still pending: Blocker 6 (24h `capital.ping()` keep-alive soak) and the broader 
 
 1. Every trade = TWO positions (split-position method)
 2. Size per leg = (Total risk / 2) / (entry - SL)
-3. Max 3 ICT + 3 Swing positions. Combined max 5 trades (10 Capital.com positions)
+3. Max 3 ICT positions (Swing removed 2026-04-23; historical caps listed 3 ICT + 3 Swing for combined 5)
 4. Daily loss kill switch: 6%. Weekly: 10%
 5. Minimum composite score 65 to trade
-6. Minimum R:R: 2:1 (ICT) / 3:1 (Swing)
+6. Minimum R:R: 2:1 (ICT). Demo gate relaxes to 1.5:1 for tight-spread symbols. (Historical Swing R:R was 3:1, now N/A.)
 7. Trailing stops only on Tier 1 (score 80+)
 8. Weekly Review cannot remove core risk rules or kill switches
 9. Min 10 trades per rule change
 10. Never commit .env
-11. Coordination lock: one strategy per instrument
-12. All trades must pass Trade Analyst approval
-13. VIX > 30 → Swing stands down, ICT Tier 1 only
-14. Separate lesson pools for ICT and Swing
+11. All trades must pass Trade Analyst approval
+12. VIX > 30 → ICT Tier 1 only
+13. Lessons table retains both ICT and historical SWING tags — filter by strategy_tag when querying
 
 ---
 

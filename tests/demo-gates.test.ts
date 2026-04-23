@@ -43,7 +43,11 @@ describe('loadPromptWithDemoContext', () => {
 
   it('demo block lists all three specific relaxations', () => {
     process.env.DEMO_RELAXED_GATES = 'true';
-    const wrapped = loadPromptWithDemoContext('swing-agent.md');
+    // Pre-2026-04-23 this test targeted swing-agent.md; after the Swing Agent
+    // was removed, the same DEMO_RELAXED_GATES_CONTEXT is still exercised via
+    // ict-agent.md since loadPromptWithDemoContext appends the shared block
+    // regardless of which trade-gating prompt is loaded.
+    const wrapped = loadPromptWithDemoContext('ict-agent.md');
     expect(wrapped).toContain('R:R minimum');
     expect(wrapped).toContain('1.5:1');
     expect(wrapped).toContain('Tier 3 bracket');
@@ -58,11 +62,9 @@ describe('loadPromptWithDemoContext', () => {
     process.env.DEMO_RELAXED_GATES = 'true';
     const wrapped = loadPromptWithDemoContext('ict-agent.md');
     // Kill-switch values synced to 6% daily / 10% weekly on 2026-04-22 —
-    // matches the runtime gate (pct <= -6) that trading-agent.ts and
-    // swing-agent.ts have enforced for a while.
+    // matches the runtime gate (pct <= -6) that trading-agent.ts enforces.
     expect(wrapped).toContain('Daily 6% loss kill switch');
     expect(wrapped).toContain('Weekly 10% loss kill switch');
-    expect(wrapped).toContain('Coordination lock');
     expect(wrapped).toContain('Split-position method');
     expect(wrapped).toContain('Live-trading opt-in gate');
   });
