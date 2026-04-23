@@ -1,10 +1,19 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-23 ~18:15 UTC end-of-day (day 4 of demo)
+Last updated: 2026-04-23 ~18:40 UTC end-of-day (day 4 of demo) — P1 + P2 BOTH shipped
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: **master**
-Last commit on master: `ef9f4d5` — "feat(prompt): ict-agent — require entry_price + document LIMIT execution (P1 Task 3)"
-VPS head: `ef9f4d5` (synced — smoke-test gate PASSED, pm2 restart #45 clean)
-pm2 state: restart #45, PID 85342, online, preflight clean, **scheduler running with 6 crons**
+Last commit on master: `fd8afa9` — "feat(news): P2 — soften opposing Cat-A news from hard SKIP to 50% size"
+VPS head: `fd8afa9` (synced — pm2 restart #48 clean)
+pm2 state: restart #48, PID 88397, online, preflight clean, **scheduler running with 6 crons**
+
+## 2026-04-23 SHIPPED IN FULL — P1 AND P2
+
+Both recommendations from the backtest-vs-live diagnostic are now live. Tomorrow's London Open tests both changes simultaneously:
+
+- **P1** — `place_order` is limit-only (market orders replaced). Every entry lands at the OB/FVG midpoint or misses (auto-cancelled at 15 min). Slippage eliminated.
+- **P2** — opposing Cat-A news no longer hard-SKIPs. Trade takes at 50% size instead. Keeps us in the game on valid setups that have news headwinds.
+
+Independent changes, independent blast radii, both backed out via `git revert <sha> && redeploy` (~5 min each) if morning verification shows issues.
 
 ## 🌅 First thing to read next session — P1 verification
 
@@ -48,8 +57,11 @@ pm2 state: restart #45, PID 85342, online, preflight clean, **scheduler running 
 | `51b5313` | **P1 Task 1** | CreateWorkingOrderParams extended with timeInForce + goodTillDate + guaranteedStop + label. +2 tests. |
 | `df3cfbb` | **P1 Task 2** | place_order MCP tool — BREAKING: entry_price now required, dispatches to createWorkingOrder (LIMIT + GOOD_TILL_DATE + now+15min). +3 tests. |
 | `ef9f4d5` | **P1 Task 3** | ict-agent.md — place_order tool desc updated, new LIMIT-ORDER EXECUTION section explaining OB/FVG midpoint + 15-min auto-expiry + "NEVER propose without entry_price" rule. |
+| `d64c8bd` | (chore) | project-status update: P1 shipped, live verification deferred |
+| `02c2227` | (chore) | project-status update: schedule P2 morning window |
+| `fd8afa9` | **P2 news softening** | Opposing Cat-A news → 50% size instead of hard SKIP. 3 changes in one commit: (1) `prompts/ict-agent.md` Step 3E rewritten, (2) new `getNewsRiskFactor()` helper in `src/news/index.ts` as future safety lever, (3) deleted always-false `ScoredNews.opposing_direction` dead field. +7 tests. |
 
-**Tests shipped today: 182 → 245 (+63 new across 5 test files + 1 brand-new file).**
+**Tests shipped today: 182 → 252 (+70 new across 5 test files + 1 brand-new file).**
 
 ## P1 — smoke-test verification (COMPLETED)
 
@@ -93,17 +105,10 @@ The Swing Agent's AAPL long from 2026-04-22 (entry ~$273.07, SL $264.22, TP1 $27
 
 1. **P1 live verification (HIGHEST PRIORITY tomorrow morning).** Code deployed + smoke-tested, but no real ICT cycle has exercised the new path yet (18:11 UTC deploy was past London Close kill zone). First real cycle: London Open 07:00 UTC tomorrow. See "First thing to read next session" above for exact verification steps.
 
-2. **P2 — news-opposing softening (hard SKIP → 50% risk).** SCHEDULED for tomorrow (2026-04-24) at **11:00-13:00 UTC (13:00-15:00 Malta)** — after London Open exercises P1, before NY Open needs stability.
-
-   **Pre-P2 checklist** (run at ~11:00 UTC tomorrow):
-   - `ssh bot@162.55.212.198 "pm2 status"` — confirm bot uptime, no crash loops
-   - `ssh bot@162.55.212.198 "grep -E 'orderType.*LIMIT|Calling tool: place_order|working order|workingOrderId' /home/bot/trading-bot/data/pm2-out.log | tail -30"` — did P1 fire? Did a limit fill or expire?
-   - Log into Capital demo UI — any dangling working orders from today? Any new fills?
-   - If P1 looks broken → rollback P1 BEFORE starting P2: `git revert ef9f4d5 df3cfbb 51b5313 --no-edit && git push origin master` and re-deploy
-
-   **If P1 looks healthy → start P2 brainstorm → spec → plan → execute.** Target: ship before NY Open (13:00 UTC / 15:00 Malta) so both P1 + P2 get exercised in the same kill zone.
-
-   **P2 scope reminder (from diagnostic recs):** soften news-opposing from hard SKIP to 50% risk. Touches `src/news/index.ts` `isNewsOpposing` function (return a factor 0.0 / 0.5 / 1.0 instead of boolean) + `prompts/ict-agent.md` Step 3E ("opposing news → skip entirely" → "opposing Cat A news → take at 50% risk"). ~1 hour of work. Caveat: 50% is the baseline rec, not a data-calibrated number (real calibration needs weeks of post-P1 data).
+2. **P2 verification (pairs with P1 verification above).** Commit `fd8afa9` shipped tonight in the same session as P1. Same morning verification window covers both. Specifically look for:
+   - Any skip reason in the pm2 log still saying "opposing news → skip entirely" (old behavior — would mean the LLM is reading stale prompt context). Shouldn't happen after pm2 restart #48 reloaded the prompt.
+   - Any trade taken at half the normal tier risk. In the log: the agent's sizing reasoning should say "risk: 0.5% (Tier 2 × 50% news-opposing softening)" or similar phrasing when P2 triggers.
+   - Any trade that still takes FULL tier risk when opposing Cat-A news is present — that would mean the LLM ignored the new rule. If you see this pattern 2+ times, consider the `getNewsRiskFactor` code enforcement (wire it into the place_order handler).
 3. **Swing Agent `log_trade` bug post-mortem:** the 2026-04-22 AAPL trade was never persisted. Root cause was the Swing Agent skipping the log_trade step after place_order. Now moot (Swing removed) but worth documenting in case Swing ever returns.
 4. **Backtest news-filter proxy (γ's Delta 3, credibility C):** not implemented in P3; deferred per spec §1 non-goal.
 5. **Reject-metrics polish:** (a) percentages can exceed 100% when multiple skip events per cycle (cosmetic); (b) split-leg place_orders sometimes attribute to `_unknown` when the 10-line window doesn't reach the instrument-naming line.
