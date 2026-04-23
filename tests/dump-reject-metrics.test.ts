@@ -128,30 +128,62 @@ describe('extractInstrument', () => {
 });
 
 describe('extractKillZone', () => {
-  it('finds London Open from explicit marker', () => {
-    const window = ['current kill zone: London Open', 'other'];
-    expect(extractKillZone(window)).toBe('London Open');
+  // Real-format fixtures captured from live pm2-out.log on 2026-04-22/23.
+
+  it('finds London Open from "Kill Zone: LONDON OPEN ACTIVE" format', () => {
+    expect(extractKillZone(['Kill Zone: LONDON OPEN ACTIVE ✅ (07:00–10:00 UTC)'])).toBe('London Open');
+  });
+
+  it('finds London Open even with emoji between marker and name', () => {
+    expect(extractKillZone(['**Kill Zone: 🟢 LONDON OPEN ACTIVE (07:00–10:00 UTC)**'])).toBe('London Open');
+  });
+
+  it('finds London Open in camelcase + "ACTIVE" appearing AFTER the zone name', () => {
+    expect(extractKillZone(['**Kill Zone: London Open (07:00–10:00 UTC) ✅ ACTIVE**'])).toBe('London Open');
   });
 
   it('finds NY Open', () => {
-    expect(extractKillZone(['current kill zone: NY Open'])).toBe('NY Open');
+    expect(extractKillZone(['Kill Zone: NY OPEN ACTIVE (13:00–16:00 UTC)'])).toBe('NY Open');
   });
 
-  it('finds London Close', () => {
-    expect(extractKillZone(['current kill zone: London Close'])).toBe('London Close');
+  it('finds London Close (and does NOT mis-classify as London Open)', () => {
+    expect(extractKillZone(['Kill Zone: LONDON CLOSE ACTIVE (15:00–17:00 UTC)'])).toBe('London Close');
   });
 
-  it('returns outside when no kill zone marker appears', () => {
+  it('returns outside when marker says INACTIVE', () => {
+    expect(extractKillZone(['Kill Zone: INACTIVE (21:00 UTC — all sessions closed)'])).toBe('outside');
+  });
+
+  it('returns outside when no kill zone marker appears at all', () => {
     expect(extractKillZone(['random lines', 'no marker'])).toBe('outside');
   });
 
-  it('returns outside when marker explicitly says outside', () => {
-    expect(extractKillZone(['[Scheduler] ... kill zone: outside'])).toBe('outside');
+  it('returns outside when scheduler emits the "outside kill zone: outside" marker', () => {
+    expect(extractKillZone(['[Scheduler] Candle close at ... — skipping ICT cycle (outside kill zone: outside)'])).toBe('outside');
   });
 
-  it('matches KZ_ABBREV format too (e.g., NY_Open as it appears in some logs)', () => {
-    expect(extractKillZone(['"kill_zone":"NY_Open"'])).toBe('NY Open');
-    expect(extractKillZone(['kill_zone=London_Open'])).toBe('London Open');
+  it('ignores "Next kill zone: London Open" (forward-looking, not current)', () => {
+    // A line talking about a FUTURE kill zone must not be mistaken for the
+    // current one. Should fall through to the outside default.
+    expect(extractKillZone(['Next kill zone: London Open at 07:00 UTC (5h away)'])).toBe('outside');
+  });
+
+  it('newest-first walk: most recent marker wins even if older marker conflicts', () => {
+    // Window with an earlier "London Open" and a more recent "NY Open" active.
+    const window = [
+      'Kill Zone: LONDON OPEN ACTIVE',  // older
+      'some intermediate line',
+      'Kill Zone: NY OPEN ACTIVE',      // newer — should win
+      'cycle complete',
+    ];
+    expect(extractKillZone(window)).toBe('NY Open');
+  });
+
+  it('matches KZ_ABBREV record format (e.g., NY_Open in JSON strings)', () => {
+    // Some trade-record-style lines have "kill_zone":"NY_Open" — these also
+    // include "kill zone" via the underscore variant in our regex. Treat
+    // these as current kill-zone markers too.
+    expect(extractKillZone(['"kill_zone":"NY_Open", ACTIVE'])).toBe('NY Open');
   });
 });
 
@@ -160,7 +192,7 @@ describe('aggregateLog', () => {
     const logLines = [
       '2026-04-22 23:59:00 +00:00: [Scheduler] kill zone: NY Open',
       '2026-04-22 23:59:00 +00:00: ICT Trading Agent decision cycle complete.',
-      '2026-04-23 07:00:00 +00:00: current kill zone: London Open',
+      '2026-04-23 07:00:00 +00:00: Kill Zone: LONDON OPEN ACTIVE ✅ (07:00–10:00 UTC)',
       '2026-04-23 07:00:00 +00:00: Processing GBPUSD for setup',
       '2026-04-23 07:00:01 +00:00: NO ENTRY TRIGGER CONFIRMED ON 15M — GOLD',
       '2026-04-23 07:00:02 +00:00: ICT Trading Agent decision cycle complete.',
@@ -180,7 +212,7 @@ describe('aggregateLog', () => {
 
   it('attributes skips to instrument via 10-line window', () => {
     const logLines = [
-      '2026-04-23 07:00:00 +00:00: current kill zone: London Open',
+      '2026-04-23 07:00:00 +00:00: Kill Zone: LONDON OPEN ACTIVE ✅ (07:00–10:00 UTC)',
       '2026-04-23 07:00:00 +00:00: Processing GBPUSD for setup',
       '2026-04-23 07:00:01 +00:00: NO ENTRY TRIGGER CONFIRMED ON 15M — GBPUSD',
       '2026-04-23 07:00:02 +00:00: ICT Trading Agent decision cycle complete.',
@@ -192,9 +224,9 @@ describe('aggregateLog', () => {
 
   it('attributes cycles to kill zones from the window', () => {
     const logLines = [
-      '2026-04-23 07:00:00 +00:00: current kill zone: London Open',
+      '2026-04-23 07:00:00 +00:00: Kill Zone: LONDON OPEN ACTIVE ✅ (07:00–10:00 UTC)',
       '2026-04-23 07:00:01 +00:00: ICT Trading Agent decision cycle complete.',
-      '2026-04-23 13:00:00 +00:00: current kill zone: NY Open',
+      '2026-04-23 13:00:00 +00:00: Kill Zone: NY OPEN ACTIVE (13:00–16:00 UTC)',
       '2026-04-23 13:00:01 +00:00: ICT Trading Agent decision cycle complete.',
       '2026-04-23 20:00:00 +00:00: skipping ICT cycle (outside kill zone: outside)',
       '2026-04-23 20:00:01 +00:00: ICT Trading Agent decision cycle complete.',
@@ -223,7 +255,7 @@ describe('aggregateLog', () => {
 
   it('captures executed-trade detail (capped at 20)', () => {
     const logLines: string[] = [
-      '2026-04-23 07:00:00 +00:00: current kill zone: London Open',
+      '2026-04-23 07:00:00 +00:00: Kill Zone: LONDON OPEN ACTIVE ✅ (07:00–10:00 UTC)',
       '2026-04-23 07:00:00 +00:00: Processing USDJPY',
       '2026-04-23 07:00:01 +00:00: [ICT Agent] Calling tool: place_order',
     ];

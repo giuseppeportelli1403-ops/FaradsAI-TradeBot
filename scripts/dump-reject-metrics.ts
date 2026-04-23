@@ -103,30 +103,51 @@ export function extractInstrument(windowLines: string[]): Instrument {
 
 /**
  * Find the kill-zone marker closest to the event line (newest-first walk).
- * Supports both the prose format ("kill zone: London Open") and the
- * trade-record underscore format ("kill_zone":"NY_Open"). Returns
- * 'outside' if no marker is found or if the marker explicitly says
- * outside.
+ * The live ICT agent renders kill zones in a variety of formats in the
+ * log (with emoji, variable spacing, different capitalizations):
+ *   - "Kill Zone: LONDON OPEN ACTIVE ✅"
+ *   - "Kill Zone: 🟢 LONDON OPEN ACTIVE (07:00–10:00 UTC)"
+ *   - "Kill Zone: London Open (07:00–10:00 UTC) ✅ ACTIVE"
+ *   - "Kill Zone: INACTIVE (21:00 UTC — all sessions closed)"
+ *   - "Next kill zone: London Open at 07:00 UTC" (looking FORWARD, not current)
  *
- * Newest-first walk is critical: a cycle may have seen an earlier
- * kill-zone marker in the window for a PREVIOUS cycle's context. The
- * most recent marker is the one that applies to the current event.
+ * The scheduler renders the skipped-cycle case distinctly:
+ *   - "[Scheduler] Candle close at ... (outside kill zone: outside)"
+ *
+ * Strategy (walks newest-first so the most recent marker wins):
+ *   1. "outside kill zone" anywhere on the line → outside.
+ *   2. Line mentions "kill zone" AND "INACTIVE" → outside.
+ *   3. Line mentions "Next kill zone" → skip (not current state).
+ *   4. Line mentions "kill zone" AND "ACTIVE" AND a zone name → that zone.
+ *   5. Otherwise keep looking.
+ * Returns 'outside' if no matching marker is found in the window.
  */
 export function extractKillZone(windowLines: string[]): KillZone {
-  const prosePatterns: Array<{ re: RegExp; kz: KillZone }> = [
-    { re: /kill[ _]zone["=: ]+["']?London[ _]Close/i, kz: 'London Close' },
-    { re: /kill[ _]zone["=: ]+["']?London[ _]Open/i,  kz: 'London Open'  },
-    { re: /kill[ _]zone["=: ]+["']?NY[ _]Open/i,      kz: 'NY Open'      },
-    // Explicit "outside" marker — MUST be in the pattern list so the
-    // newest-first walk doesn't skip past it and grab a stale kill-zone
-    // marker from an earlier cycle in the same window.
-    { re: /outside kill zone|kill[ _]zone["=: ]+["']?outside\b/i, kz: 'outside' },
-  ];
   for (let i = windowLines.length - 1; i >= 0; i--) {
     const line = windowLines[i];
-    for (const { re, kz } of prosePatterns) {
-      if (re.test(line)) return kz;
+
+    // 1. Explicit outside marker (scheduler-emitted when skipping a cycle).
+    if (/outside kill zone/i.test(line)) return 'outside';
+
+    // Line must mention "kill zone" to continue.
+    if (!/kill[ _]zone/i.test(line)) continue;
+
+    // 2. Inactive marker.
+    if (/INACTIVE/i.test(line)) return 'outside';
+
+    // 3. "Next kill zone" is forward-looking — ignore this line.
+    if (/next kill[ _]zone/i.test(line)) continue;
+
+    // 4. Active marker + zone name. Order matters: London Close before
+    //    London Open since both contain "London".
+    if (/ACTIVE/i.test(line)) {
+      if (/london[ _]close/i.test(line)) return 'London Close';
+      if (/london[ _]open/i.test(line))  return 'London Open';
+      if (/ny[ _]open/i.test(line))      return 'NY Open';
     }
+
+    // Kill zone is mentioned but no resolvable state — continue walking
+    // older lines rather than guessing.
   }
   return 'outside';
 }
