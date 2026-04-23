@@ -159,6 +159,14 @@ export interface CreateWorkingOrderParams {
   type: 'LIMIT' | 'STOP';
   stopLevel?: number;
   profitLevel?: number;
+  // Added 2026-04-23 (P1 limit orders) — optional fields that let
+  // callers express auto-expiry and audit labels. Capital's
+  // /api/v1/workingorders endpoint accepts these per their spec;
+  // createWorkingOrder forwards the object verbatim as the POST body.
+  timeInForce?: 'GOOD_TILL_CANCELLED' | 'GOOD_TILL_DATE';
+  goodTillDate?: string;         // ISO-8601 seconds, UTC (e.g. "2026-04-24T18:45:00")
+  guaranteedStop?: boolean;
+  label?: string;
 }
 
 export interface UpdateWorkingOrderParams {

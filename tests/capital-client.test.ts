@@ -830,3 +830,110 @@ describe('CapitalClient — logout', () => {
     await expect(client.logout()).resolves.toBeUndefined();
   });
 });
+
+describe('CapitalClient — createWorkingOrder with P1 expiry + label fields', () => {
+  beforeEach(() => {
+    resetAxiosMock();
+  });
+
+  it('forwards timeInForce, goodTillDate, guaranteedStop, label in request body', async () => {
+    // P1 extends CreateWorkingOrderParams with four optional fields so
+    // callers (the place_order MCP tool) can express 15-min auto-expiry
+    // via Capital's GOOD_TILL_DATE mechanism. The client forwards params
+    // verbatim as the POST body — this test locks the pass-through.
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'P1-REF-1' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'WO-P1-1',
+          dealReference: 'P1-REF-1',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'OPEN',
+          direction: 'BUY',
+          epic: 'EURUSD',
+          size: 1000,
+          level: 1.08523,
+          stopLevel: 1.08400,
+          profitLevel: 1.08800,
+          affectedDeals: [],
+        }),
+      );
+
+    const client = makeClient();
+    await client.createWorkingOrder({
+      direction: 'BUY',
+      epic: 'EURUSD',
+      size: 1000,
+      level: 1.08523,
+      type: 'LIMIT',
+      stopLevel: 1.08400,
+      profitLevel: 1.08800,
+      timeInForce: 'GOOD_TILL_DATE',
+      goodTillDate: '2026-04-24T18:45:00',
+      guaranteedStop: false,
+      label: 'ICT-EURUSD-A-1776962007',
+    });
+
+    // Call 0 = session create, Call 1 = POST /workingorders, Call 2 = /confirms poll.
+    // We assert the POST body at call index 1.
+    const postCall = requestMock.mock.calls[1][0];
+    expect(postCall.method).toBe('POST');
+    expect(postCall.url).toBe('/api/v1/workingorders');
+    expect(postCall.data).toEqual({
+      direction: 'BUY',
+      epic: 'EURUSD',
+      size: 1000,
+      level: 1.08523,
+      type: 'LIMIT',
+      stopLevel: 1.08400,
+      profitLevel: 1.08800,
+      timeInForce: 'GOOD_TILL_DATE',
+      goodTillDate: '2026-04-24T18:45:00',
+      guaranteedStop: false,
+      label: 'ICT-EURUSD-A-1776962007',
+    });
+  });
+
+  it('still accepts the legacy minimal param set (backward compatible)', async () => {
+    // Pre-P1 callers passed only {direction, epic, size, level, type,
+    // stopLevel?, profitLevel?}. The new optional fields must NOT break
+    // them — omitting timeInForce / goodTillDate / guaranteedStop /
+    // label should produce a POST body without those keys.
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'LEGACY-REF' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'WO-LEGACY',
+          dealReference: 'LEGACY-REF',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'OPEN',
+          direction: 'BUY',
+          epic: 'GBPUSD',
+          size: 500,
+          level: 1.27,
+          stopLevel: null,
+          profitLevel: null,
+          affectedDeals: [],
+        }),
+      );
+
+    const client = makeClient();
+    await client.createWorkingOrder({
+      direction: 'BUY',
+      epic: 'GBPUSD',
+      size: 500,
+      level: 1.27,
+      type: 'LIMIT',
+    });
+
+    const postCall = requestMock.mock.calls[1][0];
+    expect(postCall.data.timeInForce).toBeUndefined();
+    expect(postCall.data.goodTillDate).toBeUndefined();
+    expect(postCall.data.guaranteedStop).toBeUndefined();
+    expect(postCall.data.label).toBeUndefined();
+  });
+});
