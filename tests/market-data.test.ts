@@ -322,6 +322,60 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(result).toEqual([]);
   });
 
+  it('fetchNewsContext detects AV burst-limit message, retries once, and logs once per day', async () => {
+    // Regression for 2026-04-23 finding: AV free tier enforces a 1 req/sec
+    // burst limit in addition to the 25 req/day daily quota. Parallel scanner
+    // calls (Promise.all across N tickers) landed all-but-first inside that
+    // burst, which AV signals with an `Information` body distinct from the
+    // daily-quota message. Pre-fix the daily-quota regex didn't match, so
+    // throttled calls fell through to the `!Array.isArray(data.feed)` guard
+    // and returned []. EURUSD/GBPUSD/OIL_CRUDE had been pinned at 0 news
+    // score since day 1 of the demo despite being in the mapping table.
+    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
+    _resetAlphaVantageRateLimitFlag();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Exact AV burst-limit payload shape — HTTP 200, Information body, no
+    // `feed`. On retry, return a valid feed so we exercise the full
+    // "throttled → wait → succeed" path end-to-end.
+    const burstResponse = {
+      data: {
+        Information:
+          'Thank you for using Alpha Vantage! Please consider spreading out your free API requests more sparingly (1 request per second). You may subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to lift the free key rate limit (25 requests per day)...',
+      },
+    };
+    const successResponse = {
+      data: {
+        items: '1',
+        feed: [{
+          title: 'Headline',
+          url: 'https://example.com',
+          time_published: '20260423T080000',
+          source: 'Wire',
+          summary: 'Summary',
+          overall_sentiment_score: '0.2',
+          ticker_sentiment: [{ relevance_score: '0.9' }],
+        }],
+      },
+    };
+    const getSpy = vi.spyOn(axios, 'get')
+      .mockResolvedValueOnce(burstResponse)
+      .mockResolvedValueOnce(successResponse);
+
+    const result = await fetchNewsContext('GBPUSD');
+
+    // Retry path executed: two axios calls, one successful feed returned.
+    expect(getSpy).toHaveBeenCalledTimes(2);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.title).toBe('Headline');
+
+    // Loud warning fires exactly once.
+    const burstLogCalls = errSpy.mock.calls.filter((args) =>
+      typeof args[0] === 'string' && args[0].includes('Alpha Vantage burst limit hit'),
+    );
+    expect(burstLogCalls).toHaveLength(1);
+  }, 10_000);
+
   it('_resetTwelveDataState clears BOTH the daily-cap breaker and the candle cache', async () => {
     // Prime the cache with a fetch.
     vi.spyOn(axios, 'get').mockResolvedValue({

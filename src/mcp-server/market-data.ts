@@ -597,6 +597,17 @@ const ALPHA_VANTAGE_BASE = 'https://www.alphavantage.co/query';
 // only announce the FIRST day's exhaustion and silently swallow every
 // subsequent day's. `null` = never logged.
 let alphaVantageRateLimitLoggedForUtcDate: string | null = null;
+let alphaVantageBurstLimitLoggedForUtcDate: string | null = null;
+
+// AV free tier enforces a 1 req/sec burst limit in ADDITION to the 25 req/day
+// daily quota. Parallel scanner calls (Promise.all across N instruments) would
+// trip it and get an `Information` body back — no `feed`, no error, silent []
+// downstream. Bucket: 1 token, refill every 1100 ms (1.1 s for margin). The
+// TokenBucket.acquire() semantics queue concurrent callers automatically, so
+// no caller changes are needed. Confirmed 2026-04-23 via live probe: with 3
+// parallel AV calls, only the first succeeded; #2 and #3 came back with
+// "spread out your requests more sparingly (1 request per second)".
+const alphaVantageBurstBucket = new TokenBucket(1, 1100);
 
 function currentUtcDateString(): string {
   return new Date().toISOString().slice(0, 10); // "YYYY-MM-DD"
@@ -605,6 +616,7 @@ function currentUtcDateString(): string {
 /** Exposed for tests — reset the one-shot AV rate-limit log flag. */
 export function _resetAlphaVantageRateLimitFlag(): void {
   alphaVantageRateLimitLoggedForUtcDate = null;
+  alphaVantageBurstLimitLoggedForUtcDate = null;
 }
 
 /**
@@ -668,14 +680,24 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
       return [];
     }
 
-    const { data } = await axios.get(ALPHA_VANTAGE_BASE, {
-      params: {
-        function: 'NEWS_SENTIMENT',
-        tickers: normalizeForAlphaVantage(instrument),
-        apikey: apiKey,
-        limit: 10,
-      },
-    });
+    const mappedTicker = normalizeForAlphaVantage(instrument);
+
+    // Acquire a token before EVERY AV call — TokenBucket queues concurrent
+    // callers so Promise.all-style scanner fanout lands serialised at 1 req/
+    // ~1.1 s, staying under AV's free-tier burst limit.
+    await alphaVantageBurstBucket.acquire(10_000);
+
+    const avCall = () =>
+      axios.get(ALPHA_VANTAGE_BASE, {
+        params: {
+          function: 'NEWS_SENTIMENT',
+          tickers: mappedTicker,
+          apikey: apiKey,
+          limit: 10,
+        },
+      });
+
+    let { data } = await avCall();
 
     // AV's "daily quota exhausted" signal comes back as HTTP 200 + a lone
     // {Information: "We have detected your API key as ... 25 requests per
@@ -695,17 +717,47 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
         );
         alphaVantageRateLimitLoggedForUtcDate = today;
       }
+      console.log(
+        `[Market Data] AV news for ${instrument} (as ${mappedTicker}): 0 articles [daily-quota exhausted]`,
+      );
       return [];
     }
 
-    if (!Array.isArray(data.feed)) return [];
+    // AV's "burst limit" signal is a separate Information message that says to
+    // spread requests out more sparingly (free tier = 1 req/sec). The bucket
+    // above should prevent this, but if it fires anyway — module reloaded,
+    // multiple processes sharing the key, clock skew after a host resume —
+    // log once per UTC day, wait past the minute refill, and retry ONCE.
+    if (!data.feed && typeof data.Information === 'string' && /more sparingly|1 request per second/i.test(data.Information)) {
+      const today = currentUtcDateString();
+      if (alphaVantageBurstLimitLoggedForUtcDate !== today) {
+        console.error(
+          `[Market Data] Alpha Vantage burst limit hit (1 req/sec). Retrying after delay. ` +
+            `If this recurs, another process is likely sharing the AV key.`,
+        );
+        alphaVantageBurstLimitLoggedForUtcDate = today;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+      await alphaVantageBurstBucket.acquire(10_000);
+      ({ data } = await avCall());
+    }
+
+    if (!Array.isArray(data.feed)) {
+      // Always log so ops can see which mapping came back with a non-feed
+      // response — previously this fell through silently and a throttled or
+      // misconfigured ticker produced no log line at all.
+      console.log(
+        `[Market Data] AV news for ${instrument} (as ${mappedTicker}): 0 articles [unexpected response shape]`,
+      );
+      return [];
+    }
 
     // Observability: record the mapping outcome so tomorrow's first-call
     // verification can see at a glance which mapping entries return real
     // data. Low volume: scanner runs ~1× per kill-zone candle-close, 7
     // universe instruments, so ~28 lines/day.
     console.log(
-      `[Market Data] AV news for ${instrument} (as ${normalizeForAlphaVantage(instrument)}): ` +
+      `[Market Data] AV news for ${instrument} (as ${mappedTicker}): ` +
         `${data.feed.length} articles`,
     );
 
