@@ -12,6 +12,7 @@
 //   - News score set to 0 (historical news not available via free APIs)
 
 import { detectBias } from '../scanner/index.js';
+import { computeExecutionCost } from './realism.js';
 import type { Candle } from '../types.js';
 
 export interface BacktestTrade {
@@ -83,14 +84,22 @@ function assignTier(score: number): 1 | 2 | 3 | null {
 // Walk forward through candles to find the first TP or SL hit.
 // Returns the outcome and the time it occurred.
 function resolveOutcome(
+  ticker: string,
   candles: Candle[],
   startIdx: number,
   direction: 'long' | 'short',
+  entry: number,
   sl: number,
   tp1: number,
   tp2: number,
   tp3: number,
 ): { outcome: BacktestTrade['outcome']; exit_time: string; pnl_r: number } {
+  // Execution cost (spread + slippage) applied to every trade outcome,
+  // win or lose. stopDistance is the absolute price distance from entry
+  // to SL in the instrument's native price units. See src/backtest/realism.ts.
+  const stopDistance = Math.abs(entry - sl);
+  const executionCost = computeExecutionCost(ticker, stopDistance);
+
   let tp1Hit = false;
 
   for (let i = startIdx; i < candles.length; i++) {
@@ -101,7 +110,7 @@ function resolveOutcome(
         return {
           outcome: tp1Hit ? 'tp1_be' : 'sl',
           exit_time: c.datetime,
-          pnl_r: tp1Hit ? 1.0 : -1.0,
+          pnl_r: (tp1Hit ? 1.0 : -1.0) - executionCost,
         };
       }
       if (!tp1Hit && c.high >= tp1) {
@@ -109,27 +118,27 @@ function resolveOutcome(
         // TP1 hit — half closed at 2R, SL moved to break-even on the runner
       }
       if (tp1Hit && c.high >= tp3) {
-        return { outcome: 'tp3', exit_time: c.datetime, pnl_r: 3.5 }; // avg of TP1@2R + TP2@3R + TP3@4R
+        return { outcome: 'tp3', exit_time: c.datetime, pnl_r: 3.5 - executionCost }; // avg of TP1@2R + TP2@3R + TP3@4R
       }
       if (tp1Hit && c.high >= tp2) {
-        return { outcome: 'tp2', exit_time: c.datetime, pnl_r: 2.5 }; // avg of TP1@2R + TP2@3R
+        return { outcome: 'tp2', exit_time: c.datetime, pnl_r: 2.5 - executionCost }; // avg of TP1@2R + TP2@3R
       }
     } else {
       if (c.high >= sl) {
         return {
           outcome: tp1Hit ? 'tp1_be' : 'sl',
           exit_time: c.datetime,
-          pnl_r: tp1Hit ? 1.0 : -1.0,
+          pnl_r: (tp1Hit ? 1.0 : -1.0) - executionCost,
         };
       }
       if (!tp1Hit && c.low <= tp1) {
         tp1Hit = true;
       }
       if (tp1Hit && c.low <= tp3) {
-        return { outcome: 'tp3', exit_time: c.datetime, pnl_r: 3.5 };
+        return { outcome: 'tp3', exit_time: c.datetime, pnl_r: 3.5 - executionCost };
       }
       if (tp1Hit && c.low <= tp2) {
-        return { outcome: 'tp2', exit_time: c.datetime, pnl_r: 2.5 };
+        return { outcome: 'tp2', exit_time: c.datetime, pnl_r: 2.5 - executionCost };
       }
     }
   }
@@ -137,8 +146,8 @@ function resolveOutcome(
   // Ran out of candles without resolution — treat as tp1_be if TP1 was hit, else sl
   const lastCandle = candles[candles.length - 1];
   return tp1Hit
-    ? { outcome: 'tp1_be', exit_time: lastCandle.datetime, pnl_r: 1.0 }
-    : { outcome: 'sl', exit_time: lastCandle.datetime, pnl_r: -1.0 };
+    ? { outcome: 'tp1_be', exit_time: lastCandle.datetime, pnl_r: 1.0 - executionCost }
+    : { outcome: 'sl', exit_time: lastCandle.datetime, pnl_r: -1.0 - executionCost };
 }
 
 export function runBacktest(
@@ -198,9 +207,11 @@ export function runBacktest(
     if (actualRR < minRR) continue;
 
     const { outcome, exit_time, pnl_r } = resolveOutcome(
+      ticker,
       candles,
       i + 2,
       bias.bias === 'bullish' ? 'long' : 'short',
+      entry,
       sl, tp1, tp2, tp3,
     );
 
