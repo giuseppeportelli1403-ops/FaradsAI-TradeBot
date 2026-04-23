@@ -1,0 +1,169 @@
+// Tests for normaliseTradePayload — the bridge between the Claude agent's
+// log_trade JSON and the insertTrade schema.
+//
+// Regression context (2026-04-22 14:21 UTC): ICT agent attempted to log a
+// USDJPY short that was closed pre-TP due to fill slippage (14.6 pips).
+// Three failures cascaded:
+//   (1) payload had `strategy: 'ICT_INTRADAY'` but schema expects `strategy_tag`
+//   (2) no `id` field at all
+//   (3) `status: 'closed_rr_violation'` violated the CHECK enum
+// The trade executed on Capital.com but the DB row never persisted — orphan
+// audit trail. This suite locks in the three fixes.
+
+import { describe, it, expect } from 'vitest';
+import { _normaliseTradePayload } from '../src/mcp-server/tools/trading-tools.js';
+
+describe('normaliseTradePayload (log_trade MCP wrapper)', () => {
+  it('auto-generates id when the agent omits one', () => {
+    const out = _normaliseTradePayload({
+      strategy_tag: 'ICT_INTRADAY',
+      instrument: 'USDJPY',
+      direction: 'short',
+    });
+    expect(typeof out.id).toBe('string');
+    // RFC 4122 UUID v4 shape — 8-4-4-4-12 hex digits
+    expect(out.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  });
+
+  it('preserves a caller-supplied id', () => {
+    const out = _normaliseTradePayload({ id: 'agent-supplied-123', instrument: 'GBPUSD', direction: 'long' });
+    expect(out.id).toBe('agent-supplied-123');
+  });
+
+  it('maps `strategy` → `strategy_tag` when strategy_tag is absent', () => {
+    const out = _normaliseTradePayload({
+      id: 't-1',
+      strategy: 'ICT_INTRADAY',
+      instrument: 'USDJPY',
+      direction: 'short',
+    });
+    expect(out.strategy_tag).toBe('ICT_INTRADAY');
+  });
+
+  it('does not overwrite an existing strategy_tag with a conflicting `strategy`', () => {
+    const out = _normaliseTradePayload({
+      id: 't-1',
+      strategy: 'SWING',
+      strategy_tag: 'ICT_INTRADAY',
+      instrument: 'USDJPY',
+      direction: 'short',
+    });
+    expect(out.strategy_tag).toBe('ICT_INTRADAY');
+  });
+
+  it('ignores `strategy` values outside the canonical set (no silent coercion of typos)', () => {
+    const out = _normaliseTradePayload({
+      id: 't-1',
+      strategy: 'DAY_TRADE',  // not a valid StrategyTag
+      instrument: 'USDJPY',
+      direction: 'short',
+    });
+    expect(out.strategy_tag).toBeUndefined();
+  });
+
+  it('derives `entry` from `actual_entry` when the agent uses the split-leg shape', () => {
+    const out = _normaliseTradePayload({
+      id: 't-1',
+      instrument: 'USDJPY',
+      direction: 'short',
+      actual_entry: 159.187,
+      intended_entry: 159.333,
+    });
+    expect(out.entry).toBe(159.187);
+  });
+
+  it('falls back to `intended_entry` when neither `entry` nor `actual_entry` is present', () => {
+    const out = _normaliseTradePayload({
+      id: 't-1',
+      instrument: 'USDJPY',
+      direction: 'short',
+      intended_entry: 159.333,
+    });
+    expect(out.entry).toBe(159.333);
+  });
+
+  it('preserves an explicit `entry` over actual/intended variants', () => {
+    const out = _normaliseTradePayload({
+      id: 't-1',
+      instrument: 'USDJPY',
+      direction: 'short',
+      entry: 160.0,
+      actual_entry: 159.187,
+    });
+    expect(out.entry).toBe(160.0);
+  });
+
+  it('normalises `closed_rr_violation` → `closed_early` with the original in closure_reason', () => {
+    // Exact 2026-04-22 payload shape.
+    const out = _normaliseTradePayload({
+      id: 't-1',
+      instrument: 'USDJPY',
+      direction: 'short',
+      status: 'closed_rr_violation',
+    });
+    expect(out.status).toBe('closed_early');
+    expect(out.closure_reason).toBe('closed_rr_violation');
+  });
+
+  it('prepends the original status to an existing closure_reason (preserves both)', () => {
+    const out = _normaliseTradePayload({
+      id: 't-1',
+      instrument: 'USDJPY',
+      direction: 'short',
+      status: 'closed_slippage',
+      closure_reason: 'Fill slippage 14.6 pips reduced R:R to TP2 below 1.5:1',
+    });
+    expect(out.status).toBe('closed_early');
+    expect(out.closure_reason).toBe('closed_slippage: Fill slippage 14.6 pips reduced R:R to TP2 below 1.5:1');
+  });
+
+  it('leaves canonical statuses untouched (no spurious closure_reason)', () => {
+    for (const status of ['open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit', 'closed_early']) {
+      const out = _normaliseTradePayload({
+        id: 't-1',
+        instrument: 'USDJPY',
+        direction: 'short',
+        status,
+      });
+      expect(out.status).toBe(status);
+      expect(out.closure_reason).toBeUndefined();
+    }
+  });
+
+  it('handles the full 2026-04-22 failure payload end-to-end', () => {
+    // Literal subset of the payload that failed three times that afternoon.
+    const agentPayload = {
+      timestamp: '2026-04-22T14:21:19Z',
+      strategy: 'ICT_INTRADAY',
+      instrument: 'USDJPY',
+      direction: 'short',
+      tier: 2,
+      composite_score: 70,
+      kill_zone: 'NY_Open',
+      setup_type: 'OB_retest',
+      position_a_id: '000154c4-0029-065e-0000-000080e2f5eb',
+      position_b_id: '000154c4-0029-065e-0000-000080e2f5ed',
+      position_c_id: '000154c4-0029-065e-0000-000080e2f5ef',
+      intended_entry: 159.333,
+      actual_entry: 159.187,
+      sl: 159.42,
+      tp1: 159.15,
+      tp2: 159.07,
+      tp3: 158.99,
+      size_a: 6200,
+      size_b: 6000,
+      size_c: 6000,
+      status: 'closed_rr_violation',
+      closure_reason: 'Fill slippage of 14.6 pips from analyzed entry to actual fill',
+    };
+    const out = _normaliseTradePayload(agentPayload);
+
+    // All three original failure modes now cleared:
+    expect(out.id).toBeTruthy();                                      // (1) fixed: auto-generated
+    expect(out.strategy_tag).toBe('ICT_INTRADAY');                    // (2) fixed: mapped from `strategy`
+    expect(out.status).toBe('closed_early');                          // (3) fixed: normalised
+    expect(out.closure_reason).toContain('closed_rr_violation');      // original captured
+    expect(out.closure_reason).toContain('14.6 pips');                // agent's reason preserved
+    expect(out.entry).toBe(159.187);                                  // bonus: derived from actual_entry
+  });
+});

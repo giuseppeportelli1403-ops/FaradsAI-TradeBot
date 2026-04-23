@@ -102,14 +102,17 @@ function rebuildSltpOrdersTable(): void {
   }
 }
 
-function tradesHasTp2HitStatus(): boolean {
+function tradesHasClosedEarlyStatus(): boolean {
+  // Strictest (newest) marker in the trades CHECK constraint. Any DB missing
+  // it needs rebuildTradesTable — which produces a schema with every historical
+  // addition (tp2_hit from 2026-04-21, closed_early from 2026-04-23).
   const rows = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'");
   const schema = rows[0]?.values[0]?.[0] as string | undefined;
-  return !!schema && /'tp2_hit'/.test(schema);
+  return !!schema && /'closed_early'/.test(schema);
 }
 
 function rebuildTradesTable(): void {
-  console.log('[DB Migration] Rebuilding trades with status including \'tp2_hit\' + 3-leg columns');
+  console.log('[DB Migration] Rebuilding trades with status including \'tp2_hit\' + \'closed_early\' + closure_reason column + 3-leg columns');
   db.run('BEGIN TRANSACTION');
   try {
     db.run('ALTER TABLE trades RENAME TO trades_old');
@@ -132,7 +135,7 @@ function rebuildTradesTable(): void {
         size_a REAL NOT NULL,
         size_b REAL NOT NULL,
         size_c REAL,
-        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit')),
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit', 'closed_early')),
         pnl_a REAL,
         pnl_b REAL,
         pnl_c REAL,
@@ -142,11 +145,13 @@ function rebuildTradesTable(): void {
         news_category TEXT,
         analyst_decision TEXT,
         reasoning TEXT,
+        closure_reason TEXT,
         opened_at TEXT NOT NULL DEFAULT (datetime('now')),
         closed_at TEXT
       )
     `);
-    // Copy existing rows, leaving tp3/position_c_id/size_c/pnl_c NULL.
+    // Copy existing rows, leaving tp3/position_c_id/size_c/pnl_c NULL AND
+    // closure_reason NULL (pre-2026-04-23 trades never populated it).
     db.run(`
       INSERT INTO trades (id, strategy_tag, instrument, instrument_category, direction, setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status, pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at, closed_at)
       SELECT id, strategy_tag, instrument, instrument_category, direction, setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status, pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at, closed_at FROM trades_old
@@ -192,7 +197,7 @@ function createTables(): void {
       size_a REAL NOT NULL,
       size_b REAL NOT NULL,
       size_c REAL,
-      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit')),
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit', 'closed_early')),
       pnl_a REAL,
       pnl_b REAL,
       pnl_c REAL,
@@ -202,6 +207,7 @@ function createTables(): void {
       news_category TEXT,
       analyst_decision TEXT,
       reasoning TEXT,
+      closure_reason TEXT,
       opened_at TEXT NOT NULL DEFAULT (datetime('now')),
       closed_at TEXT
     )
@@ -310,6 +316,13 @@ function createTables(): void {
   if (!existingTradesCols.includes('pnl_c')) {
     db.run('ALTER TABLE trades ADD COLUMN pnl_c REAL');
   }
+  // 2026-04-23: closure_reason captures why an agent closed a trade before
+  // any TP/SL trigger (e.g. fill-slippage R:R violation). Nullable; null on
+  // legacy rows and on trades that exit cleanly via tp1_hit/tp2_hit/complete/
+  // sl_hit.
+  if (!existingTradesCols.includes('closure_reason')) {
+    db.run('ALTER TABLE trades ADD COLUMN closure_reason TEXT');
+  }
 
   // Lessons table: add position_c_outcome, pnl_c_r for 3-leg reflection.
   const lessonsCols = db.exec('PRAGMA table_info(lessons)');
@@ -323,17 +336,22 @@ function createTables(): void {
     db.run('ALTER TABLE lessons ADD COLUMN pnl_c_r REAL');
   }
 
-  // CHECK-constraint changes cannot be done via ALTER TABLE in SQLite. Two
-  // constraints changed in the 3-leg upgrade:
-  //   - sl_tp_orders.leg: 'A'|'B' → 'A'|'B'|'C'
-  //   - trades.status:    added 'tp2_hit'
-  // For pre-existing DBs with the old constraints, we rebuild via the standard
+  // CHECK-constraint changes cannot be done via ALTER TABLE in SQLite. Three
+  // constraint changes so far:
+  //   - sl_tp_orders.leg: 'A'|'B' → 'A'|'B'|'C'              (2026-04-21)
+  //   - trades.status:    added 'tp2_hit'                     (2026-04-21)
+  //   - trades.status:    added 'closed_early'                (2026-04-23)
+  // For pre-existing DBs with older constraints, we rebuild via the standard
   // SQLite pattern: create new with updated schema, copy data, drop old,
-  // rename. Only runs if the DB was originally created with the 2-leg schema.
+  // rename. The rebuild is idempotent — once the current schema is in place
+  // the trigger predicate returns false and no further work is done.
+  // `tradesHasClosedEarlyStatus` is the strictest (newest) check; DBs missing
+  // it also miss tp2_hit on older installations, and rebuildTradesTable
+  // produces a schema containing both.
   if (existingSltpCols.length > 0 && !sltpOrdersHasLegCCheck()) {
     rebuildSltpOrdersTable();
   }
-  if (existingTradesCols.length > 0 && !tradesHasTp2HitStatus()) {
+  if (existingTradesCols.length > 0 && !tradesHasClosedEarlyStatus()) {
     rebuildTradesTable();
   }
 
@@ -428,6 +446,7 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
     news_category: asStrOrNull(trade.news_category),
     analyst_decision: asStrOrNull(trade.analyst_decision),
     reasoning: asStrOrNull(trade.reasoning),
+    closure_reason: asStrOrNull(trade.closure_reason),     // NEW (2026-04-23)
     opened_at: String(trade.opened_at ?? new Date().toISOString()),
   };
 
@@ -435,15 +454,16 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
     INSERT INTO trades (id, strategy_tag, instrument, instrument_category, direction,
       setup_type, entry, sl, tp1, tp2, tp3, position_a_id, position_b_id, position_c_id,
       size_a, size_b, size_c,
-      status, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      status, composite_score, kill_zone, news_category, analyst_decision, reasoning,
+      closure_reason, opened_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     row.id, row.strategy_tag, row.instrument, row.instrument_category,
     row.direction, row.setup_type, row.entry, row.sl, row.tp1, row.tp2, row.tp3,
     row.position_a_id, row.position_b_id, row.position_c_id,
     row.size_a, row.size_b, row.size_c,
     row.status, row.composite_score, row.kill_zone, row.news_category,
-    row.analyst_decision, row.reasoning, row.opened_at,
+    row.analyst_decision, row.reasoning, row.closure_reason, row.opened_at,
   ]);
   saveToFile();
 }

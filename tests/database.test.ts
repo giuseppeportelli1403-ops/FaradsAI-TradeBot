@@ -246,4 +246,31 @@ describe('insertTrade defensive normalization (regression for 2026-04-21 log_tra
     expect(row?.sl).toBe(0);
     expect(row?.composite_score).toBe(0);
   });
+
+  it('accepts closed_early status + closure_reason (regression for 2026-04-22 log_trade failure)', () => {
+    // On 2026-04-22 14:21 UTC the ICT agent tried to log a USDJPY short
+    // that was closed immediately after entry because fill slippage (14.6
+    // pips) reduced R:R to TP2 below the 1.5:1 minimum. The CHECK constraint
+    // rejected status='closed_rr_violation'. Post-fix, agents can send any
+    // closed_* status and the log_trade wrapper normalises to closed_early
+    // with the original reason captured in closure_reason.
+    const trade = makeMinimalTrade({
+      status: 'closed_early',
+      closure_reason: 'closed_rr_violation: Fill slippage 14.6 pips reduced R:R below 1.5:1',
+    });
+    expect(() => insertTrade(trade as never)).not.toThrow();
+    const row = getTradeById(trade.id);
+    expect(row?.status).toBe('closed_early');
+    expect(row?.closure_reason).toContain('closed_rr_violation');
+    expect(row?.closure_reason).toContain('14.6 pips');
+  });
+
+  it('rejects statuses still outside the CHECK enum (insertTrade does not auto-normalise)', () => {
+    // insertTrade is the DB-bind layer. Normalisation of agent-supplied
+    // non-canonical statuses happens in the log_trade MCP wrapper
+    // (normaliseTradePayload), tested separately. insertTrade itself must
+    // still throw on unknown statuses so a direct misuse surfaces clearly.
+    const trade = makeMinimalTrade({ status: 'definitely_not_a_status' });
+    expect(() => insertTrade(trade as never)).toThrowError();
+  });
 });

@@ -193,7 +193,17 @@ export interface Sentiment {
 
 // ==================== TRADE RECORDS ====================
 
-export type TradeStatus = 'open' | 'tp1_hit' | 'tp2_hit' | 'complete' | 'sl_hit';
+export type TradeStatus =
+  | 'open'
+  | 'tp1_hit'
+  | 'tp2_hit'
+  | 'complete'
+  | 'sl_hit'
+  // Added 2026-04-23: a trade that was closed by the agent BEFORE any TP/SL
+  // trigger. Covers fill-slippage-invalidates-R:R, hard-manual-abort, schema-
+  // sanitisation-of-unknown-status, etc. The specific reason goes into the
+  // separate `closure_reason` column so the enum stays small and bounded.
+  | 'closed_early';
 export type StrategyTag = 'ICT_INTRADAY' | 'SWING';
 export type Direction = 'long' | 'short';
 
@@ -227,6 +237,9 @@ export interface TradeRecord {
   opened_at: string;
   closed_at: string | null;
   reasoning: string;
+  // Added 2026-04-23: free-text audit of why the trade ended when `status` is
+  // 'closed_early'. For normal TP/SL exits, this stays null.
+  closure_reason: string | null;
 }
 
 // ==================== LESSONS ====================

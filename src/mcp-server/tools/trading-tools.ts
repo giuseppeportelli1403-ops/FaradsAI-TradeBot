@@ -3,6 +3,7 @@
 // Uses registerTool (modern API) with annotations.
 // Capital.com handles SL/TP and trailing stops server-side; DB is audit-only.
 
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CapitalClient } from '../capital-client.js';
@@ -11,6 +12,63 @@ import {
   insertTrade, createSlTpOrder, updateSlPrice,
   setTrailingStop as dbSetTrailingStop,
 } from '../../database/index.js';
+
+// Canonical TradeStatus values enforced by the DB CHECK constraint. Kept in
+// sync with TradeStatus in src/types.ts and the schema in src/database/index.ts.
+// Any agent-supplied `status` outside this set is normalised to 'closed_early'
+// with the original value preserved in `closure_reason` (see normaliseTradePayload).
+const CANONICAL_TRADE_STATUSES = new Set([
+  'open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit', 'closed_early',
+]);
+
+const CANONICAL_STRATEGY_TAGS = new Set(['ICT_INTRADAY', 'SWING']);
+
+/**
+ * Bridges the agent's log_trade JSON payload to the insertTrade schema. Added
+ * 2026-04-23 after three insertTrade failures on 2026-04-22 14:21 UTC where the
+ * ICT agent tried to log a USDJPY short that was closed pre-TP due to fill
+ * slippage: (a) payload had `strategy` not `strategy_tag`; (b) no `id`;
+ * (c) `status: 'closed_rr_violation'` violated the CHECK enum. The trade
+ * executed correctly on Capital.com but the audit-trail row never persisted.
+ *
+ * Fixes applied here (not in insertTrade, which is a pure DB-bind layer):
+ *   - id           → randomUUID() if absent
+ *   - strategy_tag ← strategy when the former is missing
+ *   - entry        ← actual_entry || intended_entry when plain `entry` absent
+ *                    (the 3-leg ICT prompt renders split-entries, not a single
+ *                    `entry` number)
+ *   - status       → 'closed_early' if outside canonical set, with original
+ *                    value prepended to closure_reason for audit
+ */
+function normaliseTradePayload(raw: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...raw };
+
+  if (!out.id) out.id = randomUUID();
+
+  if (!out.strategy_tag && typeof out.strategy === 'string' && CANONICAL_STRATEGY_TAGS.has(out.strategy)) {
+    out.strategy_tag = out.strategy;
+  }
+
+  if ((out.entry === undefined || out.entry === null) && typeof out.actual_entry === 'number') {
+    out.entry = out.actual_entry;
+  } else if ((out.entry === undefined || out.entry === null) && typeof out.intended_entry === 'number') {
+    out.entry = out.intended_entry;
+  }
+
+  if (typeof out.status === 'string' && !CANONICAL_TRADE_STATUSES.has(out.status)) {
+    const originalStatus = out.status;
+    out.status = 'closed_early';
+    const existingReason = typeof out.closure_reason === 'string' ? out.closure_reason : '';
+    out.closure_reason = existingReason
+      ? `${originalStatus}: ${existingReason}`
+      : originalStatus;
+  }
+
+  return out;
+}
+
+// Exported for tests only.
+export const _normaliseTradePayload = normaliseTradePayload;
 
 const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
@@ -187,9 +245,9 @@ export function registerTradingTools(server: McpServer): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     wrapTool('log_trade', async ({ trade_data, position_a_deal_id, position_b_deal_id, position_c_deal_id }) => {
-      let parsed: Record<string, unknown>;
+      let rawParsed: Record<string, unknown>;
       try {
-        parsed = JSON.parse(trade_data);
+        rawParsed = JSON.parse(trade_data);
       } catch {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Invalid JSON in trade_data' }) }],
@@ -197,9 +255,13 @@ export function registerTradingTools(server: McpServer): void {
         } as { content: Array<{ type: 'text'; text: string }> };
       }
 
-      if (!parsed.id || !parsed.instrument || !parsed.direction) {
+      // Bridge agent payload quirks (strategy vs strategy_tag, missing id,
+      // actual_entry vs entry, non-enum close statuses) before DB bind.
+      const parsed = normaliseTradePayload(rawParsed);
+
+      if (!parsed.instrument || !parsed.direction) {
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Missing required fields: id, instrument, direction' }) }],
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'Missing required fields: instrument, direction' }) }],
         };
       }
 
