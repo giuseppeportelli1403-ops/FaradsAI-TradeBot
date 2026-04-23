@@ -61,3 +61,55 @@ export function classifyLine(line: string): Category | null {
   }
   return null;
 }
+
+// ==================== EXTRACTORS ====================
+
+export const UNIVERSE = [
+  'GOLD', 'SILVER', 'OIL_CRUDE',
+  'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD',
+] as const;
+
+export type Instrument = (typeof UNIVERSE)[number] | '_unknown';
+
+export type KillZone = 'London Open' | 'NY Open' | 'London Close' | 'outside';
+
+/**
+ * Find the first universe ticker that appears in any line of the window.
+ * Case-sensitive match against uppercase tickers (matches the log format).
+ * Returns '_unknown' if no ticker is found.
+ */
+export function extractInstrument(windowLines: string[]): Instrument {
+  // Longer ticker names first (OIL_CRUDE before OIL) to avoid substring
+  // collisions — though no such collision exists in the current universe,
+  // this guards against future additions like OILBRENT.
+  const sortedByLen = [...UNIVERSE].sort((a, b) => b.length - a.length);
+  for (const line of windowLines) {
+    for (const ticker of sortedByLen) {
+      // Word-boundary-anchored match. Tickers are always uppercase in logs.
+      if (new RegExp(`\\b${ticker}\\b`).test(line)) {
+        return ticker;
+      }
+    }
+  }
+  return '_unknown';
+}
+
+/**
+ * Find the explicit kill-zone marker in the window. Supports both the
+ * prose format ("kill zone: London Open") and the trade-record
+ * underscore format ("kill_zone":"NY_Open"). Returns 'outside' if no
+ * marker is found or if the marker explicitly says outside.
+ */
+export function extractKillZone(windowLines: string[]): KillZone {
+  const prosePatterns: Array<{ re: RegExp; kz: KillZone }> = [
+    { re: /kill[ _]zone["=: ]+["']?London[ _]Close/i, kz: 'London Close' },
+    { re: /kill[ _]zone["=: ]+["']?London[ _]Open/i,  kz: 'London Open'  },
+    { re: /kill[ _]zone["=: ]+["']?NY[ _]Open/i,      kz: 'NY Open'      },
+  ];
+  for (const line of windowLines) {
+    for (const { re, kz } of prosePatterns) {
+      if (re.test(line)) return kz;
+    }
+  }
+  return 'outside';
+}

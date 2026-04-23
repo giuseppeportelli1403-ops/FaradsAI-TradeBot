@@ -6,6 +6,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   classifyLine,
+  extractInstrument,
+  extractKillZone,
+  UNIVERSE,
 } from '../scripts/dump-reject-metrics.js';
 
 describe('classifyLine — skip categories (priority-ordered, first match wins)', () => {
@@ -81,5 +84,70 @@ describe('classifyLine — no match', () => {
     expect(classifyLine('some random log line')).toBeNull();
     expect(classifyLine('')).toBeNull();
     expect(classifyLine('[Fetcher] AAPL candles loaded from cache')).toBeNull();
+  });
+});
+
+describe('extractInstrument', () => {
+  it('finds a universe ticker in the window', () => {
+    const window = [
+      'some context line',
+      'Now processing GBPUSD for setup scoring',
+      'another line',
+    ];
+    expect(extractInstrument(window)).toBe('GBPUSD');
+  });
+
+  it('finds the FIRST universe ticker when multiple appear', () => {
+    const window = [
+      'comparing EURUSD vs GBPUSD',
+      'other',
+    ];
+    expect(extractInstrument(window)).toBe('EURUSD');
+  });
+
+  it('returns _unknown when no universe ticker in window', () => {
+    const window = [
+      'some unrelated context',
+      'AAPL is not in the ICT universe',
+      'other',
+    ];
+    expect(extractInstrument(window)).toBe('_unknown');
+  });
+
+  it('handles case-sensitive match (tickers are uppercase in logs)', () => {
+    expect(extractInstrument(['processing eurusd lowercase'])).toBe('_unknown');
+    expect(extractInstrument(['processing EURUSD uppercase'])).toBe('EURUSD');
+  });
+
+  it('UNIVERSE has exactly 7 tickers', () => {
+    expect(UNIVERSE).toEqual(['GOLD', 'SILVER', 'OIL_CRUDE', 'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD']);
+  });
+});
+
+describe('extractKillZone', () => {
+  it('finds London Open from explicit marker', () => {
+    const window = ['current kill zone: London Open', 'other'];
+    expect(extractKillZone(window)).toBe('London Open');
+  });
+
+  it('finds NY Open', () => {
+    expect(extractKillZone(['current kill zone: NY Open'])).toBe('NY Open');
+  });
+
+  it('finds London Close', () => {
+    expect(extractKillZone(['current kill zone: London Close'])).toBe('London Close');
+  });
+
+  it('returns outside when no kill zone marker appears', () => {
+    expect(extractKillZone(['random lines', 'no marker'])).toBe('outside');
+  });
+
+  it('returns outside when marker explicitly says outside', () => {
+    expect(extractKillZone(['[Scheduler] ... kill zone: outside'])).toBe('outside');
+  });
+
+  it('matches KZ_ABBREV format too (e.g., NY_Open as it appears in some logs)', () => {
+    expect(extractKillZone(['"kill_zone":"NY_Open"'])).toBe('NY Open');
+    expect(extractKillZone(['kill_zone=London_Open'])).toBe('London Open');
   });
 });
