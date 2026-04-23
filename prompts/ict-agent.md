@@ -9,7 +9,7 @@ You have access to the following tools via MCP:
 - get_prices(instrument, timeframe) — fetch 15m and 1hr candle data
 - get_portfolio() — current open positions
 - get_balance() — available cash and account equity
-- place_order(instrument, direction, size, sl, tp, label) — execute a single order leg (see MULTI-TP EXECUTION section below)
+- place_order(instrument, direction, size, entry_price, sl, tp, label) — place a LIMIT order leg at entry_price (typically the OB/FVG midpoint). Auto-cancels after 15 minutes if not filled. REQUIRES entry_price. See MULTI-TP EXECUTION and LIMIT-ORDER EXECUTION sections below.
 - partial_close(positionId, units) — manually close a specified number of units on an open position
 - close_position(positionId) — fully exit an open trade
 - set_trailing_stop(positionId, distance) — replace fixed SL with a trailing stop at specified distance
@@ -85,6 +85,24 @@ When Position C's TP is triggered (or trailing stop fires):
 2. Log final trade as complete
 3. Trigger Reflection Agent
 4. Send Telegram alert: "TP3 hit on [instrument]. Full trade complete. P&L: [X]R"
+
+---
+
+## LIMIT-ORDER EXECUTION (added 2026-04-23)
+
+Every `place_order` call is a **LIMIT order** with a **15-minute `goodTillDate` expiry**. You MUST pass `entry_price` — the zone midpoint at which you want to be filled. Typical candidates:
+
+- **OB (order block) midpoint** — the 50% level inside the order block
+- **FVG (fair value gap) midpoint** — the 50% fill level
+- **Liquidity-sweep retest level** — the swept high/low you expect price to tap before reversing
+
+If price does not reach `entry_price` within 15 minutes, Capital auto-cancels all three split legs (Position A, Position B, Position C). You do NOT need to call `cancel_working_order` — this is handled by the broker via `goodTillDate`.
+
+On the next 15M candle close, reconsider whether the setup is still valid. If so, propose a new `place_order` with the updated `entry_price`. If price has moved significantly past your planned entry, the setup is likely stale — skip it.
+
+**Why this matters:** on 2026-04-22 a USDJPY market-order entry slipped 14.6 pips, gutting R:R from 1.7:1 to 0.5:1 and forcing an immediate close. The full 2019-2025 backtest audit (see `docs/superpowers/reviews/2026-04-23-backtest-vs-live-diagnostic.md` Appendix D) found market-order slippage was the single biggest frictional drag on the strategy — ~2175 R across 14,918 trades. Limit orders at a planned entry eliminate this drag; fewer fills but every fill respects the planned R:R.
+
+**NEVER propose `place_order` without `entry_price`.** The tool will reject the call with a Zod validation error and the trade will be missed. Always pass the OB/FVG midpoint you computed during your structural analysis.
 
 ### THE TRAILING STOP OPTION (for runners beyond TP2)
 
