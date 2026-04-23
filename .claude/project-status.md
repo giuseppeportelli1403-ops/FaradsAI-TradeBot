@@ -1,16 +1,21 @@
 # Project Status — Auto-Updated
-Last updated: 2026-04-23 end-of-day (day 4 of demo)
+Last updated: 2026-04-23 ~18:15 UTC end-of-day (day 4 of demo)
 Project: BetterOpsAI Trading Bot ("Farad")
 Branch: **master**
-Last commit on master: `9c071d2` — "fix(metrics): rewrite extractKillZone for real pm2-out.log formats (P4)"
-VPS head: `9c071d2` (synced — direct push, bypassed PR rule per standard Farad demo workflow)
-pm2 state: restart #40, PID 82747, online, preflight clean, **scheduler running with 6 crons** (added reject-metrics dump at 00:05 UTC)
+Last commit on master: `ef9f4d5` — "feat(prompt): ict-agent — require entry_price + document LIMIT execution (P1 Task 3)"
+VPS head: `ef9f4d5` (synced — smoke-test gate PASSED, pm2 restart #45 clean)
+pm2 state: restart #45, PID 85342, online, preflight clean, **scheduler running with 6 crons**
 
-## 🌅 First thing to read next session
+## 🌅 First thing to read next session — P1 verification
 
-**Read this document top-to-bottom.** A big day — 23 commits, 3 new subsystems, 1 removed subsystem, 1 diagnostic investigation, and a 0-touch observability layer.
+**The P1 limit-order change is DEPLOYED and awaiting live verification.**
+- Smoke-tested against Capital demo end-to-end: a working-order was created, appeared in the working-orders list, and auto-cancelled via `goodTillDate` exactly as designed.
+- The in-process code path is identical to what the smoke test exercised.
+- **Next action:** during tomorrow's first kill zone (London Open 07:00 UTC, ~13 hours from deploy), tail `pm2 logs trading-bot` and watch for the first `[ICT Agent] Calling tool: place_order` followed by a response JSON containing `"orderType":"LIMIT"` and a non-null `workingOrderId`. That's the live "done" signal.
+- **If it fills:** `log_trade` captures the actual fill price; compare to the `entry_price` the agent requested. Near-identical (within spread) = success.
+- **If it doesn't fill in 15 min:** Capital auto-cancels; no crash; next /5 cron tick proceeds. Also success — that's option A working as designed.
 
-## 📋 What shipped today — 23 commits across 6 themes
+## 📋 What shipped today — 27 commits across 7 themes
 
 | Commit | Theme | Purpose |
 |---|---|---|
@@ -37,8 +42,24 @@ pm2 state: restart #40, PID 82747, online, preflight clean, **scheduler running 
 | `7ab65fc` | **P4 Task 4** | CLI entry point (Windows-safe isMain via `fileURLToPath` + `path.resolve`) |
 | `c30bdc0` | **P4 Task 5** | Scheduler cron at 00:05 UTC (detached spawn, stdio:'ignore', error-swallowed) |
 | `9c071d2` | **P4 post-deploy fix** | Rewrote extractKillZone — real log format is `Kill Zone: LONDON OPEN ACTIVE ✅` with emoji + variable spacing, not the tight `kill zone: London Open` my tests assumed. State-machine matcher: ACTIVE / INACTIVE / "Next kill zone" / outside. |
+| `10e772c` | (chore) | end-of-day project-status update before P1 was started |
+| `a98191c` | **P1 spec** | Limit orders at OB midpoint — design spec |
+| `1fceaca` | **P1 plan** | 5-task implementation plan (reconciled "new placeLimitOrder method" to use existing createWorkingOrder) |
+| `51b5313` | **P1 Task 1** | CreateWorkingOrderParams extended with timeInForce + goodTillDate + guaranteedStop + label. +2 tests. |
+| `df3cfbb` | **P1 Task 2** | place_order MCP tool — BREAKING: entry_price now required, dispatches to createWorkingOrder (LIMIT + GOOD_TILL_DATE + now+15min). +3 tests. |
+| `ef9f4d5` | **P1 Task 3** | ict-agent.md — place_order tool desc updated, new LIMIT-ORDER EXECUTION section explaining OB/FVG midpoint + 15-min auto-expiry + "NEVER propose without entry_price" rule. |
 
-**Tests shipped today: 182 → 240 (+58 new across 4 test files + 1 brand-new test file).**
+**Tests shipped today: 182 → 245 (+63 new across 5 test files + 1 brand-new file).**
+
+## P1 — smoke-test verification (COMPLETED)
+
+Pre-`pm2 restart` gate. Ran on VPS at 2026-04-23 ~18:05 UTC:
+- Placed EURUSD BUY limit @ 0.90000 (well below market, will never fill), size 500, goodTillDate 18:10:22
+- Capital returned `dealReference: o_e0a95ebe-...` + `workingOrderId: 00005552-0055-311e-0000-000081e6249e`, `dealStatus: ACCEPTED`, `status: OPEN`
+- `getWorkingOrders()` confirmed visible: `orderType: LIMIT, orderLevel: 0.9, timeInForce: GOOD_TILL_DATE`
+- Polled until ~18:10 UTC: order EXPIRED (auto-cancel via Capital goodTillDate confirmed ✅)
+
+The live Capital demo endpoint + our new code-path works end-to-end. Smoke-test script deleted from VPS (uncommitted, never in repo). pm2 restarted #45.
 
 ## AAPL position on Capital.com — still open, manual watch
 
@@ -70,12 +91,13 @@ The Swing Agent's AAPL long from 2026-04-22 (entry ~$273.07, SL $264.22, TP1 $27
 
 ## 🚧 Deferred items — next session candidates
 
-1. **P1 — limit orders at OB midpoint.** Touches `src/mcp-server/tools/trading-tools.ts` `place_order` tool + prompt tweak. Biggest leverage (+0.2-0.4 R/trade recovered) but biggest live-behavioral-change risk. ~2-3 hours + careful testing.
-2. **P2 — news-opposing softening (hard SKIP → 50% risk).** Prompt + scoring change in `ict-agent.md` + news/index.ts. ~1 hour. Should be evidenced by P4 metrics before tuning.
+1. **P1 live verification (HIGHEST PRIORITY tomorrow morning).** Code deployed + smoke-tested, but no real ICT cycle has exercised the new path yet (18:11 UTC deploy was past London Close kill zone). First real cycle: London Open 07:00 UTC tomorrow. See "First thing to read next session" above for exact verification steps.
+2. **P2 — news-opposing softening (hard SKIP → 50% risk).** Prompt + scoring change in `ict-agent.md` + news/index.ts. ~1 hour. Should be evidenced by P4 metrics before tuning — requires ≥1 week of post-P1 data to calibrate the right dampening factor.
 3. **Swing Agent `log_trade` bug post-mortem:** the 2026-04-22 AAPL trade was never persisted. Root cause was the Swing Agent skipping the log_trade step after place_order. Now moot (Swing removed) but worth documenting in case Swing ever returns.
 4. **Backtest news-filter proxy (γ's Delta 3, credibility C):** not implemented in P3; deferred per spec §1 non-goal.
 5. **Reject-metrics polish:** (a) percentages can exceed 100% when multiple skip events per cycle (cosmetic); (b) split-leg place_orders sometimes attribute to `_unknown` when the 10-line window doesn't reach the instrument-naming line.
 6. **Weekly Review still reports SWING data** (historical-only) — fine, but eventually it becomes dead output. Post-demo cleanup.
+7. **The 3-leg split now applies limit orders at the same entry_price per leg** (per the plan's Task 2 architecture). If Leg A fills but Leg B/C don't within the 15-min window, the partial setup runs without the remaining legs. Acceptable for now but worth watching: if this pattern occurs, we may want to either (a) bundle legs into a single order, or (b) detect partial-limit-fills and cancel the filled leg if others expire. Post-demo tuning.
 
 ## 🛡️ Infrastructure state
 
