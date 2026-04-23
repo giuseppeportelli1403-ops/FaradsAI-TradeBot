@@ -319,3 +319,86 @@ ${kzBody}
 ${execList}
 `;
 }
+
+// ==================== CLI ENTRY POINT ====================
+//
+// Invocation:
+//   tsx scripts/dump-reject-metrics.ts              → yesterday UTC
+//   tsx scripts/dump-reject-metrics.ts 2026-04-23   → explicit date
+//
+// Behavior:
+//   1. Resolve target date (arg or yesterday-UTC default).
+//   2. Read /home/bot/trading-bot/data/pm2-out.log (configurable via
+//      env var REJECT_METRICS_LOG for local testing).
+//   3. Aggregate.
+//   4. Write data/metrics/reject-<date>.md (creates parent dir if missing).
+//
+// Failure semantics:
+//   - If the log file is missing, log an error and exit(1). The scheduler
+//     spawn path catches this via stdio:'ignore' — bot is unaffected.
+//   - All pure-function exports above are tested; this main block is
+//     glue code and not unit-tested. Manual VPS verification in Task 6
+//     exercises it end-to-end.
+
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join, dirname, resolve } from 'path';
+import { fileURLToPath } from 'url';
+
+function yesterdayUtc(): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+function defaultLogPath(): string {
+  return process.env.REJECT_METRICS_LOG
+    ?? '/home/bot/trading-bot/data/pm2-out.log';
+}
+
+function defaultOutputDir(): string {
+  // Script lives at scripts/dump-reject-metrics.ts; output goes to
+  // ../data/metrics/ relative to the script, which resolves to the
+  // repo root's data/metrics/ dir regardless of cwd.
+  const here = dirname(fileURLToPath(import.meta.url));
+  return join(here, '..', 'data', 'metrics');
+}
+
+// Only run main if invoked directly (not when imported by tests).
+// Windows-safe: compare resolved absolute paths rather than string-comparing
+// import.meta.url (URL-encoded) against process.argv[1] (native path).
+const scriptPath = resolve(fileURLToPath(import.meta.url));
+const invokedPath = process.argv[1] ? resolve(process.argv[1]) : '';
+const isMain = scriptPath === invokedPath;
+
+if (isMain) {
+  const targetDate = process.argv[2] || yesterdayUtc();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+    console.error(`Invalid date: "${targetDate}". Expected YYYY-MM-DD.`);
+    process.exit(1);
+  }
+
+  const logPath = defaultLogPath();
+  if (!existsSync(logPath)) {
+    console.error(`Log file not found: ${logPath}`);
+    process.exit(1);
+  }
+
+  const raw = readFileSync(logPath, 'utf-8');
+  const lines = raw.split('\n');
+  // pm2 prefixes each line with e.g. "0|trading-bot  | YYYY-MM-DD HH:MM..."
+  // Strip the pm2 prefix so our classifiers see clean timestamps.
+  const cleaned = lines.map((l) => l.replace(/^0\|trading-?\s*\|\s*/, ''));
+
+  const report = aggregateLog(cleaned, targetDate);
+
+  const outputDir = defaultOutputDir();
+  mkdirSync(outputDir, { recursive: true });
+
+  const outputPath = join(outputDir, `reject-${targetDate}.md`);
+  const generatedAt = new Date().toISOString();
+  writeFileSync(outputPath, renderMarkdown(report, generatedAt), 'utf-8');
+
+  console.log(`[reject-metrics] Wrote ${outputPath}`);
+  const totalSkips = Object.values(report.skipsByCategory).reduce((a, b) => a + b, 0);
+  console.log(`[reject-metrics] ${report.totalCycles} cycles, ${report.placeOrderCount} place_orders, ${totalSkips} skips`);
+}
