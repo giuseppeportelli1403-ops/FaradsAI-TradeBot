@@ -1430,36 +1430,138 @@ This keeps Part A (VIX/DXY removal, low risk) while reverting Part B (MarketAux,
 
 ## MarketAux API findings (2026-04-24)
 
-_To be populated by Task 0 before coding Task 7+. Leave blank until probe is done._
+_Populated by Task 0 live probe on 2026-04-24. All observations are from actual curl responses against the production endpoint._
 
-### Endpoint: `GET https://api.marketaux.com/v1/news/all`
+### Endpoint
 
-**Required query params:**
-- `api_token` — from env
-- `symbols` — comma-separated (record exact format observed for FX / commodity / equity)
+`GET https://api.marketaux.com/v1/news/all` — HTTP 200 on success. Confirmed.
 
-**Optional params worth setting:**
-- `language=en`
-- `filter_entities=true` — returns only the entities we queried, not the full article entity list
-- `limit=10`
+### Required query params
 
-**Response shape (record exact field names observed):**
-- Top level: `{ meta: { found, returned, limit, page }, data: [...] }`
-- Article: `{ uuid, title, description, source, published_at, entities: [...] }`
-- Entity: `{ symbol, sentiment_score, match_score, ... }`
+- `api_token` — 40-char token from env.
+- `symbols` — see Symbol mapping section below for the exact format that actually returns articles.
 
-**Quota-exhausted response:**
-- HTTP status: _observed_
-- Body: _observed_
+### Optional params worth setting
 
-**Symbol mapping confirmations (mark each with ✓ or note issue):**
-- EURUSD=X — [ ]
-- GBPUSD=X — [ ]
-- USDJPY=X — [ ]
-- AUDUSD=X — [ ]
-- GC=F (gold) — [ ]
-- SI=F (silver) — [ ]
-- CL=F (oil) — [ ]
+- `language=en` — confirmed to filter to English articles.
+- `filter_entities=true` — confirmed: narrows the `entities[]` array to only entities matching the requested symbol. Without it the entity list includes all named entities in the article.
+- `limit=10` — confirmed working. Default not tested.
 
-**Gotchas:**
-- _Record anything unexpected (rate-limit headers, required params, symbol-resolution quirks)._
+### Response shape (exact field names observed)
+
+Top level:
+```
+{ meta: { found: number, returned: number, limit: number, page: number }, data: [...] }
+```
+
+Article object — all fields present on every probed article:
+```
+{
+  uuid: string,
+  title: string,
+  description: string,   ← present on all observed articles; may be very short
+                           (sometimes just the pair name, e.g. "EUR/USD")
+  snippet: string,       ← also always present; 163-char truncated excerpt
+  keywords: string,      ← present but often empty string ""
+  url: string,
+  image_url: string,
+  language: string,
+  published_at: string,  ← ISO 8601 UTC, e.g. "2026-04-24T07:28:42.000000Z"
+  source: string,        ← domain name, e.g. "financefeeds.com"
+  relevance_score: null, ← ALWAYS null when using symbols= param; only
+                           populated when using the search= param
+  entities: [...],
+  similar: []
+}
+```
+
+Entity object:
+```
+{
+  symbol: string,           ← MarketAux's own symbol, e.g. "EURUSD" not "EURUSD=X"
+  name: string,             ← human name, e.g. "EUR/USD"
+  exchange: null,           ← always null on observed FX/currency entities
+  exchange_long: null,
+  country: string,          ← "global" for FX, "us" for equities
+  type: string,             ← "currency" for FX pairs, "equity" for stocks/ETFs
+  industry: string,         ← "N/A" for FX, industry name for equities
+  match_score: number,      ← float, e.g. 187.35521 — NOT normalised 0-1
+  sentiment_score: number,  ← float in [-1, 1], e.g. 0.12955
+  highlights: [             ← array of sentiment-tagged text fragments
+    { highlight: string, sentiment: number, highlighted_in: string }
+  ]
+}
+```
+
+Key field name observations:
+- The sentiment field IS `sentiment_score` (plan's assumption correct).
+- The relevance field IS `match_score` (NOT `relevance_score` — the article-level `relevance_score` is a separate field that is always `null` when using `symbols=`).
+- `description` is always present but can be extremely thin (e.g. "EUR/USD" — 7 chars). `snippet` is a 163-char truncated body extract and is more useful as a summary. Task 10's `summary` field should prefer `description` when it has substance and fall back to `snippet`.
+- No `category` field in the raw response — the A/B/C category is derived in our code from `|sentiment_score|`.
+
+### Quota-exhaustion response
+
+Could not trigger today (quota had 71 requests remaining as of the probe). From response headers observed on each successful call:
+
+```
+x-usagelimit-limit: 100       ← daily ceiling
+x-usagelimit-remaining: 71    ← calls left today (decremented each probe)
+x-ratelimit-limit: 30         ← per-minute burst ceiling
+x-ratelimit-remaining: 24     ← burst tokens remaining
+```
+
+The plan's Task 8 test assumes HTTP 402 with `{ error: { code: 'usage_limit_reached' } }` body on quota exhaustion. This could NOT be verified live. The `x-usagelimit-remaining` header reaching 0 is the best available signal before triggering 402. The 402 assumption is reasonable based on the invalid-key response structure (same `error` envelope — see below), but the error `code` string for quota is assumed, not confirmed. Flag for Task 8: either accept the assumption or add a guard that checks for `error.code.includes('limit')` rather than exact-matching `usage_limit_reached`.
+
+### Invalid-key response
+
+```
+HTTP 401
+{ "error": { "code": "invalid_api_token", "message": "An invalid API token was supplied." } }
+```
+
+Error detection should check for `response.status === 401` (auth) and `response.status === 402` (quota). The `error.code` field exists and is machine-readable.
+
+### Symbol mapping confirmations — BREAKING FINDING
+
+**The plan's assumed symbol format is wrong for all non-equity instruments.**
+
+The plan (including the `normalizeForMarketAux` sketch in Task 9/10) maps Farad tickers to Yahoo-style symbols (`EURUSD=X`, `GC=F`, `SI=F`, `CL=F`) and assumes MarketAux accepts them. The live probe found that **MarketAux does NOT recognise Yahoo-suffixed symbols**. Every probe using `=X` or `=F` format returned `{ meta: { found: 0 }, data: [] }`.
+
+Results per instrument, with actual working symbol shown:
+
+- **EURUSD=X** ✗ — 0 results. Working symbol: `EURUSD` (bare, no suffix). `found: 23001`.
+- **GBPUSD=X** ✗ — 0 results. Working symbol: `GBPUSD`. `found: 10890`. Note: entity returned as `symbol: "GBPUSD"` AND a mirrored `symbol: "USDGBP"` entity is also present in the same article.
+- **USDJPY=X** ✗ — 0 results. Working symbol: `USDJPY`. `found: 19088`.
+- **AUDUSD=X** ✗ — 0 results. Working symbol: `AUDUSD`. `found: 11756`.
+- **GC=F (gold)** ✗ — 0 results. `XAUUSD` also returns 0 results. `GOLD` returns results (`found: 3084`) BUT the entity is `{ symbol: "GOLD", name: "Barrick Gold Corporation", type: "equity" }` — Barrick Gold Corp stock, NOT the gold commodity. There is no confirmed working symbol for gold-the-commodity in MarketAux's `symbols=` param.
+- **SI=F (silver)** ✗ — 0 results. `SILVER` returns 0 results. `XAGUSD` returns 0 results. No working symbol found for silver.
+- **CL=F (oil)** ✗ — 0 results. `OIL` returns results (`found: 43`) BUT the entity is `{ symbol: "OIL", name: "iPath Pure Beta Crude Oil ETN", type: "etf" }` — an ETF, not crude oil futures. `WTI` returns results (`found: 417`) BUT the entity is `{ symbol: "WTI", name: "W&T Offshore, Inc.", type: "equity" }` — an offshore drilling company. `USOIL` returns 0. No working symbol found for crude oil as a commodity.
+
+Summary table:
+
+| Farad instrument | Plan's assumed symbol | Actually works? | Working symbol / notes |
+|---|---|---|---|
+| EURUSD | EURUSD=X | NO | Use `EURUSD` |
+| GBPUSD | GBPUSD=X | NO | Use `GBPUSD` |
+| USDJPY | USDJPY=X | NO | Use `USDJPY` |
+| AUDUSD | AUDUSD=X | NO | Use `AUDUSD` |
+| GOLD | GC=F | NO | No commodity symbol found; `GOLD` resolves to Barrick Gold equity |
+| SILVER | SI=F | NO | No working symbol found at all |
+| OIL_CRUDE | CL=F | NO | No commodity symbol found; `OIL` = ETF, `WTI` = equity |
+
+### Gotchas — what Tasks 8-10 must change
+
+1. **All FX symbol mappings must drop the `=X` suffix.** `normalizeForMarketAux` must return `EURUSD` not `EURUSD=X`, `GBPUSD` not `GBPUSD=X`, etc. The Task 9 test block (normalizeForMarketAux suite) must be rewritten — it currently asserts `toBe('EURUSD=X')` which would fail against the real API.
+
+2. **Commodity mappings are broken as designed.** `GC=F`, `SI=F`, `CL=F` all return 0 results. Alternative strategies for Tasks 8-10 to consider:
+   - Use the `search=` param with `filter_entities=false` for gold/silver/oil (keyword search without entity filtering). The probe showed `search=gold+price` returns substantive articles. Downside: no per-entity `sentiment_score` — the article-level `relevance_score` is populated (`found: 33.1`) but there are no entity objects. The implementation would fall back to using the article's raw text as the summary with `sentiment_score: 0` and `category: 'C'`.
+   - Accept that commodities get no sentiment data from MarketAux and serve empty (`[]`) for GOLD/SILVER/OIL_CRUDE, relying on the stale-bearish dampening in `src/news/index.ts` as the safe fallback.
+   - This is a design decision for Giuseppe, not to be silently resolved by the implementing agent.
+
+3. **`match_score` is not normalised to 0-1.** Observed values include `187.35521`, `76.65626`, `16.07`. Do not threshold or compare against a 0-1 scale.
+
+4. **`relevance_score` at article level is always `null` when using `symbols=`.** Only populated when using the `search=` param. The entity-level `match_score` is the correct field for per-instrument relevance.
+
+5. **`description` can be degenerate.** On FX articles it is sometimes just the pair name ("EUR/USD"). Task 10's `summary` mapping should be `description || snippet` — use `description` if it has enough content (e.g. `length > 20`) else fall back to `snippet`.
+
+6. **The `normalizeForMarketAux` test in Task 9 must be rewritten before Task 10 is implemented.** The current sketch asserts Yahoo-style suffixes which are wrong. New assertions: `EURUSD → 'EURUSD'`, `GBPUSD → 'GBPUSD'`, etc. Commodity assertions should reflect whatever strategy is chosen in point 2 above.
