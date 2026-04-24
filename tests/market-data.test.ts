@@ -13,14 +13,12 @@ import {
   _resetTwelveDataState,
   _getCandleCache,
   _mapToTwelveDataSymbol,
-  _resetAlphaVantageRateLimitFlag,
+  _resetMarketAuxRateLimitFlag,
   _resetNewsResilienceState,
-  _getAlphaVantageCallCount,
-  _setAlphaVantageBurstBucketForTests,
+  _getMarketAuxCallCount,
   fetchNewsContext,
-  normalizeForAlphaVantage,
+  normalizeForMarketAux,
 } from '../src/mcp-server/market-data.js';
-import { TokenBucket } from '../src/mcp-server/rate-limiter.js';
 
 describe('withCache', () => {
   it('returns cached value on second call without re-invoking fetcher', async () => {
@@ -253,32 +251,32 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     );
   });
 
-  it('fetchNewsContext returns [] + logs once when AV rate-limit response is detected', async () => {
+  it('fetchNewsContext returns [] + logs once when MarketAux daily quota is exhausted', async () => {
     resetNewsTest();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    // Exact shape AV returns on free-tier exhaustion — HTTP 200, {Information}
-    // body, no `feed`. Pre-fix this fell through `!data.feed` → silent [].
-    vi.spyOn(axios, 'get').mockResolvedValue({
-      data: {
-        Information:
-          'We have detected your API key as ABCDEFGH and our standard API rate limit is 25 requests per day. Please subscribe to any of the premium plans...',
+    // MarketAux quota-exhaustion shape — HTTP 402 with an `error` body.
+    // Axios throws for non-2xx by default; we mock a rejection that
+    // carries the response object on `err.response`.
+    const quotaError = Object.assign(new Error('Request failed with status code 402'), {
+      isAxiosError: true,
+      response: {
+        status: 402,
+        data: { error: { code: 'usage_limit_reached', message: 'Daily usage limit reached.' } },
       },
     });
+    vi.spyOn(axios, 'get').mockRejectedValue(quotaError);
 
     const first = await fetchNewsContext('EURUSD');
     const second = await fetchNewsContext('GOLD');
     const third = await fetchNewsContext('OIL_CRUDE');
 
-    // All three return [] gracefully — no throws.
     expect(first).toEqual([]);
     expect(second).toEqual([]);
     expect(third).toEqual([]);
 
-    // Loud log fires exactly once — not three times. Ops sees the signal
-    // without the log being flooded by every cycle's worth of calls.
     const rateLimitLogCalls = errSpy.mock.calls.filter((args) =>
-      typeof args[0] === 'string' && args[0].includes('Alpha Vantage daily rate limit reached'),
+      typeof args[0] === 'string' && args[0].includes('MarketAux daily rate limit reached'),
     );
     expect(rateLimitLogCalls).toHaveLength(1);
   });
@@ -290,6 +288,7 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
 
     // Pre-fix (unwrapped), this throw would propagate to the caller and
     // crash researcher-agent's Promise.all. Post-fix: silent empty.
+    // MarketAux errors (network, 5xx, etc.) must degrade gracefully.
     const result = await fetchNewsContext('EURUSD');
     expect(result).toEqual([]);
   });
@@ -298,37 +297,63 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
   // See market-data.ts "News-resilience layers" block for the full architecture.
   // Each layer has its own test below. All tests call `resetNewsTest()` first
   // to: (a) clear prior axios.get spies so call counts reset, (b) reset the
-  // AV rate-limit / cache / counter state, (c) install a permissive burst
-  // bucket so 22-call scenarios don't time out at 1-req/1.1-sec prod throttle.
+  // MarketAux rate-limit / cache / counter state.
 
   const resetNewsTest = () => {
     vi.restoreAllMocks();
-    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
-    _resetAlphaVantageRateLimitFlag();
+    process.env.MARKETAUX_API_KEY = 'test-marketaux-key';
+    _resetMarketAuxRateLimitFlag();
     _resetNewsResilienceState();
-    _setAlphaVantageBurstBucketForTests(new TokenBucket(100_000, 1));
   };
 
-  it('Layer 1: serves fresh cache without hitting AV on repeat calls within TTL', async () => {
+  /** Build a MarketAux-shaped success response with one article. */
+  const mkMarketAuxResponse = (opts: {
+    symbol: string;
+    title?: string;
+    sentiment?: number;
+    matchScore?: number;
+    description?: string;
+    snippet?: string;
+  }) => ({
+    data: {
+      meta: { found: 1, returned: 1, limit: 3, page: 1 },
+      data: [{
+        uuid: 'aaaa-bbbb-' + opts.symbol,
+        title: opts.title ?? `${opts.symbol} headline`,
+        description: opts.description ?? `${opts.symbol} news description content exceeding twenty chars`,
+        snippet: opts.snippet ?? `${opts.symbol} news snippet content.`,
+        keywords: '',
+        url: `https://example.com/${opts.symbol}`,
+        image_url: '',
+        language: 'en',
+        published_at: '2026-04-24T08:00:00.000Z',
+        source: 'example.com',
+        relevance_score: null,
+        entities: [{
+          symbol: opts.symbol,
+          name: opts.symbol,
+          exchange: null,
+          exchange_long: null,
+          country: 'global',
+          type: opts.symbol.length === 6 ? 'currency' : 'etf',
+          industry: 'N/A',
+          match_score: opts.matchScore ?? 50.0,
+          sentiment_score: opts.sentiment ?? 0.2,
+          highlights: [],
+        }],
+        similar: [],
+      }],
+    },
+  });
+
+  it('Layer 1: serves fresh cache without hitting MarketAux on repeat calls within TTL', async () => {
     // The ICT agent re-invokes get_news_context several times within a single
     // reasoning chain (logs showed 5 SILVER calls in 90 min on 2026-04-23 am).
-    // Each repeat must be absorbed by the cache — otherwise the 25/day quota
+    // Each repeat must be absorbed by the cache — otherwise the 100/day quota
     // burns before NY Open.
     resetNewsTest();
 
-    const successResponse = {
-      data: {
-        feed: [{
-          title: 'Headline A',
-          url: 'https://example.com',
-          time_published: '20260423T080000',
-          source: 'Wire',
-          summary: 'S',
-          overall_sentiment_score: '0.2',
-          ticker_sentiment: [{ relevance_score: '0.9' }],
-        }],
-      },
-    };
+    const successResponse = mkMarketAuxResponse({ symbol: 'EURUSD', title: 'Headline A' });
     const getSpy = vi.spyOn(axios, 'get').mockResolvedValue(successResponse);
 
     const first = await fetchNewsContext('EURUSD');
@@ -344,24 +369,16 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(first[0]?.stale_minutes).toBe(0);
     expect(second[0]?.stale_minutes).toBe(0);
     expect(third[0]?.stale_minutes).toBe(0);
-    // Cache hits do NOT count against the daily quota — only real AV calls do.
-    expect(_getAlphaVantageCallCount()).toBe(1);
+    // Cache hits do NOT count against the daily quota — only real MarketAux calls do.
+    expect(_getMarketAuxCallCount()).toBe(1);
   });
 
   it('Layer 1: cache is per-ticker — EURUSD cache does not short-circuit GBPUSD', async () => {
     resetNewsTest();
 
-    const mkFeed = (title: string) => ({
-      data: {
-        feed: [{
-          title, url: 'u', time_published: '20260423T080000', source: 'Wire',
-          summary: 'S', overall_sentiment_score: '0.1', ticker_sentiment: [{ relevance_score: '0.5' }],
-        }],
-      },
-    });
     const getSpy = vi.spyOn(axios, 'get')
-      .mockResolvedValueOnce(mkFeed('EUR-news'))
-      .mockResolvedValueOnce(mkFeed('GBP-news'));
+      .mockResolvedValueOnce(mkMarketAuxResponse({ symbol: 'EURUSD', title: 'EUR-news' }))
+      .mockResolvedValueOnce(mkMarketAuxResponse({ symbol: 'GBPUSD', title: 'GBP-news' }));
 
     const eur = await fetchNewsContext('EURUSD');
     const gbp = await fetchNewsContext('GBPUSD');
@@ -371,7 +388,7 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(gbp[0]?.title).toBe('GBP-news');
   });
 
-  it('Layer 2: serves stale cache (with stale_minutes tagged) when AV daily quota exhausts', async () => {
+  it('Layer 2: serves stale cache (with stale_minutes tagged) when MarketAux daily quota exhausts', async () => {
     // The critical layer. Primes the cache with a successful fetch, then the
     // next call returns daily-quota-exhausted. Bot must keep seeing news, not
     // fall off the cliff at 0.
@@ -379,32 +396,27 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Prime the cache at a timestamp 90 min ago so the next read is beyond
-    // the 30-min fresh window (forcing a real AV attempt), but within the
-    // 4-h stale window (so stale-fallback should serve it).
+    // the 30-min fresh window (forcing a real MarketAux attempt), but within
+    // the 4-h stale window (so stale-fallback should serve it).
     const NINETY_MIN_AGO = Date.now() - 90 * 60 * 1000;
     const realNow = Date.now;
     vi.spyOn(Date, 'now').mockImplementation(() => NINETY_MIN_AGO);
 
-    const successResponse = {
-      data: {
-        feed: [{
-          title: 'Cached-USDJPY-headline',
-          url: 'u', time_published: '20260423T060000', source: 'Wire',
-          summary: 'S', overall_sentiment_score: '0.3', ticker_sentiment: [{ relevance_score: '0.8' }],
-        }],
-      },
-    };
-    vi.spyOn(axios, 'get').mockResolvedValueOnce(successResponse);
+    vi.spyOn(axios, 'get').mockResolvedValueOnce(
+      mkMarketAuxResponse({ symbol: 'USDJPY', title: 'Cached-USDJPY-headline' })
+    );
     await fetchNewsContext('USDJPY');  // primes cache
 
     // Restore time, then return daily-quota-exhausted on the next call.
     vi.mocked(Date.now).mockImplementation(realNow);
-    vi.mocked(axios.get).mockResolvedValueOnce({
-      data: {
-        Information:
-          'We have detected your API key as XYZ and our standard API rate limit is 25 requests per day...',
+    const quotaError = Object.assign(new Error('Request failed with status code 402'), {
+      isAxiosError: true,
+      response: {
+        status: 402,
+        data: { error: { code: 'usage_limit_reached', message: 'Daily usage limit reached.' } },
       },
     });
+    vi.mocked(axios.get).mockRejectedValueOnce(quotaError);
 
     const stale = await fetchNewsContext('USDJPY');
 
@@ -427,17 +439,20 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     const realNow = Date.now;
     vi.spyOn(Date, 'now').mockImplementation(() => FIVE_H_AGO);
 
-    vi.spyOn(axios, 'get').mockResolvedValueOnce({
-      data: {
-        feed: [{ title: 'Old', url: 'u', time_published: 't', source: 's', summary: 's', overall_sentiment_score: '0.1', ticker_sentiment: [{ relevance_score: '0.5' }] }],
-      },
-    });
+    vi.spyOn(axios, 'get').mockResolvedValueOnce(
+      mkMarketAuxResponse({ symbol: 'AUDUSD', title: 'Old' })
+    );
     await fetchNewsContext('AUDUSD');  // primes 5 h-old cache
 
     vi.mocked(Date.now).mockImplementation(realNow);
-    vi.mocked(axios.get).mockResolvedValueOnce({
-      data: { Information: 'our standard API rate limit is 25 requests per day...' },
+    const quotaError = Object.assign(new Error('Request failed with status code 402'), {
+      isAxiosError: true,
+      response: {
+        status: 402,
+        data: { error: { code: 'usage_limit_reached', message: 'Daily usage limit reached.' } },
+      },
     });
+    vi.mocked(axios.get).mockRejectedValueOnce(quotaError);
 
     const result = await fetchNewsContext('AUDUSD');
     expect(result).toEqual([]);  // too stale to serve
@@ -445,48 +460,41 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     vi.mocked(Date.now).mockRestore();
   });
 
-  it('Layer 3: daily soft-cap at 22 — 23rd attempt skips axios and serves stale/[] instead', async () => {
+  it('Layer 3: daily soft-cap at 90 — 91st attempt skips axios and serves stale/[] instead', async () => {
     resetNewsTest();
     vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    // Feed 22 successful calls across 22 distinct tickers so each populates
+    // Feed 90 successful calls across 90 distinct tickers so each populates
     // the counter without being absorbed by the per-ticker cache.
-    const mkSuccess = (t: string) => ({
-      data: {
-        feed: [{ title: t, url: 'u', time_published: 't', source: 's', summary: 's', overall_sentiment_score: '0.1', ticker_sentiment: [{ relevance_score: '0.5' }] }],
-      },
-    });
     const getSpy = vi.spyOn(axios, 'get');
-    for (let i = 0; i < 22; i++) getSpy.mockResolvedValueOnce(mkSuccess(`T${i}`));
+    for (let i = 0; i < 90; i++) getSpy.mockResolvedValueOnce(
+      mkMarketAuxResponse({ symbol: `TICKER${i}`, title: `T${i}` })
+    );
 
-    for (let i = 0; i < 22; i++) {
+    for (let i = 0; i < 90; i++) {
       await fetchNewsContext(`TICKER${i}`);
     }
-    expect(_getAlphaVantageCallCount()).toBe(22);
-    expect(getSpy).toHaveBeenCalledTimes(22);
+    expect(_getMarketAuxCallCount()).toBe(90);
+    expect(getSpy).toHaveBeenCalledTimes(90);
 
-    // 23rd call for a new, uncached ticker. Must NOT hit axios (cap reached).
-    const result = await fetchNewsContext('TICKER_23');
-    expect(getSpy).toHaveBeenCalledTimes(22);     // still 22 — no axios hit
+    // 91st call for a new, uncached ticker. Must NOT hit axios (cap reached).
+    const result = await fetchNewsContext('TICKER_91');
+    expect(getSpy).toHaveBeenCalledTimes(90);     // still 90 — no axios hit
     expect(result).toEqual([]);                     // no cache for this ticker
-    expect(_getAlphaVantageCallCount()).toBe(22); // counter not bumped on skip
+    expect(_getMarketAuxCallCount()).toBe(90); // counter not bumped on skip
   });
 
   it('Layer 3: cache hits do not count against the daily cap', async () => {
     resetNewsTest();
 
-    vi.spyOn(axios, 'get').mockResolvedValue({
-      data: {
-        feed: [{ title: 't', url: 'u', time_published: 't', source: 's', summary: 's', overall_sentiment_score: '0.1', ticker_sentiment: [{ relevance_score: '0.5' }] }],
-      },
-    });
+    vi.spyOn(axios, 'get').mockResolvedValue(mkMarketAuxResponse({ symbol: 'GLD' }));
 
-    // 100 repeat calls for the same ticker — only the first hits AV.
+    // 100 repeat calls for the same ticker — only the first hits MarketAux.
     for (let i = 0; i < 100; i++) {
       await fetchNewsContext('GOLD');
     }
-    expect(_getAlphaVantageCallCount()).toBe(1);
+    expect(_getMarketAuxCallCount()).toBe(1);
   });
 
   it('Layer 5: news-degraded Telegram alert fires at most once per UTC day', async () => {
@@ -495,10 +503,15 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     resetNewsTest();
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    // 5 consecutive quota-exhausted responses
-    vi.spyOn(axios, 'get').mockResolvedValue({
-      data: { Information: 'our standard API rate limit is 25 requests per day...' },
+    // 5 consecutive MarketAux quota-exhausted responses (HTTP 402).
+    const quotaError = Object.assign(new Error('Request failed with status code 402'), {
+      isAxiosError: true,
+      response: {
+        status: 402,
+        data: { error: { code: 'usage_limit_reached', message: 'Daily usage limit reached.' } },
+      },
     });
+    vi.spyOn(axios, 'get').mockRejectedValue(quotaError);
 
     await fetchNewsContext('T1');
     await fetchNewsContext('T2');
@@ -514,60 +527,6 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(degradedLogs).toHaveLength(1);
   });
 
-  it('fetchNewsContext detects AV burst-limit message, retries once, and logs once per day', async () => {
-    resetNewsTest();
-    // Regression for 2026-04-23 finding: AV free tier enforces a 1 req/sec
-    // burst limit in addition to the 25 req/day daily quota. Parallel scanner
-    // calls (Promise.all across N tickers) landed all-but-first inside that
-    // burst, which AV signals with an `Information` body distinct from the
-    // daily-quota message. Pre-fix the daily-quota regex didn't match, so
-    // throttled calls fell through to the `!Array.isArray(data.feed)` guard
-    // and returned []. EURUSD/GBPUSD/OIL_CRUDE had been pinned at 0 news
-    // score since day 1 of the demo despite being in the mapping table.
-    process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
-    _resetAlphaVantageRateLimitFlag();
-    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    // Exact AV burst-limit payload shape — HTTP 200, Information body, no
-    // `feed`. On retry, return a valid feed so we exercise the full
-    // "throttled → wait → succeed" path end-to-end.
-    const burstResponse = {
-      data: {
-        Information:
-          'Thank you for using Alpha Vantage! Please consider spreading out your free API requests more sparingly (1 request per second). You may subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to lift the free key rate limit (25 requests per day)...',
-      },
-    };
-    const successResponse = {
-      data: {
-        items: '1',
-        feed: [{
-          title: 'Headline',
-          url: 'https://example.com',
-          time_published: '20260423T080000',
-          source: 'Wire',
-          summary: 'Summary',
-          overall_sentiment_score: '0.2',
-          ticker_sentiment: [{ relevance_score: '0.9' }],
-        }],
-      },
-    };
-    const getSpy = vi.spyOn(axios, 'get')
-      .mockResolvedValueOnce(burstResponse)
-      .mockResolvedValueOnce(successResponse);
-
-    const result = await fetchNewsContext('GBPUSD');
-
-    // Retry path executed: two axios calls, one successful feed returned.
-    expect(getSpy).toHaveBeenCalledTimes(2);
-    expect(result).toHaveLength(1);
-    expect(result[0]?.title).toBe('Headline');
-
-    // Loud warning fires exactly once.
-    const burstLogCalls = errSpy.mock.calls.filter((args) =>
-      typeof args[0] === 'string' && args[0].includes('Alpha Vantage burst limit hit'),
-    );
-    expect(burstLogCalls).toHaveLength(1);
-  }, 10_000);
 
   it('_resetTwelveDataState clears BOTH the daily-cap breaker and the candle cache', async () => {
     // Prime the cache with a fetch.
@@ -586,40 +545,30 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
   });
 });
 
-describe('normalizeForAlphaVantage', () => {
-  it('maps EURUSD to FOREX:EUR,FOREX:USD (both sides of the pair)', () => {
-    expect(normalizeForAlphaVantage('EURUSD')).toBe('FOREX:EUR,FOREX:USD');
+describe('normalizeForMarketAux', () => {
+  it('maps FX pairs to bare ticker symbols (no suffix)', () => {
+    expect(normalizeForMarketAux('EURUSD')).toBe('EURUSD');
+    expect(normalizeForMarketAux('GBPUSD')).toBe('GBPUSD');
+    expect(normalizeForMarketAux('USDJPY')).toBe('USDJPY');
+    expect(normalizeForMarketAux('AUDUSD')).toBe('AUDUSD');
   });
 
-  it('maps all scanner-universe FX pairs to FOREX:X,FOREX:Y', () => {
-    expect(normalizeForAlphaVantage('GBPUSD')).toBe('FOREX:GBP,FOREX:USD');
-    expect(normalizeForAlphaVantage('USDJPY')).toBe('FOREX:USD,FOREX:JPY');
-    expect(normalizeForAlphaVantage('AUDUSD')).toBe('FOREX:AUD,FOREX:USD');
+  it('maps commodities to ETF proxy tickers', () => {
+    expect(normalizeForMarketAux('GOLD')).toBe('GLD');
+    expect(normalizeForMarketAux('SILVER')).toBe('SLV');
+    expect(normalizeForMarketAux('OIL_CRUDE')).toBe('USO');
   });
 
-  it('maps commodities to their ETF news proxies (GLD / SLV / USO)', () => {
-    expect(normalizeForAlphaVantage('GOLD')).toBe('GLD');
-    expect(normalizeForAlphaVantage('SILVER')).toBe('SLV');
-    expect(normalizeForAlphaVantage('OIL_CRUDE')).toBe('USO');
+  it('maps cross-broker aliases to the same ETF destinations', () => {
+    expect(normalizeForMarketAux('XAUUSD')).toBe('GLD');
+    expect(normalizeForMarketAux('XAGUSD')).toBe('SLV');
+    expect(normalizeForMarketAux('USOIL')).toBe('USO');
+    expect(normalizeForMarketAux('WTIUSD')).toBe('USO');
   });
 
-  it('maps cross-broker commodity aliases to the same ETF proxies', () => {
-    expect(normalizeForAlphaVantage('XAUUSD')).toBe('GLD');
-    expect(normalizeForAlphaVantage('XAGUSD')).toBe('SLV');
-    expect(normalizeForAlphaVantage('USOIL')).toBe('USO');
-    expect(normalizeForAlphaVantage('WTIUSD')).toBe('USO');
-  });
-
-  it('passes through native AV stock tickers unchanged (uppercased)', () => {
-    expect(normalizeForAlphaVantage('AAPL')).toBe('AAPL');
-    expect(normalizeForAlphaVantage('MSFT')).toBe('MSFT');
-    expect(normalizeForAlphaVantage('NVDA')).toBe('NVDA');
-  });
-
-  it('is case-insensitive on input', () => {
-    expect(normalizeForAlphaVantage('eurusd')).toBe('FOREX:EUR,FOREX:USD');
-    expect(normalizeForAlphaVantage('Gold')).toBe('GLD');
-    expect(normalizeForAlphaVantage('aapl')).toBe('AAPL');
+  it('passes US equities through uppercased', () => {
+    expect(normalizeForMarketAux('AAPL')).toBe('AAPL');
+    expect(normalizeForMarketAux('msft')).toBe('MSFT');
   });
 });
 

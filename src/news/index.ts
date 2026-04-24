@@ -1,7 +1,7 @@
 // News Context System — Fetcher, Scorer, and Categoriser
 // Provides scored news items for trading agents and the scanner
 //
-// Data source: Alpha Vantage News Sentiment API
+// Data source: MarketAux News API (per-entity sentiment)
 // Categories:
 //   Cat A (score 4-5): Major catalyst — strong directional impact (e.g. FOMC, earnings beat/miss)
 //   Cat B (score 2-3): Moderate supporting context (e.g. analyst upgrades, sector rotation)
@@ -26,8 +26,8 @@ export interface ScoredNews {
   dominant_sentiment: 'bullish' | 'bearish' | 'neutral';
   summary: string;
   // Added 2026-04-23 (news-resilience Layer 4). Max stale_minutes across items
-  // in this batch. 0 on fresh AV hits. Non-zero when served from stale cache
-  // during AV quota exhaustion. `stale_dampened` is true when the overall_score
+  // in this batch. 0 on fresh provider hits. Non-zero when served from stale cache
+  // during news-provider quota exhaustion. `stale_dampened` is true when the overall_score
   // was attenuated because stale bearish news is unreliable signal — see
   // STALE_BEARISH_DAMPEN_MINUTES constant below.
   stale_minutes: number;
@@ -35,7 +35,7 @@ export interface ScoredNews {
 }
 
 // If cached news is older than this AND the aggregate is bearish, its
-// magnitude is halved. Rationale: during AV quota exhaustion the bot serves
+// magnitude is halved. Rationale: during news-provider quota exhaustion the bot serves
 // cached news up to 4 h old. Stale BULLISH news that's still in the cache is
 // at worst "missed the boost" — conservative. Stale BEARISH news that the
 // market has since moved past, however, would cause the bot to skip good
@@ -101,7 +101,7 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
   }
 
   // ===== Layer 4 — stale-bearish dampening =====
-  // During AV quota exhaustion, fetchNewsContext serves cached items up to
+  // During news-provider quota exhaustion, fetchNewsContext serves cached items up to
   // 4 h old. Bearish stale news is dangerous: the market may have moved past
   // the catalyst, or the news may have flipped. Halve the magnitude when
   // items are > STALE_BEARISH_DAMPEN_MINUTES old AND the aggregate is bearish.

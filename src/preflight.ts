@@ -28,7 +28,7 @@ const OPTIONAL_KEYS = [
   { key: 'TWELVE_DATA_API_KEY', feature: 'Twelve Data candles' },
   { key: 'FINNHUB_API_KEY', feature: 'Economic calendar' },
   { key: 'FRED_API_KEY', feature: 'Yield curve' },
-  { key: 'ALPHA_VANTAGE_API_KEY', feature: 'News sentiment' },
+  { key: 'MARKETAUX_API_KEY', feature: 'News feed (sentiment)' },
 ] as const;
 
 const DEFAULT_CAPITAL_URL = 'https://demo-api-capital.backend-capital.com';

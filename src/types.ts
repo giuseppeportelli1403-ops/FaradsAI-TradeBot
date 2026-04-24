@@ -302,8 +302,8 @@ export interface NewsItem {
   category: 'A' | 'B' | 'C';  // A=major, B=moderate, C=noise
   summary: string;
   // Added 2026-04-23 (news-resilience): age of this item at fetch time, in
-  // minutes. 0 on fresh AV hits. Non-zero when served from the stale-cache
-  // fallback that bridges AV quota exhaustion. The scoring layer in
+  // minutes. 0 on fresh provider hits. Non-zero when served from the stale-cache
+  // fallback that bridges news-provider quota exhaustion. The scoring layer in
   // src/news/index.ts dampens bearish aggregates when stale_minutes > 60 so
   // the bot doesn't trade INTO unseen bearish news during quota-degraded
   // windows.

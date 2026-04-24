@@ -8,23 +8,18 @@ import {
 } from '../src/news/index.js';
 import {
   _resetNewsResilienceState,
-  _resetAlphaVantageRateLimitFlag,
-  _setAlphaVantageBurstBucketForTests,
+  _resetMarketAuxRateLimitFlag,
 } from '../src/mcp-server/market-data.js';
-import { TokenBucket } from '../src/mcp-server/rate-limiter.js';
 
 /**
- * Reset all news-path module state so each test starts clean. Installs a
- * permissive burst bucket (avoids the 1 req/1.1 s prod gate from timing out
- * tests) and restores all vi spies so axios.get call counts don't carry
- * across tests.
+ * Reset all news-path module state so each test starts clean. Restores all
+ * vi spies so axios.get call counts don't carry across tests.
  */
 function resetNewsTest(): void {
   vi.restoreAllMocks();
-  process.env.ALPHA_VANTAGE_API_KEY = 'test-av-key';
-  _resetAlphaVantageRateLimitFlag();
+  process.env.MARKETAUX_API_KEY = 'test-marketaux-key';
+  _resetMarketAuxRateLimitFlag();
   _resetNewsResilienceState();
-  _setAlphaVantageBurstBucketForTests(new TokenBucket(100_000, 1));
 }
 
 describe('isNewsOpposing', () => {
@@ -104,29 +99,57 @@ describe('getNewsRiskFactor (P2 softening — 2026-04-23)', () => {
 });
 
 describe('getNewsContext — Layer 4 stale-bearish dampening', () => {
-  // Regression for 2026-04-23 news-resilience: when AV quota exhausts mid-day
+  // Regression for 2026-04-23 news-resilience: when the news-provider quota exhausts mid-day
   // and fetchNewsContext serves stale cache, bearish-leaning news older than
   // STALE_BEARISH_DAMPEN_MINUTES must have its magnitude halved before reaching
   // the composite score. Rationale in src/news/index.ts. Bullish stale news
   // flows through unchanged — worst case is "missed boost", which is safe.
 
-  const mkAvResponse = (articles: Array<{ sentiment: number }>) => ({
+  /** Build a MarketAux-shaped success response with one article per sentiment entry. */
+  const mkMarketAuxResponse = (articles: Array<{ sentiment: number }>) => ({
     data: {
-      feed: articles.map((a, i) => ({
+      meta: { found: articles.length, returned: articles.length, limit: 10, page: 1 },
+      data: articles.map((a, i) => ({
+        uuid: `uuid-${i}`,
         title: `Headline ${i}`,
+        description: `Description for headline ${i} with enough text to qualify`,
+        snippet: `Snippet ${i}`,
+        keywords: '',
         url: 'https://example.com',
-        time_published: '20260423T060000',
+        image_url: '',
+        language: 'en',
+        published_at: '2026-04-23T06:00:00.000Z',
         source: 'Wire',
-        summary: 's',
-        overall_sentiment_score: String(a.sentiment),
-        ticker_sentiment: [{ relevance_score: '0.9' }],
+        relevance_score: null,
+        entities: [{
+          symbol: 'EURUSD',
+          name: 'EUR/USD',
+          exchange: null,
+          exchange_long: null,
+          country: 'global',
+          type: 'currency',
+          industry: 'N/A',
+          match_score: 90.0,
+          sentiment_score: a.sentiment,
+          highlights: [],
+        }],
+        similar: [],
       })),
+    },
+  });
+
+  /** MarketAux quota-exhausted error (HTTP 402) — thrown by axios for non-2xx. */
+  const mkQuotaError = () => Object.assign(new Error('Request failed with status code 402'), {
+    isAxiosError: true,
+    response: {
+      status: 402,
+      data: { error: { code: 'usage_limit_reached', message: 'Daily usage limit reached.' } },
     },
   });
 
   it('fresh bearish Cat A news keeps its full -15 penalty', async () => {
     resetNewsTest();
-    vi.spyOn(axios, 'get').mockResolvedValueOnce(mkAvResponse([
+    vi.spyOn(axios, 'get').mockResolvedValueOnce(mkMarketAuxResponse([
       { sentiment: -0.45 },  // Cat A bearish (|x| >= 0.35)
     ]));
 
@@ -151,16 +174,14 @@ describe('getNewsContext — Layer 4 stale-bearish dampening', () => {
     const NINETY_MIN_AGO = Date.now() - 90 * 60 * 1000;
     const realNow = Date.now;
     vi.spyOn(Date, 'now').mockImplementation(() => NINETY_MIN_AGO);
-    vi.spyOn(axios, 'get').mockResolvedValueOnce(mkAvResponse([
+    vi.spyOn(axios, 'get').mockResolvedValueOnce(mkMarketAuxResponse([
       { sentiment: -0.45 },
     ]));
     await getNewsContext('GBPUSD');
 
-    // Restore time + simulate quota-exhausted → stale fallback.
+    // Restore time + simulate quota-exhausted (HTTP 402) → stale fallback.
     vi.mocked(Date.now).mockImplementation(realNow);
-    vi.mocked(axios.get).mockResolvedValueOnce({
-      data: { Information: 'our standard API rate limit is 25 requests per day...' },
-    });
+    vi.mocked(axios.get).mockRejectedValueOnce(mkQuotaError());
 
     const result = await getNewsContext('GBPUSD');
     expect(result.stale_minutes).toBeGreaterThanOrEqual(STALE_BEARISH_DAMPEN_MINUTES);
@@ -186,15 +207,13 @@ describe('getNewsContext — Layer 4 stale-bearish dampening', () => {
     const NINETY_MIN_AGO = Date.now() - 90 * 60 * 1000;
     const realNow = Date.now;
     vi.spyOn(Date, 'now').mockImplementation(() => NINETY_MIN_AGO);
-    vi.spyOn(axios, 'get').mockResolvedValueOnce(mkAvResponse([
+    vi.spyOn(axios, 'get').mockResolvedValueOnce(mkMarketAuxResponse([
       { sentiment: 0.45 },  // Cat A bullish
     ]));
     await getNewsContext('AUDUSD');
 
     vi.mocked(Date.now).mockImplementation(realNow);
-    vi.mocked(axios.get).mockResolvedValueOnce({
-      data: { Information: 'our standard API rate limit is 25 requests per day...' },
-    });
+    vi.mocked(axios.get).mockRejectedValueOnce(mkQuotaError());
 
     const result = await getNewsContext('AUDUSD');
     expect(result.stale_minutes).toBeGreaterThanOrEqual(STALE_BEARISH_DAMPEN_MINUTES);
@@ -216,15 +235,13 @@ describe('getNewsContext — Layer 4 stale-bearish dampening', () => {
     const THIRTY_ONE_MIN_AGO = Date.now() - 31 * 60 * 1000;
     const realNow = Date.now;
     vi.spyOn(Date, 'now').mockImplementation(() => THIRTY_ONE_MIN_AGO);
-    vi.spyOn(axios, 'get').mockResolvedValueOnce(mkAvResponse([
+    vi.spyOn(axios, 'get').mockResolvedValueOnce(mkMarketAuxResponse([
       { sentiment: -0.45 },
     ]));
     await getNewsContext('USDJPY');
 
     vi.mocked(Date.now).mockImplementation(realNow);
-    vi.mocked(axios.get).mockResolvedValueOnce({
-      data: { Information: 'our standard API rate limit is 25 requests per day...' },
-    });
+    vi.mocked(axios.get).mockRejectedValueOnce(mkQuotaError());
 
     const result = await getNewsContext('USDJPY');
     expect(result.stale_minutes).toBeGreaterThanOrEqual(31);

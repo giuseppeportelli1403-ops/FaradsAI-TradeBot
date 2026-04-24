@@ -103,7 +103,7 @@ export function registerMarketDataTools(server: McpServer): void {
     'get_news_context',
     {
       title: 'Get News Context',
-      description: 'Get scored news items with sentiment analysis for an instrument from Alpha Vantage. Returns Cat A/B/C categorisation.',
+      description: 'Get scored news items with per-entity sentiment analysis for an instrument from MarketAux. Returns Cat A/B/C categorisation.',
       inputSchema: { instrument: z.string().describe('Instrument ticker') },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },

@@ -21,7 +21,7 @@ describe('checkEnvKeys', () => {
     delete process.env.FINNHUB_API_KEY;
     delete process.env.FMP_API_KEY;
     delete process.env.FRED_API_KEY;
-    delete process.env.ALPHA_VANTAGE_API_KEY;
+    delete process.env.MARKETAUX_API_KEY;
     delete process.env.CAPITAL_API_URL;
   });
 
@@ -96,7 +96,7 @@ describe('checkEnvKeys', () => {
     process.env.FINNHUB_API_KEY = 'fh';
     process.env.FMP_API_KEY = 'fmp';
     process.env.FRED_API_KEY = 'fred';
-    process.env.ALPHA_VANTAGE_API_KEY = 'av';
+    process.env.MARKETAUX_API_KEY = 'mktaux';
 
     const result = checkEnvKeys();
     expect(result.canStart).toBe(true);

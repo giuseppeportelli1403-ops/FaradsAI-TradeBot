@@ -25,7 +25,7 @@ import type { Candle, RankedInstrument } from '../types.js';
 // ==================== INSTRUMENT UNIVERSE ====================
 // Categorised for position concentration limits.
 // `ticker` is the human-readable identifier (used for display, logging,
-// Telegram alerts, news lookups via Alpha Vantage, candle fetches via Twelve
+// Telegram alerts, news lookups via MarketAux, candle fetches via Twelve
 // Data, and DB storage). `epic` is the Capital.com broker identifier used
 // for any Capital REST API call (searchMarkets, getMarketDetails,
 // openPosition, closePosition, getCandles, etc.).
