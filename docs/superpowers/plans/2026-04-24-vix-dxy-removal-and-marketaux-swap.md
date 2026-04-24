@@ -1553,10 +1553,15 @@ Summary table:
 
 1. **All FX symbol mappings must drop the `=X` suffix.** `normalizeForMarketAux` must return `EURUSD` not `EURUSD=X`, `GBPUSD` not `GBPUSD=X`, etc. The Task 9 test block (normalizeForMarketAux suite) must be rewritten — it currently asserts `toBe('EURUSD=X')` which would fail against the real API.
 
-2. **Commodity mappings are broken as designed.** `GC=F`, `SI=F`, `CL=F` all return 0 results. Alternative strategies for Tasks 8-10 to consider:
-   - Use the `search=` param with `filter_entities=false` for gold/silver/oil (keyword search without entity filtering). The probe showed `search=gold+price` returns substantive articles. Downside: no per-entity `sentiment_score` — the article-level `relevance_score` is populated (`found: 33.1`) but there are no entity objects. The implementation would fall back to using the article's raw text as the summary with `sentiment_score: 0` and `category: 'C'`.
-   - Accept that commodities get no sentiment data from MarketAux and serve empty (`[]`) for GOLD/SILVER/OIL_CRUDE, relying on the stale-bearish dampening in `src/news/index.ts` as the safe fallback.
-   - This is a design decision for Giuseppe, not to be silently resolved by the implementing agent.
+2. **Commodity mappings — resolution via ETF proxies (follow-up probe 2026-04-24).** The Yahoo futures tickers (`GC=F`, `SI=F`, `CL=F`) and bare commodity names (`GOLD`, `SILVER`, `OIL`) don't resolve to commodities on MarketAux. BUT Alpha Vantage was already using ETF proxy tickers for commodities (`GLD`, `SLV`, `USO`), and a follow-up probe confirmed these work cleanly on MarketAux:
+
+   | Farad ticker | MarketAux symbol | Articles found | Sample entity sentiment |
+   |---|---|---|---|
+   | GOLD | `GLD` | 2527 | 0.4939, 0.3859 |
+   | SILVER | `SLV` | 1532 | 0.3892, 0.0258 |
+   | OIL_CRUDE | `USO` | 299 | 0.8555, 0.7506 |
+
+   All three return `entity.type: "etf"` with populated `sentiment_score` and `match_score`. This is the **same mapping the bot's Alpha Vantage integration already used** — so the swap preserves behavior exactly. Task 9's mapper uses: `GOLD → GLD`, `SILVER → SLV`, `OIL_CRUDE → USO` (plus aliases `XAUUSD → GLD`, `XAGUSD → SLV`, `USOIL/WTIUSD → USO`).
 
 3. **`match_score` is not normalised to 0-1.** Observed values include `187.35521`, `76.65626`, `16.07`. Do not threshold or compare against a 0-1 scale.
 
