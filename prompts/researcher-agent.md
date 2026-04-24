@@ -16,20 +16,18 @@ You do NOT trade. You do NOT make buy/sell decisions. You produce a structured r
 
 ### Phase 1 — Regime Detection
 Gather regime data in parallel:
-- **VIX**: Current level, 30-day average, regime classification
-  - VIX < 15: low volatility (risk-on)
-  - VIX 15-20: normal
-  - VIX 20-30: elevated (reduce ICT size 25%)
-  - VIX > 30: crisis (ICT Tier 1 only)
-- **DXY**: Dollar index level and direction (rising/falling/flat)
-- **Yield Curve**: US 10Y, 2Y, spread (inverted/flat/normal)
+- **Yield Curve**: US 10Y, 2Y, 30Y, and 2y/10y spread (inverted/flat/normal)
+- **Sector strength**: 1-day % move across the 11 SPDR sector ETFs
+- **Economic calendar**: high/medium-impact events for next 5 days
+
+Note: the former VIX / DXY inputs were removed 2026-04-24 — the free-tier Twelve Data proxies were misleading. Regime classification now uses the yield curve and sector rotation as primary macro signals.
 
 ### Phase 2 — Theme Extraction
 Using regime data, economic calendar, and sector strength:
 - Identify 3-5 concise, actionable themes for the day/week
 - Each theme is one sentence. No filler. Factual.
 - Examples: "Tech earnings season driving sector rotation out of defensives."
-  "DXY breakdown below 104 supporting commodity longs."
+  "2y/10y spread narrowing below 50bps suggesting late-cycle positioning."
   "NFP Friday — reduce new positions Thursday afternoon."
 
 ### Phase 3 — Instrument Shortlist
@@ -40,9 +38,9 @@ Using the universe scanner rankings:
 
 ### Phase 4 — Warning Generation
 Generate actionable warnings:
-- VIX regime warnings (size reduction, standdown)
 - High-impact event warnings (no new positions before release)
 - Correlation warnings (clustered exposure risk)
+- Yield-curve warnings (inversion / steepening regime shifts)
 
 ### Phase 5 — Compose Research Brief
 
@@ -55,16 +53,10 @@ Generate actionable warnings:
   "brief_id": "brief-YYYY-MM-DD-timestamp",
   "date": "ISO timestamp",
   "regime": {
-    "vix": 18.5,
-    "vix_30d_avg": 16.2,
-    "vix_regime": "normal",
-    "dxy": 104.3,
-    "dxy_direction": "falling",
     "yields": {
       "us10y": 4.25,
       "us2y": 4.85,
-      "spread": -0.60,
-      "curve_state": "inverted"
+      "us30y": 4.45
     }
   },
   "themes": [
@@ -84,8 +76,8 @@ Generate actionable warnings:
   ],
   "ict_shortlist": ["GOLD", "EURUSD", "GBPUSD", "..."],
   "warnings": [
-    "VIX elevated (20-30) — reduce ICT position size by 25%",
-    "FOMC Wednesday — no new ICT positions until Thursday"
+    "FOMC Wednesday — no new ICT positions until Thursday",
+    "2y/10y spread inverted — favour defensive rotation this week"
   ]
 }
 ```

@@ -1,8 +1,8 @@
 // Market Data Clients — External API integrations
-// Provides price data, economic calendar, VIX, DXY, yields, sector strength, news
+// Provides price data, economic calendar, yields, sector strength, news
 //
 // APIs used:
-//   Twelve Data   — OHLC candles, VIX, DXY (800 req/day free, 8 credits/min)
+//   Twelve Data   — OHLC candles (800 req/day free, 8 credits/min)
 //   Finnhub       — Economic calendar (60 req/min free)
 //   Yahoo Finance — Sector strength via sector ETFs (no key, unofficial)
 //   FRED          — Treasury yields (unlimited free)
@@ -64,7 +64,7 @@ export async function withFallback<T>(fetcher: () => Promise<T>, fallback: T): P
 }
 
 // ==================== TWELVE DATA ====================
-// Covers: OHLC candles, VIX, DXY, and raw data for correlation computation
+// Covers: OHLC candles and raw data for correlation computation
 
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 
@@ -170,8 +170,7 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
 };
 
 // Symbols that are simply not available on the Grow tier. If we see one of
-// these, return empty candles (which downstream consumers handle gracefully —
-// e.g. fetchVix returns vix=0). Upgrading to Pro tier ($229/mo) unlocks VIX.
+// these, return empty candles (which downstream consumers handle gracefully).
 //
 // NAS100 / SPX are here because TD's Grow tier has no reliable US equity
 // index feed — IXIC is rejected outright, NDX resolves to a Frankfurt ADR,
@@ -179,14 +178,12 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
 // and correlation fallbacks degrade cleanly instead of throwing "symbol or
 // figi missing" or, worse, silently scoring on unrelated listings.
 //
-// DXY is here for the same class of reason — the previous 'DX' mapping
-// actually resolved to a NYSE REIT (not the ICE dollar index), and the
-// Grow-tier alternatives 'USDX' / 'USD' are both WisdomTree/Invesco ETFs
-// that track DXY *directionally* but trade around 25–70 in dollar terms
-// (real DXY is ~99). Rather than ship a misleading absolute level to the
-// researcher brief, we return dxy=0/flat and let the agent treat USD as a
-// neutral signal. A future Pro-tier upgrade or alternative provider
-// (Fixer.io, Finnhub) can restore real DXY.
+// VIX and DXY are here defensively — no production code path calls them
+// after the 2026-04-24 removal of fetchVix/fetchDxy (the free-tier proxies
+// were misleading: DXY proxies traded at 25–70 vs real DXY ~99, and VIX
+// required the $229/mo Pro tier). Left in UNAVAILABLE so any stray
+// fetchCandles('VIX'|'DXY', ...) from an LLM-authored tool call returns
+// empty candles rather than a hard error.
 //
 // US30 / US100 / US500 / DE40 / UK100 are here because every Grow-tier TD
 // symbol we've tested for them resolves to an unrelated ETF:
@@ -196,9 +193,9 @@ const TWELVE_DATA_SYMBOL_MAP: Record<string, string> = {
 //   - UK100 → UKX              → Euronext XPAR ETF in EUR (~€120)
 //   - US100 / US500 raw         → Euronext XPAR ETFs in EUR
 // The scanner was computing 1H bias on these wrong series for weeks. Returning
-// [] via UNAVAILABLE gives the scanner a clean 'neutral' for indices, matching
-// the DXY/SPX/NAS100 handling. Re-enable when a real index feed is wired
-// (Pro-tier TD has the indices; or add Finnhub's /indices endpoint).
+// [] via UNAVAILABLE gives the scanner a clean 'neutral' for indices. Re-enable
+// when a real index feed is wired (Pro-tier TD has the indices; or add
+// Finnhub's /indices endpoint).
 const TWELVE_DATA_UNAVAILABLE = new Set<string>([
   'VIX',
   'NAS100', 'SPX',
@@ -353,39 +350,6 @@ export async function fetchCandles(
 // The fallback log (`[Market Data] Fallback triggered: ...`) is intentionally
 // loud so ops notices. If a brief is generated with multiple fallbacks,
 // treat its macro inputs as UNRELIABLE for that cycle.
-
-export async function fetchVix(): Promise<{ vix: number; vix_30d_avg: number }> {
-  return withFallback(async () => {
-    const candles = await fetchCandles('VIX', '1d', 30);
-    if (candles.length === 0) {
-      // VIX is Pro-tier-only on Twelve Data; Grow returns empty. Degrade gracefully
-      // rather than crashing the Market Researcher (which fetches this at 05:30 UTC).
-      return { vix: 0, vix_30d_avg: 0 };
-    }
-    const current = candles[0]?.close ?? 0;
-    const avg = candles.reduce((sum, c) => sum + c.close, 0) / candles.length;
-    return { vix: current, vix_30d_avg: Math.round(avg * 100) / 100 };
-  }, { vix: 0, vix_30d_avg: 0 });
-}
-
-export async function fetchDxy(): Promise<{ dxy: number; direction: 'rising' | 'falling' | 'flat' }> {
-  return withFallback(async () => {
-    const candles = await fetchCandles('DXY', '1d', 10);
-    if (candles.length === 0) {
-      return { dxy: 0 as number, direction: 'flat' as const };
-    }
-    const current = candles[0]?.close ?? 0;
-    const fiveDaysAgo = candles[4]?.close ?? current;
-    const change = fiveDaysAgo === 0 ? 0 : ((current - fiveDaysAgo) / fiveDaysAgo) * 100;
-
-    let direction: 'rising' | 'falling' | 'flat';
-    if (change > 0.3) direction = 'rising';
-    else if (change < -0.3) direction = 'falling';
-    else direction = 'flat';
-
-    return { dxy: current, direction };
-  }, { dxy: 0, direction: 'flat' as const });
-}
 
 export async function computeCorrelation(
   instrumentA: string,

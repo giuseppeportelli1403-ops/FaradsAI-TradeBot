@@ -25,7 +25,7 @@ const OPTIONAL_KEYS = [
   { key: 'CAPITAL_API_URL', feature: 'Capital.com base URL (defaults to demo)' },
   { key: 'TELEGRAM_BOT_TOKEN', feature: 'Telegram alerts' },
   { key: 'TELEGRAM_CHAT_ID', feature: 'Telegram alerts' },
-  { key: 'TWELVE_DATA_API_KEY', feature: 'Twelve Data candles/VIX/DXY' },
+  { key: 'TWELVE_DATA_API_KEY', feature: 'Twelve Data candles' },
   { key: 'FINNHUB_API_KEY', feature: 'Economic calendar' },
   { key: 'FRED_API_KEY', feature: 'Yield curve' },
   { key: 'ALPHA_VANTAGE_API_KEY', feature: 'News sentiment' },

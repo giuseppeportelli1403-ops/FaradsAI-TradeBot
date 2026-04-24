@@ -9,7 +9,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPrompt } from './load-prompt.js';
-import { fetchVix, fetchDxy, fetchYieldCurve, fetchEconomicCalendar, fetchSectorStrength } from '../mcp-server/market-data.js';
+import { fetchYieldCurve, fetchEconomicCalendar, fetchSectorStrength } from '../mcp-server/market-data.js';
 import { getRankedInstruments, INSTRUMENT_UNIVERSE } from '../scanner/index.js';
 import { getNewsContext } from '../news/index.js';
 import { saveResearchBrief, getLatestBrief } from '../database/index.js';
@@ -20,26 +20,8 @@ const anthropic = new Anthropic();
 // ==================== REGIME DETECTION ====================
 
 async function detectRegime(): Promise<RegimeData> {
-  const [vixData, dxyData, yields] = await Promise.all([
-    fetchVix(),
-    fetchDxy(),
-    fetchYieldCurve(),
-  ]);
-
-  let vixRegime: 'low' | 'normal' | 'elevated' | 'crisis';
-  if (vixData.vix < 15) vixRegime = 'low';
-  else if (vixData.vix < 20) vixRegime = 'normal';
-  else if (vixData.vix < 30) vixRegime = 'elevated';
-  else vixRegime = 'crisis';
-
-  return {
-    vix: vixData.vix,
-    vix_30d_avg: vixData.vix_30d_avg,
-    vix_regime: vixRegime,
-    dxy: dxyData.dxy,
-    dxy_direction: dxyData.direction,
-    yields,
-  };
+  const yields = await fetchYieldCurve();
+  return { yields };
 }
 
 // ==================== THEME EXTRACTION ====================
@@ -62,7 +44,7 @@ async function extractThemes(
     system: [{ type: 'text', text: 'You are a market research analyst. Given market data, produce 3-5 concise theme statements for today/this week. Each theme is one sentence. No filler. Factual and actionable.', cache_control: { type: 'ephemeral' } }],
     messages: [{
       role: 'user',
-      content: `Regime: VIX ${regime.vix} (${regime.vix_regime}), DXY ${regime.dxy} (${regime.dxy_direction}), 10Y yield ${regime.yields.us10y}%
+      content: `Regime: 10Y yield ${regime.yields.us10y}%, 2Y/10Y spread ${Math.round((regime.yields.us10y - regime.yields.us2y) * 100) / 100}%
 Top sectors: ${topSectors.join(', ')}
 Bottom sectors: ${bottomSectors.join(', ')}
 High-impact events next 5 days: ${highImpactEvents.map(e => `${e.date} ${e.event} (${e.country})`).join(', ') || 'None'}
@@ -82,15 +64,8 @@ List 3-5 themes as a JSON array of strings.`,
 
 // ==================== WARNING GENERATION ====================
 
-function generateWarnings(calendar: EconomicEvent[], regime: RegimeData): string[] {
+function generateWarnings(calendar: EconomicEvent[]): string[] {
   const warnings: string[] = [];
-
-  // VIX warnings
-  if (regime.vix_regime === 'elevated') {
-    warnings.push('VIX elevated (20-30) — reduce position size by 25% across both agents');
-  } else if (regime.vix_regime === 'crisis') {
-    warnings.push('VIX crisis mode (30+) — Swing agent stands down, ICT Tier 1 only');
-  }
 
   // High-impact event warnings
   const highImpact = calendar.filter(e => e.impact === 'high');
@@ -143,7 +118,7 @@ export async function runResearcherAgent(): Promise<ResearchBrief> {
     .map(i => i.ticker);
 
   // Phase 4: Generate warnings
-  const warnings = generateWarnings(calendar, regime);
+  const warnings = generateWarnings(calendar);
 
   // Phase 5: Compose and save brief
   const brief: ResearchBrief = {

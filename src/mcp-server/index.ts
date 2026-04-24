@@ -1,10 +1,10 @@
 // MCP Server — BetterOpsAI Trading Bot
-// Exposes 21 tools for the 6 AI trading agents via Model Context Protocol
+// Exposes 20 tools for the 6 AI trading agents via Model Context Protocol
 //
 // Tools are split by domain:
 //   trading-tools.ts  — 6 tools (place_order, partial_close, close_position, set_trailing_stop, update_sl, log_trade)
-//   market-data-tools.ts — 9 tools (get_prices, get_news_context, get_economic_calendar, get_correlation_matrix,
-//                                    get_sector_strength, get_vix, get_dxy, get_yield_curve, write_research_brief)
+//   market-data-tools.ts — 8 tools (get_prices, get_news_context, get_economic_calendar, get_correlation_matrix,
+//                                    get_sector_strength, get_yield_curve, get_client_sentiment, write_research_brief)
 //   db-tools.ts — 6 tools (get_portfolio, get_balance, get_daily_pnl, get_trade_history, get_lessons, get_ranked_instruments)
 //
 // Every tool is wrapped with:

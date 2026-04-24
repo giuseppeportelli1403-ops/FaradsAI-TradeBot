@@ -325,11 +325,15 @@ export interface EconomicEvent {
 }
 
 export interface RegimeData {
-  vix: number;
-  vix_30d_avg: number;
-  vix_regime: 'low' | 'normal' | 'elevated' | 'crisis';
-  dxy: number;
-  dxy_direction: 'rising' | 'falling' | 'flat';
+  // VIX/DXY removed from the live feed path 2026-04-24 — Twelve Data
+  // Grow tier doesn't serve them and the free-tier proxies were
+  // misleading. Kept optional so historical ResearchBriefs persisted
+  // to SQLite before the cutover still parse.
+  vix?: number;
+  vix_30d_avg?: number;
+  vix_regime?: 'low' | 'normal' | 'elevated' | 'crisis';
+  dxy?: number;
+  dxy_direction?: 'rising' | 'falling' | 'flat';
   yields: {
     us2y: number;
     us10y: number;

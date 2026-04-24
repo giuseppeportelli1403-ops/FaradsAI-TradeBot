@@ -5,8 +5,8 @@ import {
   withCache,
   withFallback,
   fetchCandles,
-  fetchVix,
-  fetchDxy,
+  fetchYieldCurve,
+  fetchSectorStrength,
   computeCorrelation,
   _getTwelveDataDailyCap,
   _resetTwelveDataDailyCap,
@@ -98,18 +98,6 @@ describe('Researcher-facing fetcher resilience (regression test for 2026-04-21 0
     vi.restoreAllMocks();
   });
 
-  it('fetchVix returns zero-defaults when the upstream fetchCandles throws', async () => {
-    vi.spyOn(axios, 'get').mockRejectedValue(new Error('Network is down'));
-    const result = await fetchVix();
-    expect(result).toEqual({ vix: 0, vix_30d_avg: 0 });
-  });
-
-  it('fetchDxy returns zero-defaults when the upstream fetchCandles throws', async () => {
-    vi.spyOn(axios, 'get').mockRejectedValue(new Error('API returned 500'));
-    const result = await fetchDxy();
-    expect(result).toEqual({ dxy: 0, direction: 'flat' });
-  });
-
   it('computeCorrelation returns neutral-correlation when fetchCandles throws', async () => {
     vi.spyOn(axios, 'get').mockRejectedValue(new Error('Rate limited'));
     const result = await computeCorrelation('EURUSD', 'DXY', 30);
@@ -119,33 +107,14 @@ describe('Researcher-facing fetcher resilience (regression test for 2026-04-21 0
     expect(result.instrument_b).toBe('DXY');
   });
 
-  it('fetchVix degrades when the breaker is tripped (exact crash scenario)', async () => {
-    // Trip the breaker by returning the credit-exhaustion payload.
-    vi.spyOn(axios, 'get').mockResolvedValue({
-      data: { status: 'error', message: 'You have run out of API credits for the day.' },
-    });
-    // First call trips the breaker (via AAPL since VIX returns [] before hitting TD)
-    await fetchCandles('AAPL', '1d', 10).catch(() => undefined);
-    expect(_getTwelveDataDailyCap()).not.toBeNull();
-
-    // Now fetchVix/fetchDxy must still return defaults, not throw.
-    const vix = await fetchVix();
-    const dxy = await fetchDxy();
-    expect(vix).toEqual({ vix: 0, vix_30d_avg: 0 });
-    expect(dxy).toEqual({ dxy: 0, direction: 'flat' });
-  });
-
-  it('Promise.all of [fetchVix, fetchDxy, computeCorrelation] never rejects — Researcher invariant', async () => {
-    // Simulate the detectRegime() call shape that crashed: Promise.all of these
-    // three. The researcher's Promise.all MUST never reject now.
+  it('Promise.all of [fetchYieldCurve, fetchSectorStrength, computeCorrelation] never rejects — Researcher invariant', async () => {
+    // The researcher's Phase 1 `Promise.all` must never reject, even when
+    // every external call is failing. This is the regression invariant that
+    // originally crashed the 2026-04-21 05:30 UTC Researcher cycle.
     vi.spyOn(axios, 'get').mockRejectedValue(new Error('Everything is on fire'));
     await expect(
-      Promise.all([fetchVix(), fetchDxy(), computeCorrelation('EURUSD', 'USDJPY')])
-    ).resolves.toEqual([
-      { vix: 0, vix_30d_avg: 0 },
-      { dxy: 0, direction: 'flat' },
-      expect.objectContaining({ correlation_30d: 0, correlation_90d: 0 }),
-    ]);
+      Promise.all([fetchYieldCurve(), fetchSectorStrength(), computeCorrelation('EURUSD', 'USDJPY')])
+    ).resolves.toBeDefined();
   });
 });
 

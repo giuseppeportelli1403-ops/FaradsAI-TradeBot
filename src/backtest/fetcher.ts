@@ -13,7 +13,8 @@ const CACHE_DIR = path.resolve('backtest-data');
 
 // Single source of truth for TD routing lives in market-data.ts; importing
 // the mapper keeps backtest in sync with live (including GOLD→XAU/USD,
-// SILVER→XAG/USD, and the UNAVAILABLE cohort for VIX/NAS100/SPX/DXY).
+// SILVER→XAG/USD, and the UNAVAILABLE cohort for NAS100/SPX plus the
+// defensively-included VIX/DXY).
 // The original local SYMBOL_MAP here was missing GOLD/SILVER and the alias
 // coverage, so backtest was scoring commodities against the wrong TD
 // listings (Barrick Gold common stock, NSE-listed silver ETF in INR).

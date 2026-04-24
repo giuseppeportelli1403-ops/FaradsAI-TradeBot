@@ -1,17 +1,17 @@
 // MCP Tools — Market Data (Capital.com candles + external APIs)
 // Tools: get_prices, get_news_context, get_economic_calendar, get_correlation_matrix,
-//        get_sector_strength, get_vix, get_dxy, get_yield_curve, get_client_sentiment,
+//        get_sector_strength, get_yield_curve, get_client_sentiment,
 //        write_research_brief
 // Uses registerTool (modern API) with annotations.
 // get_prices prefers Capital.com OHLC candles for tradeable epics; falls back
-// to Twelve Data for macro instruments (VIX, DXY, yield curve).
+// to Twelve Data for macro instruments (yield curve series).
 
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { CapitalClient } from '../capital-client.js';
 import { wrapTool } from '../logger.js';
 import {
-  fetchCandles, fetchVix, fetchDxy, fetchYieldCurve,
+  fetchCandles, fetchYieldCurve,
   fetchEconomicCalendar, fetchSectorStrength, fetchNewsContext,
   computeCorrelation,
 } from '../market-data.js';
@@ -27,7 +27,7 @@ const capital = new CapitalClient({
 
 // Instruments Capital.com does not serve — always fall back to Twelve Data.
 // Keep this list conservative; anything not listed attempts Capital first.
-const MACRO_ONLY = new Set<string>(['VIX', 'DXY', 'US2Y', 'US10Y', 'US30Y']);
+const MACRO_ONLY = new Set<string>(['US2Y', 'US10Y', 'US30Y']);
 
 function timeframeToResolution(tf: Timeframe): Resolution {
   switch (tf) {
@@ -50,9 +50,9 @@ export function registerMarketDataTools(server: McpServer): void {
     'get_prices',
     {
       title: 'Get Price Candles',
-      description: 'Fetch OHLCV candle data. Prefers Capital.com for tradeable instruments (by epic) and falls back to Twelve Data for macro symbols (VIX, DXY, yield curve) or anything Capital does not serve. Supports 15m, 1h, 4h, 1d, 1w timeframes.',
+      description: 'Fetch OHLCV candle data. Prefers Capital.com for tradeable instruments (by epic) and falls back to Twelve Data for macro symbols (yield curve series) or anything Capital does not serve. Supports 15m, 1h, 4h, 1d, 1w timeframes.',
       inputSchema: {
-        instrument: z.string().describe('Instrument ticker / Capital.com epic (e.g. GOLD, US100, AAPL, EURUSD, VIX)'),
+        instrument: z.string().describe('Instrument ticker / Capital.com epic (e.g. GOLD, US100, AAPL, EURUSD)'),
         timeframe: z.enum(['15m', '1h', '4h', '1d', '1w']).describe('Candle timeframe'),
         count: z.number().optional().default(100).describe('Number of candles to fetch (max 5000)'),
       },
@@ -131,7 +131,7 @@ export function registerMarketDataTools(server: McpServer): void {
     'get_correlation_matrix',
     {
       title: 'Get Correlation Matrix',
-      description: 'Compute 30-day Pearson correlation between an instrument and major assets. On the current Twelve Data tier the default comparison set is USDJPY, XAUUSD, USOIL, EURUSD (USD-strength proxy via USDJPY; DXY/SPX/NAS100 are unavailable).',
+      description: 'Compute 30-day Pearson correlation between an instrument and major assets. Default comparison set is USDJPY, XAUUSD, USOIL, EURUSD (USD-strength proxy via USDJPY; US equity indices are unavailable on the current Twelve Data tier).',
       inputSchema: {
         instrument: z.string().describe('Primary instrument to check correlations for'),
         compare_with: z.array(z.string()).optional().describe('Instruments to compare against. Defaults to major assets.'),
@@ -139,11 +139,12 @@ export function registerMarketDataTools(server: McpServer): void {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('get_correlation_matrix', async ({ instrument, compare_with }) => {
-      // DXY / SPX / NAS100 are TWELVE_DATA_UNAVAILABLE on the current tier —
-      // the correlation call for each would return neutral (0). USDJPY is a
-      // workable USD-strength proxy that IS available on Grow, so swap it in
-      // for DXY's macro slot. SPX/NAS100 have no clean substitute at this
-      // tier, so we drop them rather than burn cycles on known-zero results.
+      // SPX / NAS100 are TWELVE_DATA_UNAVAILABLE on the current tier — the
+      // correlation call for each would return neutral (0). USDJPY is a
+      // workable USD-strength proxy that IS available on Grow, so it sits
+      // in the default set as the macro anchor. Indices have no clean
+      // substitute at this tier, so we drop them rather than burn cycles
+      // on known-zero results.
       const defaults = ['USDJPY', 'XAUUSD', 'USOIL', 'EURUSD'];
       const comparisons = compare_with || defaults.filter(d => d !== instrument);
       const correlations = await Promise.all(
@@ -167,40 +168,7 @@ export function registerMarketDataTools(server: McpServer): void {
     })
   );
 
-  server.registerTool(
-    'get_vix',
-    {
-      title: 'Get VIX Level',
-      description: 'Get current VIX value, 30-day average, and regime classification (low/normal/elevated/crisis) from Twelve Data.',
-      inputSchema: {},
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    wrapTool('get_vix', async () => {
-      const vixData = await fetchVix();
-      let regime: string;
-      if (vixData.vix < 15) regime = 'low';
-      else if (vixData.vix < 20) regime = 'normal';
-      else if (vixData.vix < 30) regime = 'elevated';
-      else regime = 'crisis';
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ...vixData, regime }) }] };
-    })
-  );
-
-  server.registerTool(
-    'get_dxy',
-    {
-      title: 'Get Dollar Index',
-      description: 'Get current DXY level and 5-day direction (rising/falling/flat) from Twelve Data.',
-      inputSchema: {},
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    },
-    wrapTool('get_dxy', async () => {
-      const dxyData = await fetchDxy();
-      return { content: [{ type: 'text' as const, text: JSON.stringify(dxyData) }] };
-    })
-  );
-
-  server.registerTool(
+server.registerTool(
     'get_yield_curve',
     {
       title: 'Get Treasury Yield Curve',

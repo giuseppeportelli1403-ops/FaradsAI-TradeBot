@@ -54,7 +54,7 @@ The `lesson` field must be SPECIFIC and ACTIONABLE.
 
 **GOOD**: "OB retest setups on US large-cap tech stocks during NY open with Cat B news alignment are consistently high performers. Key confirmation: a clear liquidity sweep of the previous day low before entry. When the sweep is clean and the OB is in discount, this setup has shown strong follow-through. Continue to prioritise."
 
-**GOOD**: "EMA pullback entries on EURUSD during DXY strength days have failed 4 of the last 5 times. The correlation filter should have caught this — DXY was rising while we went long EUR. Add a rule: skip EUR longs when DXY has been rising for 3+ consecutive days."
+**GOOD**: "EMA pullback entries on EURUSD during USDJPY-strength days have failed 4 of the last 5 times. The correlation filter should have caught this — USDJPY was trending up while we went long EUR. Add a rule: skip EUR longs when USDJPY has closed higher 3+ consecutive days."
 
 **GOOD**: "This SWING flag breakout on MSFT was held for 8 days and hit TP2. The 4H engulfing trigger was the cleanest entry signal. However, the 5-day hold period included an FOMC meeting that caused a 2% drawdown before recovery. Suggestion: if holding through FOMC, tighten SL to 1.0x ATR instead of 1.5x."
 
