@@ -1,0 +1,158 @@
+// Tests for the economic-calendar veto helper.
+//
+// Production motivation: pre-2026-04-28, the ICT trading agent had no
+// awareness of high-impact macro events (FOMC, NFP, CPI, ECB, BoE) at the
+// moment of decision. fetchEconomicCalendar was implemented in market-data.ts
+// but never exposed via MCP_TOOLS, and there was no code-level pre-trade veto.
+// Bot would happily place orders 5 minutes before NFP.
+//
+// This module provides:
+//   - instrumentToCurrencies — maps a Farad ticker to relevant ISO currency codes
+//   - shouldVetoOrderForCalendar — returns {veto:true, reason, event} when a
+//     high-impact event for the trade's currencies falls inside the veto window
+import { describe, it, expect } from 'vitest';
+import {
+  instrumentToCurrencies,
+  shouldVetoOrderForCalendar,
+} from '../src/news/calendar-veto.js';
+import type { EconomicEvent } from '../src/types.js';
+
+function event(overrides: Partial<EconomicEvent>): EconomicEvent {
+  return {
+    date: '2026-04-28',
+    time: '12:30:00',
+    event: 'Test event',
+    country: 'US',
+    impact: 'high',
+    actual: null,
+    estimate: null,
+    previous: null,
+    affected_instruments: [],
+    ...overrides,
+  };
+}
+
+describe('instrumentToCurrencies', () => {
+  it('splits FX majors into the two component currencies', () => {
+    expect(instrumentToCurrencies('EURUSD')).toEqual(['EUR', 'USD']);
+    expect(instrumentToCurrencies('GBPUSD')).toEqual(['GBP', 'USD']);
+    expect(instrumentToCurrencies('USDJPY')).toEqual(['USD', 'JPY']);
+    expect(instrumentToCurrencies('AUDUSD')).toEqual(['AUD', 'USD']);
+  });
+
+  it('maps USD-denominated commodities to USD-only', () => {
+    expect(instrumentToCurrencies('GOLD')).toEqual(['USD']);
+    expect(instrumentToCurrencies('SILVER')).toEqual(['USD']);
+    expect(instrumentToCurrencies('OIL_CRUDE')).toEqual(['USD']);
+  });
+
+  it('handles cross-broker commodity aliases', () => {
+    expect(instrumentToCurrencies('XAUUSD')).toEqual(['USD']);
+    expect(instrumentToCurrencies('XAGUSD')).toEqual(['USD']);
+    expect(instrumentToCurrencies('WTIUSD')).toEqual(['USD']);
+    expect(instrumentToCurrencies('USOIL')).toEqual(['USD']);
+  });
+
+  it('returns empty for unknown tickers', () => {
+    expect(instrumentToCurrencies('UNKNOWN_TICKER')).toEqual([]);
+  });
+
+  it('is case-insensitive', () => {
+    expect(instrumentToCurrencies('eurusd')).toEqual(['EUR', 'USD']);
+    expect(instrumentToCurrencies('gold')).toEqual(['USD']);
+  });
+});
+
+describe('shouldVetoOrderForCalendar', () => {
+  // Anchor "now" to a deterministic moment for stable assertions.
+  const nowMs = Date.parse('2026-04-28T12:00:00Z');
+
+  it('vetoes high-impact USD event 15 min ahead on EURUSD trade', () => {
+    const events = [event({ date: '2026-04-28', time: '12:15:00', country: 'US', event: 'NFP', impact: 'high' })];
+    const result = shouldVetoOrderForCalendar(['EUR', 'USD'], events, nowMs);
+    expect(result.veto).toBe(true);
+    if (result.veto) {
+      expect(result.reason).toMatch(/NFP/);
+      expect(result.reason).toMatch(/USD/);
+    }
+  });
+
+  it('vetoes high-impact event that just fired (within 5 min past)', () => {
+    const events = [event({ date: '2026-04-28', time: '11:58:00', country: 'US', event: 'CPI', impact: 'high' })];
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(true);
+  });
+
+  it('does NOT veto medium-impact events', () => {
+    const events = [event({ date: '2026-04-28', time: '12:15:00', country: 'US', impact: 'medium' })];
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('does NOT veto low-impact events', () => {
+    const events = [event({ date: '2026-04-28', time: '12:15:00', country: 'US', impact: 'low' })];
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('does NOT veto events on irrelevant currencies (JP event on EURUSD)', () => {
+    const events = [event({ date: '2026-04-28', time: '12:15:00', country: 'JP', event: 'BoJ' })];
+    const result = shouldVetoOrderForCalendar(['EUR', 'USD'], events, nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('does NOT veto events outside the default 30-min window', () => {
+    const events = [event({ date: '2026-04-28', time: '13:00:00', country: 'US' })]; // 60 min ahead
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('does NOT veto events that fired more than 5 min ago', () => {
+    const events = [event({ date: '2026-04-28', time: '11:50:00', country: 'US' })]; // 10 min ago
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('vetoes commodity trades on high-impact USD events', () => {
+    const events = [event({ date: '2026-04-28', time: '12:15:00', country: 'US', event: 'FOMC' })];
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(true);
+  });
+
+  it('matches eurozone country codes (DE, FR, etc) to EUR currency', () => {
+    const events = [event({ date: '2026-04-28', time: '12:15:00', country: 'DE', event: 'German GDP' })];
+    const result = shouldVetoOrderForCalendar(['EUR', 'USD'], events, nowMs);
+    expect(result.veto).toBe(true);
+  });
+
+  it('matches GB and UK country codes to GBP currency', () => {
+    const evGB = [event({ date: '2026-04-28', time: '12:15:00', country: 'GB', event: 'BoE rate' })];
+    const evUK = [event({ date: '2026-04-28', time: '12:15:00', country: 'UK', event: 'BoE rate' })];
+    expect(shouldVetoOrderForCalendar(['GBP'], evGB, nowMs).veto).toBe(true);
+    expect(shouldVetoOrderForCalendar(['GBP'], evUK, nowMs).veto).toBe(true);
+  });
+
+  it('handles missing time field by treating event as midnight UTC', () => {
+    const events = [event({ date: '2026-04-29', time: '', country: 'US', impact: 'high' })];
+    // 2026-04-29 00:00 UTC is 12 hours after our nowMs (2026-04-28 12:00) — outside window
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('returns no-veto when events list is empty', () => {
+    const result = shouldVetoOrderForCalendar(['USD'], [], nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('returns no-veto when trade has no relevant currencies', () => {
+    const events = [event({ date: '2026-04-28', time: '12:15:00', country: 'US', impact: 'high' })];
+    const result = shouldVetoOrderForCalendar([], events, nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('respects custom veto-window override', () => {
+    const events = [event({ date: '2026-04-28', time: '12:45:00', country: 'US', impact: 'high' })]; // 45 min ahead
+    expect(shouldVetoOrderForCalendar(['USD'], events, nowMs).veto).toBe(false); // default 30
+    expect(shouldVetoOrderForCalendar(['USD'], events, nowMs, 60 * 60_000).veto).toBe(true); // custom 60
+  });
+});

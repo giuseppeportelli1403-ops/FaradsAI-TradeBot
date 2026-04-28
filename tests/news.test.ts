@@ -105,13 +105,17 @@ describe('getNewsContext — Layer 4 stale-bearish dampening', () => {
   // the composite score. Rationale in src/news/index.ts. Bullish stale news
   // flows through unchanged — worst case is "missed boost", which is safe.
 
-  /** Build a MarketAux-shaped success response with one article per sentiment entry. */
+  /** Build a MarketAux-shaped success response with one article per sentiment entry.
+   * Title hard-codes "FOMC" so the post-2026-04-28 impact-keyword classifier
+   * promotes the article to Cat A — these tests are about Cat A dampening
+   * behaviour, so the fixture must legitimately be Cat A.
+   */
   const mkMarketAuxResponse = (articles: Array<{ sentiment: number }>) => ({
     data: {
       meta: { found: articles.length, returned: articles.length, limit: 10, page: 1 },
       data: articles.map((a, i) => ({
         uuid: `uuid-${i}`,
-        title: `Headline ${i}`,
+        title: `FOMC headline ${i}`,
         description: `Description for headline ${i} with enough text to qualify`,
         snippet: `Snippet ${i}`,
         keywords: '',

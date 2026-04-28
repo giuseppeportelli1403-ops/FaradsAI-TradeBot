@@ -18,6 +18,7 @@ import {
   _getMarketAuxCallCount,
   fetchNewsContext,
   normalizeForMarketAux,
+  commoditySpotSymbol,
 } from '../src/mcp-server/market-data.js';
 
 describe('withCache', () => {
@@ -490,11 +491,14 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
 
     vi.spyOn(axios, 'get').mockResolvedValue(mkMarketAuxResponse({ symbol: 'GLD' }));
 
-    // 100 repeat calls for the same ticker — only the first hits MarketAux.
+    // 100 repeat calls for the same ticker. The first call fires TWO MarketAux
+    // queries (GLD ETF proxy + XAU/USD spot — dual-source for commodities,
+    // P1 #7 2026-04-28). All subsequent 99 calls are served from the 30-min
+    // fresh cache and do NOT bump the counter.
     for (let i = 0; i < 100; i++) {
       await fetchNewsContext('GOLD');
     }
-    expect(_getMarketAuxCallCount()).toBe(1);
+    expect(_getMarketAuxCallCount()).toBe(2);
   });
 
   it('Layer 5: news-degraded Telegram alert fires at most once per UTC day', async () => {
@@ -569,6 +573,150 @@ describe('normalizeForMarketAux', () => {
   it('passes US equities through uppercased', () => {
     expect(normalizeForMarketAux('AAPL')).toBe('AAPL');
     expect(normalizeForMarketAux('msft')).toBe('MSFT');
+  });
+});
+
+describe('commoditySpotSymbol', () => {
+  it('maps GOLD/XAUUSD to spot XAU/USD', () => {
+    expect(commoditySpotSymbol('GOLD')).toBe('XAU/USD');
+    expect(commoditySpotSymbol('XAUUSD')).toBe('XAU/USD');
+  });
+
+  it('maps SILVER/XAGUSD to spot XAG/USD', () => {
+    expect(commoditySpotSymbol('SILVER')).toBe('XAG/USD');
+    expect(commoditySpotSymbol('XAGUSD')).toBe('XAG/USD');
+  });
+
+  it('maps OIL_CRUDE/USOIL/WTIUSD to spot WTI/USD', () => {
+    expect(commoditySpotSymbol('OIL_CRUDE')).toBe('WTI/USD');
+    expect(commoditySpotSymbol('USOIL')).toBe('WTI/USD');
+    expect(commoditySpotSymbol('WTIUSD')).toBe('WTI/USD');
+  });
+
+  it('returns null for FX pairs', () => {
+    expect(commoditySpotSymbol('EURUSD')).toBeNull();
+    expect(commoditySpotSymbol('GBPUSD')).toBeNull();
+  });
+
+  it('returns null for unrecognised tickers', () => {
+    expect(commoditySpotSymbol('AAPL')).toBeNull();
+    expect(commoditySpotSymbol('UNKNOWN')).toBeNull();
+  });
+
+  it('is case-insensitive', () => {
+    expect(commoditySpotSymbol('gold')).toBe('XAU/USD');
+    expect(commoditySpotSymbol('Silver')).toBe('XAG/USD');
+  });
+});
+
+describe('fetchNewsContext — dual-source commodity news (P1 #7, 2026-04-28)', () => {
+  // For commodity instruments the bot now fires TWO MarketAux queries — one
+  // for the ETF proxy (GLD/SLV/USO) and one for the spot symbol
+  // (XAU/USD, XAG/USD, WTI/USD). MarketAux's entity database is equity-centric
+  // so the spot symbol may return zero results, but when it returns context
+  // the result is closer to spot CFD trading than the US-equity-flavoured ETF
+  // coverage. Articles are deduped by lowercased trimmed title so the same
+  // wire story doesn't double-count when both sides cover it.
+
+  const originalKey = process.env.MARKETAUX_API_KEY;
+
+  beforeEach(() => {
+    process.env.MARKETAUX_API_KEY = 'test-key';
+    _resetNewsResilienceState();
+    _resetMarketAuxRateLimitFlag();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env.MARKETAUX_API_KEY;
+    else process.env.MARKETAUX_API_KEY = originalKey;
+    _resetNewsResilienceState();
+    _resetMarketAuxRateLimitFlag();
+    vi.restoreAllMocks();
+  });
+
+  function mkArticle(symbol: string, title: string, sentiment = 0): Record<string, unknown> {
+    return {
+      uuid: `uuid-${symbol}-${title}`,
+      title,
+      description: `Description: ${title}`,
+      snippet: `Snippet ${title}`,
+      published_at: '2026-04-28T08:00:00.000Z',
+      source: 'TestWire',
+      url: `https://example.com/${symbol}/${encodeURIComponent(title)}`,
+      entities: [
+        { symbol, sentiment_score: sentiment, match_score: 90 },
+      ],
+    };
+  }
+
+  it('fires TWO MarketAux requests for commodities: ETF proxy + spot symbol', async () => {
+    const getSpy = vi.spyOn(axios, 'get').mockImplementation(async (_url, opts) => {
+      const symbol = (opts as { params: { symbols: string } }).params.symbols;
+      return { data: { data: [mkArticle(symbol, `${symbol} headline`)] } };
+    });
+
+    await fetchNewsContext('GOLD');
+
+    expect(getSpy).toHaveBeenCalledTimes(2);
+    const queriedSymbols = getSpy.mock.calls.map(
+      (c) => (c[1] as { params: { symbols: string } }).params.symbols,
+    );
+    expect(queriedSymbols).toContain('GLD');
+    expect(queriedSymbols).toContain('XAU/USD');
+  });
+
+  it('fires only ONE MarketAux request for FX (no spot variant)', async () => {
+    const getSpy = vi.spyOn(axios, 'get').mockResolvedValue({
+      data: { data: [mkArticle('EURUSD', 'eur/usd test headline')] },
+    });
+
+    await fetchNewsContext('EURUSD');
+
+    expect(getSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('dedupes articles with the same title from spot and ETF queries', async () => {
+    vi.spyOn(axios, 'get').mockImplementation(async (_url, opts) => {
+      const symbol = (opts as { params: { symbols: string } }).params.symbols;
+      // Both responses include the SAME title — same wire story picked up by both feeds.
+      return {
+        data: {
+          data: [
+            mkArticle(symbol, 'OPEC announces production cut', 0.4),
+            mkArticle(symbol, `Other ${symbol} story`, 0.1),
+          ],
+        },
+      };
+    });
+
+    const items = await fetchNewsContext('OIL_CRUDE');
+
+    // Expected: 3 articles (1 deduped OPEC + 2 unique "Other USO/WTI/USD" stories)
+    const titles = items.map((i) => i.title);
+    const opecCount = titles.filter((t) => t === 'OPEC announces production cut').length;
+    expect(opecCount).toBe(1);
+    expect(items.length).toBe(3);
+  });
+
+  it('falls back gracefully when spot fetch errors but ETF succeeds', async () => {
+    const errLog = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let callIndex = 0;
+    vi.spyOn(axios, 'get').mockImplementation(async (_url, opts) => {
+      callIndex++;
+      const symbol = (opts as { params: { symbols: string } }).params.symbols;
+      if (symbol.includes('/')) {
+        // spot symbol — simulate error
+        throw new Error('Spot endpoint flaky');
+      }
+      return { data: { data: [mkArticle(symbol, `${symbol} headline`)] } };
+    });
+
+    const items = await fetchNewsContext('SILVER');
+
+    // ETF result still flowed through, spot error did not poison the result.
+    expect(items.length).toBeGreaterThanOrEqual(1);
+    expect(errLog).toHaveBeenCalled();
   });
 });
 

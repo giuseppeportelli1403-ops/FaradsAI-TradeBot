@@ -16,6 +16,7 @@ import type {
 } from '../types.js';
 import { TokenBucket } from './rate-limiter.js';
 import { CandleCache, TIMEFRAME_INTERVAL } from './candle-cache.js';
+import { matchesHighImpactKeyword } from '../news/impact-classifier.js';
 
 export { RateLimitQueuedError } from './rate-limiter.js';
 
@@ -752,6 +753,108 @@ export function normalizeForMarketAux(instrument: string): string {
   return upper;
 }
 
+/**
+ * For commodities, return the SPOT MarketAux symbol (XAU/USD / XAG/USD /
+ * WTI/USD). The bot trades spot CFDs but `normalizeForMarketAux` returns the
+ * ETF proxy (GLD/SLV/USO) — the proxy works because MarketAux's entity
+ * database is equity-centric, but US-equity ETF news is a poor proxy for
+ * spot-commodity sentiment. Dual-source pattern (added 2026-04-28): query
+ * BOTH the proxy AND the spot symbol, dedupe by article title, and let the
+ * downstream Cat A/B/C classifier and aggregation logic see the union.
+ *
+ * Returns null when no spot variant applies (FX, equities, unknown). Callers
+ * can use the null result as a "single-source path" branch flag.
+ */
+export function commoditySpotSymbol(instrument: string): string | null {
+  const upper = instrument.toUpperCase();
+  const spotMap: Record<string, string> = {
+    GOLD: 'XAU/USD',
+    XAUUSD: 'XAU/USD',
+    SILVER: 'XAG/USD',
+    XAGUSD: 'XAG/USD',
+    OIL_CRUDE: 'WTI/USD',
+    USOIL: 'WTI/USD',
+    WTIUSD: 'WTI/USD',
+  };
+  return spotMap[upper] ?? null;
+}
+
+/**
+ * Internal: one MarketAux query + parse pass. Bumps the daily call counter,
+ * fires axios, validates the response shape, and maps each article to a
+ * NewsItem with the new impact-keyword Cat A/B/C classifier. Returns []
+ * when the response shape is unexpected. Throws on axios/network/HTTP errors —
+ * callers handle (e.g. 402 → stale fallback). Extracted from fetchNewsContext
+ * 2026-04-28 to support dual-source commodity fetching.
+ */
+async function fetchMarketAuxBatch(
+  apiKey: string,
+  mappedTicker: string,
+  instrumentForLog: string,
+): Promise<NewsItem[]> {
+  bumpMarketAuxCallCounter();
+
+  const { data } = await axios.get(MARKETAUX_BASE, {
+    params: {
+      api_token: apiKey,
+      symbols: mappedTicker,
+      language: 'en',
+      filter_entities: true,
+      limit: 10,
+    },
+  });
+
+  if (!Array.isArray(data?.data)) {
+    console.log(
+      `[Market Data] MarketAux news for ${instrumentForLog} (as ${mappedTicker}): 0 articles [unexpected response shape]`,
+    );
+    return [];
+  }
+
+  console.log(
+    `[Market Data] MarketAux news for ${instrumentForLog} (as ${mappedTicker}): ${data.data.length} articles`,
+  );
+
+  return data.data.map((article: Record<string, unknown>) => {
+    const entities = (article.entities as Array<Record<string, unknown>>) || [];
+
+    const matchedEntity =
+      entities.find((e) => String(e.symbol ?? '').toUpperCase() === mappedTicker.toUpperCase())
+      ?? [...entities].sort(
+        (a, b) => (Number(b.match_score) || 0) - (Number(a.match_score) || 0),
+      )[0];
+
+    const sentiment = Number(matchedEntity?.sentiment_score ?? 0);
+    const relevance = Number(matchedEntity?.match_score ?? 0);
+    const absScore = Math.abs(sentiment);
+
+    const title = (article.title as string | undefined) ?? '';
+    const description = (article.description as string) ?? '';
+    const snippet = (article.snippet as string) ?? '';
+    const summary = description.length > 20 ? description : (snippet || description);
+
+    let category: 'A' | 'B' | 'C';
+    if (matchesHighImpactKeyword(title, summary)) {
+      category = 'A';
+    } else if (absScore >= 0.15) {
+      category = 'B';
+    } else {
+      category = 'C';
+    }
+
+    return {
+      title,
+      source: article.source as string,
+      published_at: article.published_at as string,
+      sentiment_score: sentiment,
+      relevance_score: relevance,
+      category,
+      summary,
+      stale_minutes: 0,
+    };
+  });
+}
+
 export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> {
   const mappedTicker = normalizeForMarketAux(instrument);
   const cacheKey = instrument.toUpperCase();
@@ -792,74 +895,44 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
       return serveStaleOrEmpty(instrument);
     }
 
-    bumpMarketAuxCallCounter();
+    let items = await fetchMarketAuxBatch(apiKey, mappedTicker, instrument);
 
-    const { data } = await axios.get(MARKETAUX_BASE, {
-      params: {
-        api_token: apiKey,
-        symbols: mappedTicker,
-        language: 'en',
-        filter_entities: true,
-        limit: 10,
-      },
-    });
-
-    // MarketAux response body has its own `data` array wrapping the articles.
-    // axios puts the response body on `response.data`, so the article array
-    // is at `response.data.data`.
-    if (!Array.isArray(data?.data)) {
-      console.log(
-        `[Market Data] MarketAux news for ${instrument} (as ${mappedTicker}): 0 articles [unexpected response shape]`,
-      );
-      return serveStaleOrEmpty(instrument);
+    // ===== Dual-source for commodities (P1 #7, 2026-04-28) =====
+    // The bot trades spot CFDs (XAU/USD, XAG/USD, WTI/USD) but normalizeForMarketAux
+    // returns the US-equity ETF proxy (GLD/SLV/USO) — that's MarketAux's strongest
+    // entity coverage for these names. Querying ALSO with the spot symbol picks up
+    // any additional spot-coverage MarketAux has, deduped by title against the
+    // ETF results. If spot returns nothing (likely on the free tier), the result
+    // is unchanged — no harm, modest cost (1 extra API call per cache miss).
+    const spotTicker = commoditySpotSymbol(instrument);
+    if (spotTicker && spotTicker !== mappedTicker) {
+      try {
+        const spotItems = await fetchMarketAuxBatch(apiKey, spotTicker, instrument);
+        const seen = new Set<string>();
+        const merged: NewsItem[] = [];
+        // Primary (ETF) first to preserve existing rank ordering on conflict;
+        // unique spot items are appended after.
+        for (const item of [...items, ...spotItems]) {
+          const key = item.title.toLowerCase().trim();
+          if (key.length === 0 || seen.has(key)) continue;
+          seen.add(key);
+          merged.push(item);
+        }
+        items = merged;
+      } catch (err) {
+        // Spot fetch is opportunistic — failures must not poison the primary
+        // ETF result. Logged loudly so ops can see if spot endpoint is broken.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[Market Data] Commodity spot fetch failed for ${instrument} (${spotTicker}): ${msg}. Falling back to ETF-only result.`,
+        );
+      }
     }
 
-    console.log(
-      `[Market Data] MarketAux news for ${instrument} (as ${mappedTicker}): ${data.data.length} articles`,
-    );
-
-    const items: NewsItem[] = data.data.map((article: Record<string, unknown>) => {
-      const entities = (article.entities as Array<Record<string, unknown>>) || [];
-
-      // Pick the entity whose symbol matches our mappedTicker; if none match,
-      // fall back to the entity with the highest match_score (MarketAux's
-      // relevance proxy). When no entities at all, default to neutral.
-      const matchedEntity =
-        entities.find((e) => String(e.symbol ?? '').toUpperCase() === mappedTicker.toUpperCase())
-        ?? [...entities].sort(
-          (a, b) => (Number(b.match_score) || 0) - (Number(a.match_score) || 0),
-        )[0];
-
-      const sentiment = Number(matchedEntity?.sentiment_score ?? 0);
-      // match_score is NOT normalised 0-1 (observed values up to 187). Expose
-      // it as-is under relevance_score for downstream consumers; they already
-      // treat relevance as a comparative signal, not a probability.
-      const relevance = Number(matchedEntity?.match_score ?? 0);
-      const absScore = Math.abs(sentiment);
-
-      let category: 'A' | 'B' | 'C';
-      if (absScore >= 0.35) category = 'A';
-      else if (absScore >= 0.15) category = 'B';
-      else category = 'C';
-
-      // MarketAux's `description` is sometimes extremely terse (e.g. just
-      // "EUR/USD" for FX), while `snippet` is a 163-char excerpt. Prefer
-      // description when it has substance; fall back to snippet otherwise.
-      const description = (article.description as string) ?? '';
-      const snippet = (article.snippet as string) ?? '';
-      const summary = description.length > 20 ? description : (snippet || description);
-
-      return {
-        title: article.title as string,
-        source: article.source as string,
-        published_at: article.published_at as string,
-        sentiment_score: sentiment,
-        relevance_score: relevance,
-        category,
-        summary,
-        stale_minutes: 0,
-      };
-    });
+    if (items.length === 0) {
+      // Both sources empty → fall back to stale cache if available.
+      return serveStaleOrEmpty(instrument);
+    }
 
     newsCache.set(cacheKey, { fetchedAt: Date.now(), value: items });
     return items;

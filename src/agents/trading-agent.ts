@@ -8,6 +8,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
 import { ensureTradeId } from './trade-id.js';
+import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
 import { alertTradePlaced } from '../notifications/telegram.js';
 
@@ -56,6 +57,18 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
       type: 'object' as const,
       properties: { instrument: { type: 'string' } },
       required: ['instrument'],
+    },
+  },
+  {
+    name: 'get_economic_calendar',
+    description:
+      'Return upcoming high/medium/low-impact macro events (FOMC, NFP, CPI, ECB, BoE, BoJ, central-bank rate decisions, GDP, payrolls). YOU MUST CALL THIS before any place_order — trading into a high-impact print on the trade currency is a hard rule violation. The place_order tool is code-level vetoed when a high-impact event is within −5/+30 minutes for any currency in the trade pair.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        days_ahead: { type: 'number', description: 'Lookahead window in days. Default 1.' },
+      },
+      required: [],
     },
   },
   {
@@ -121,7 +134,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
 // Routes tool calls from Claude to the actual MCP tool implementations
 
 import {
-  fetchCandles, fetchNewsContext as fetchNewsRaw,
+  fetchCandles, fetchNewsContext as fetchNewsRaw, fetchEconomicCalendar,
 } from '../mcp-server/market-data.js';
 import { getRankedInstruments } from '../scanner/index.js';
 import {
@@ -174,6 +187,10 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       ));
     case 'get_news_context':
       return JSON.stringify(await fetchNewsRaw(input.instrument as string));
+    case 'get_economic_calendar': {
+      const daysAhead = Number(input.days_ahead) > 0 ? Number(input.days_ahead) : 1;
+      return JSON.stringify(await fetchEconomicCalendar(daysAhead));
+    }
     case 'get_lessons': {
       const lessons = getLessons({
         setup_type: input.setup_type as string | undefined,
@@ -185,10 +202,39 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       return JSON.stringify({ lessons, win_rate: wr });
     }
     case 'place_order': {
+      // Code-level economic-calendar veto — defense-in-depth on top of the
+      // get_economic_calendar tool the agent should already have called.
+      // Even if the LLM ignores the prompt rule, this guard refuses to
+      // forward an order to Capital when a high-impact print on the trade
+      // currency is within the −5/+30 min window. See src/news/calendar-veto.ts.
+      const epic = input.epic as string;
+      const tradeCurrencies = instrumentToCurrencies(epic);
+      if (tradeCurrencies.length > 0) {
+        try {
+          const calendar = await fetchEconomicCalendar(1);
+          const veto = shouldVetoOrderForCalendar(tradeCurrencies, calendar, Date.now());
+          if (veto.veto) {
+            console.warn(`[ICT Agent] place_order vetoed by calendar guard for ${epic}: ${veto.reason}`);
+            return JSON.stringify({
+              error: 'CALENDAR_VETO',
+              reason: veto.reason,
+              event: veto.event,
+              guidance: 'Wait until the high-impact event window has passed (>5 min after the print). Reconsider the setup once the dust settles.',
+            });
+          }
+        } catch (err) {
+          // fetchEconomicCalendar is wrapped in withFallback and should not
+          // throw, but be defensive — calendar errors must NOT block the
+          // order silently. Log loudly and proceed.
+          const msg = err instanceof Error ? err.message : String(err);
+          console.warn(`[ICT Agent] Calendar veto check skipped (calendar fetch failed: ${msg}). Proceeding with place_order.`);
+        }
+      }
+
       const direction: 'BUY' | 'SELL' = input.direction === 'long' ? 'BUY' : 'SELL';
       const confirmation = await capital.openPosition({
         direction,
-        epic: input.epic as string,
+        epic,
         size: Math.abs(Number(input.size)),
         stopLevel: Number(input.sl),
         profitLevel: Number(input.tp),
