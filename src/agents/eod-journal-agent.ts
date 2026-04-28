@@ -49,9 +49,15 @@ export function journalPathFor(date: string): string {
 
 /**
  * Read the most recent journal entry on or before `now − 1 day`. Walks back
- * up to `maxLookbackDays` (default 5) to handle weekend gaps — Monday morning's
+ * up to `maxLookbackDays` (default 3) to handle weekend gaps — Monday morning's
  * ICT cycle reaches for Friday's journal. Returns null when no entry exists
  * in the lookback window (e.g. first day after deploy).
+ *
+ * CR-9 (2026-04-28): default lookback narrowed 5 → 3 days so extended
+ * downtime can't inject a stale week-old journal as preamble. Mon morning
+ * with the bot offline since Tue still finds Fri's journal (1-day weekend
+ * + Mon weekday-in-the-future reach). Anything older than that is stale
+ * enough that "no preamble" is preferable.
  *
  * Used by the ICT Trading Agent to prepend yesterday's reflection to its
  * decision-cycle context message — closes the W3 loop so the EOD journal
@@ -59,7 +65,7 @@ export function journalPathFor(date: string): string {
  */
 export function loadRecentJournal(
   now: Date = new Date(),
-  maxLookbackDays: number = 5,
+  maxLookbackDays: number = 3,
 ): { date: string; markdown: string } | null {
   for (let i = 1; i <= maxLookbackDays; i++) {
     const d = new Date(now);

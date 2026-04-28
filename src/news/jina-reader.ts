@@ -17,7 +17,11 @@
 import axios from 'axios';
 
 const JINA_BASE = 'https://r.jina.ai';
-const DEFAULT_TIMEOUT_MS = 5_000;
+// CR-9 (2026-04-28): lowered 5000 → 3000 ms after Codex flagged that 10
+// concurrent Jina calls × 5s timeout can stack to ~10s of cold latency
+// per fetchNewsContext, doubled on the commodity dual-source path. 3s
+// keeps the per-call cost low; cache hits are still ~0ms.
+const DEFAULT_TIMEOUT_MS = 3_000;
 const DEFAULT_MAX_LENGTH = 8_000;
 const CACHE_TTL_MS = 30 * 60_000;
 

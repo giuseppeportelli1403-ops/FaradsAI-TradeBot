@@ -287,16 +287,24 @@ export async function runTradingAgent(): Promise<void> {
   const strategy = loadStrategy('strategy.md');
   const brief = getLatestBrief();
   // B (2026-04-28): preload yesterday's EOD journal so the ICT cycle
-  // starts with "yesterday I learned X" preamble. Walks back up to 5 days
-  // to handle weekend gaps (Mon morning reaches for Fri's journal).
-  // Returns null on first-day-after-deploy or extended downtime.
+  // starts with "yesterday I learned X" preamble. Walks back up to 3 days
+  // (CR-9 narrowed from 5) to handle weekend gaps without injecting stale
+  // ancient journals during extended downtime.
+  // CR-9 also caps the journal markdown at 4000 chars before injection so
+  // a verbose entry can't blow out the ICT context budget.
+  const JOURNAL_PREAMBLE_MAX_CHARS = 4000;
   const journal = loadRecentJournal();
+  const journalMarkdown = journal
+    ? (journal.markdown.length > JOURNAL_PREAMBLE_MAX_CHARS
+        ? `${journal.markdown.slice(0, JOURNAL_PREAMBLE_MAX_CHARS)}\n\n[…truncated for context budget]`
+        : journal.markdown)
+    : null;
 
   const contextMessage = `Current UTC time: ${new Date().toISOString()}
 
-${journal ? `YESTERDAY'S JOURNAL (${journal.date}) — read this before deciding, it captures patterns from the most recent trading day:
+${journal && journalMarkdown ? `YESTERDAY'S JOURNAL (${journal.date}) — read this before deciding, it captures patterns from the most recent trading day:
 
-${journal.markdown}
+${journalMarkdown}
 
 ---
 

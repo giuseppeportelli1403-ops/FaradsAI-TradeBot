@@ -493,6 +493,16 @@ async function safeRun(name: string, fn: () => Promise<unknown>): Promise<void> 
 
 // ==================== START SCHEDULER ====================
 
+// CR-9 (2026-04-28): Codex flagged that node-cron schedules in the host's
+// LOCAL timezone unless explicit. The bot is documented as running on UTC
+// throughout (kill zones, daily reset, EOD journal "after US close"); on a
+// VPS in any non-UTC zone the EOD cron would fire at 21:30 LOCAL, NOT UTC.
+// Hetzner Nuremberg is currently UTC+1 (winter) / UTC+2 (summer), so the
+// daily Researcher would have run at 04:30 UTC and the EOD Journal at
+// 19:30 UTC. Pass {timezone: 'UTC'} on every cron.schedule below to lock
+// the contract.
+const CRON_UTC = { timezone: 'UTC' as const };
+
 export function startScheduler(): void {
   console.log('Starting scheduler...');
 
@@ -519,20 +529,20 @@ export function startScheduler(): void {
       }
       await safeRun('ICT Trading Agent', runTradingAgent);
     }
-  });
+  }, CRON_UTC);
 
   // Every 8 minutes: Capital.com session keep-alive.
-  cron.schedule('*/8 * * * *', () => pingKeepAlive());
+  cron.schedule('*/8 * * * *', () => pingKeepAlive(), CRON_UTC);
 
   // Daily at 05:30 UTC: Market Researcher (before London open)
   cron.schedule('30 5 * * *', async () => {
     await safeRun('Market Researcher (daily)', runResearcherAgent);
-  });
+  }, CRON_UTC);
 
   // Sunday at 22:00 UTC: Market Researcher (weekly outlook)
   cron.schedule('0 22 * * 0', async () => {
     await safeRun('Market Researcher (weekly)', runResearcherAgent);
-  });
+  }, CRON_UTC);
 
   // (4H ICT cron removed 2026-04-21 — redundant with the */5 min + candle-close
   // detection, which already fires at the 4H boundaries. Cost cut, no behavior
@@ -549,7 +559,7 @@ export function startScheduler(): void {
   // Sunday at 00:00 UTC: Weekly Review Agent
   cron.schedule('0 0 * * 0', async () => {
     await safeRun('Weekly Review Agent', runWeeklyReviewAgent);
-  });
+  }, CRON_UTC);
 
   // Mon-Fri at 21:30 UTC: EOD Journal Agent (W3, 2026-04-28).
   // Runs after the US close, before Asia open. Writes a short Markdown
@@ -557,7 +567,7 @@ export function startScheduler(): void {
   // Researcher cycle reads as preamble. Haiku 4.5 — informational, low-stakes.
   cron.schedule('30 21 * * 1-5', async () => {
     await safeRun('EOD Journal Agent', () => runEodJournalAgent());
-  });
+  }, CRON_UTC);
 
   // Daily at 00:05 UTC: dump previous day's reject metrics.
   // Added 2026-04-23 (P4). Spawned as a detached process so the scheduler
@@ -574,7 +584,7 @@ export function startScheduler(): void {
     proc.on('error', (err: Error) => {
       console.error(`[Scheduler] Reject-metrics dump failed to spawn: ${err.message}`);
     });
-  });
+  }, CRON_UTC);
 
   console.log('Scheduler started. Cron jobs active:');
   console.log('  */5 * * * *           — Split-position monitor + candle detection → ICT Agent');

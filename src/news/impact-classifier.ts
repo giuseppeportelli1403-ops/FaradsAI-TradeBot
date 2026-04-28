@@ -95,10 +95,14 @@ const OCR_NZ_CONTEXT: ReadonlyArray<RegExp> = [
   /\bOfficial Cash Rate\b/i,
 ];
 
-// Words that, when present, satisfy the "central-bank context" check for
-// banker surnames. Broad on purpose — almost every legit banker headline
-// will mention one of these somewhere.
+// CR-9 (2026-04-28): tightened from broad single words ("rate", "policy",
+// "chair", "governor", "president") to phrase-bound matches. Bare "rate"
+// matched "mortgage rate" / "tax rate" / "exchange rate"; bare "policy"
+// matched "tax policy" / "trade policy"; the surname false-positives this
+// gate was supposed to prevent could squeak through. Phrase-bound patterns
+// require the central-bank-specific noun phrase.
 const CB_CONTEXT_PATTERNS: ReadonlyArray<RegExp> = [
+  // Central-bank acronyms / institutions
   /\bFed\b/i,
   /\bECB\b/i,
   /\bBoE\b/i,
@@ -111,14 +115,29 @@ const CB_CONTEXT_PATTERNS: ReadonlyArray<RegExp> = [
   /\bMPC\b/i,
   /\bcentral bank\b/i,
   /\bmonetary\b/i,
-  /\bpolicy\b/i,
-  /\brate\b/i,
+
+  // Phrase-bound rate references (NOT bare "rate" — too noisy)
+  /\binterest rates?\b/i,
+  /\bpolicy rate\b/i,
+  /\bcash rate\b/i,
+  /\bbank rate\b/i,
+  /\brate (decision|hike|cut|hold|move|meeting|path|outlook)\b/i,
+
+  // Phrase-bound policy references (NOT bare "policy")
+  /\bmonetary policy\b/i,
+  /\bquantitative (easing|tightening)\b/i,
+
+  // Inflation and direction terms (high-signal)
   /\binflation\b/i,
   /\bhawkish\b/i,
   /\bdovish\b/i,
-  /\bchair\b/i,
-  /\bgovernor\b/i,
-  /\bpresident\b/i,
+
+  // Chair/governor/president — only when preceded by "Fed", "ECB", "BoE",
+  // etc — bare "chair" / "governor" alone is too broad ("board chair",
+  // "governor of California"). Use word-boundary + central-bank-name
+  // proximity. Approximation: just match "Fed Chair" / "ECB President" /
+  // "BoE Governor" style phrases; bare title words drop out of the list.
+  /\b(Fed|ECB|BoE|BoJ|RBA|RBNZ|BoC|SNB) (chair|governor|president|board)\b/i,
 ];
 
 function anyMatch(haystack: string, patterns: ReadonlyArray<RegExp>): boolean {

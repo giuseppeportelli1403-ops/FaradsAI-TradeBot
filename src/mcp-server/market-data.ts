@@ -879,21 +879,33 @@ async function fetchMarketAuxBatch(
   });
 
   // W4 (2026-04-28): enrich items whose snippet is too short for the impact
-  // classifier to score reliably. Hit Jina Reader in parallel; concatenate
-  // the body onto the summary; re-run the classifier on the enriched
-  // haystack. Failures are silent (item keeps the original summary +
-  // category). Caches per-URL for 30 min in jina-reader, so a heavy
-  // first-cycle pays the latency once and subsequent cycles serve from
-  // cache. Only enrich items below ENRICH_THRESHOLD chars to keep request
-  // volume reasonable.
+  // classifier to score reliably. Hit Jina Reader; concatenate the body
+  // onto the summary; re-run the classifier on the enriched haystack.
+  // Failures are silent (item keeps the original summary + category).
+  // Caches per-URL for 30 min in jina-reader.
+  //
+  // CR-9 (2026-04-28): concurrency-cap added at 4. Codex flagged that
+  // 10 short articles × 3s timeout = 30s worst-case stacked latency on
+  // a single fetchNewsContext call (and double on the commodity dual-
+  // source path). With concurrency=4, worst-case is ceil(10/4)*3s = 9s.
+  // Bumped down further from 5s timeout to 3s in jina-reader.ts itself.
   const ENRICH_THRESHOLD = 300;
-  const enrichments = await Promise.all(
-    items.map((item) =>
-      item.url && item.summary.length < ENRICH_THRESHOLD
-        ? fetchArticleBody(item.url)
-        : Promise.resolve(null),
-    ),
-  );
+  const ENRICH_MAX_CONCURRENCY = 4;
+  const enrichTargets: Array<{ index: number; url: string }> = [];
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i];
+    if (item.url && item.summary.length < ENRICH_THRESHOLD) {
+      enrichTargets.push({ index: i, url: item.url });
+    }
+  }
+  const enrichments: Array<string | null> = new Array(items.length).fill(null);
+  for (let cursor = 0; cursor < enrichTargets.length; cursor += ENRICH_MAX_CONCURRENCY) {
+    const batch = enrichTargets.slice(cursor, cursor + ENRICH_MAX_CONCURRENCY);
+    const results = await Promise.all(batch.map(({ url }) => fetchArticleBody(url)));
+    for (let j = 0; j < batch.length; j++) {
+      enrichments[batch[j].index] = results[j];
+    }
+  }
 
   const enriched: NewsItem[] = items.map((item, i) => {
     const body = enrichments[i];

@@ -42,14 +42,16 @@ const POST_EVENT_SHOCK_MS = 5 * 60_000;
 
 // Per-event window widening (CR-1, 2026-04-28). FOMC / NFP / CPI / major
 // rate decisions move markets violently for far longer than a generic
-// medium-impact print. Codex review flagged that the default −5/+30 window
-// is too narrow for these — a position opened 50 min before NFP is just as
-// at-risk as one 25 min before.
+// medium-impact print.
 //
-// "Wider" here means: 60 min BEFORE the event (preMs) so the bot doesn't
-// open in the lead-up, and 30 min AFTER (postMs) so we sit out the post-
-// release shock. Mnemonic: pre/post in the variable names is literal —
-// preMs = how far before, postMs = how far after.
+// Window semantics: preMs = how far BEFORE the event we start vetoing
+// new orders; postMs = how far AFTER the event we keep vetoing. So
+// preMs=60min / postMs=30min means "block new orders from 60 min before
+// the print to 30 min after". The wider preMs lets the bot stay out of
+// the lead-up; the smaller postMs lets it re-engage once the post-print
+// shock has settled. Originally these constants were described in the
+// commit message as "−30/+60" which is the OPPOSITE direction — the
+// implementation has always been 60-pre / 30-post per the CR-9 cleanup.
 const EXTRA_WIDE_PRE_MS = 60 * 60_000;
 const EXTRA_WIDE_POST_MS = 30 * 60_000;
 const EXTRA_WIDE_PATTERNS: ReadonlyArray<RegExp> = [
