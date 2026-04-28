@@ -32,7 +32,7 @@ describe('matchesHighImpactKeyword', () => {
       'Swiss National Bank policy meeting',
       'RBNZ on hold',
       'Reserve Bank of New Zealand surprises',
-      'OCR held steady at 5.25%',
+      'RBNZ OCR held steady at 5.25%',
       'Monetary policy statement released',
       'Monetary policy decision on Wednesday',
       'Monetary policy report unveiled',
@@ -41,17 +41,46 @@ describe('matchesHighImpactKeyword', () => {
     });
   });
 
-  describe('CR-2: named central bankers', () => {
+  describe('CR-2 (refined CR-5): banker surnames require central-bank context', () => {
+    // After CR-5 (2026-04-28), bare surname matches are gated on context. The
+    // text must mention the surname AND a CB-context word (Fed/BoE/SNB/RBNZ/
+    // central bank/rate/inflation/policy/hawkish/dovish/chair/governor/
+    // president/MPC/FOMC) elsewhere in title or summary.
+
     it.each([
-      'Powell: economy resilient',
-      'Lagarde signals patience',
-      'Bailey: pace of cuts gradual',
-      'Ueda hints at policy normalisation',
-      'Macklem on Canada outlook',
-      'Jordan: SNB ready to act',
-      'Orr: NZ inflation persistent',
-    ])('matches "%s" as high-impact', (title) => {
-      expect(matchesHighImpactKeyword(title, '')).toBe(true);
+      // Each example pairs a banker surname with an adjacent CB-context word
+      // — these MUST still be Cat A.
+      ['Powell: Fed to remain patient', ''],
+      ['Lagarde signals ECB patience', ''],
+      ['Bailey on BoE rate path', ''],
+      ['Ueda hints at BoJ policy normalisation', ''],
+      ['Macklem leaves rate unchanged', 'BoC governor cites inflation'],
+      ['Jordan: SNB ready to act', ''],
+      ['Orr: RBNZ inflation persistent', ''],
+      ['Powell speech', 'Fed chair on dovish pivot'],
+    ])('matches "%s" / "%s" as high-impact (surname + context)', (title, summary) => {
+      expect(matchesHighImpactKeyword(title, summary)).toBe(true);
+    });
+  });
+
+  describe('CR-5: surnames WITHOUT central-bank context must NOT false-positive', () => {
+    it.each([
+      ['Jordan tourism rebounds', 'visitor numbers up YoY'],         // country
+      ['Bailey leads team to victory', 'sports report'],              // common surname
+      ['Powell\'s biography released', 'memoir of a public figure'],  // unrelated
+      ['Macklem family law firm wins case', ''],                      // unrelated
+      ['Orr — surfing legend reflects', ''],                          // unrelated
+      ['OCR scanned the document', ''],                               // optical char recognition
+      ['OCR engine improved', ''],                                    // computer vision
+    ])('does NOT match "%s" / "%s"', (title, summary) => {
+      expect(matchesHighImpactKeyword(title, summary)).toBe(false);
+    });
+  });
+
+  describe('CR-5: OCR requires NZ-rate context to match', () => {
+    it('matches when paired with RBNZ / NZ rate context', () => {
+      expect(matchesHighImpactKeyword('RBNZ holds OCR at 5.25%', '')).toBe(true);
+      expect(matchesHighImpactKeyword('OCR decision', 'cash rate steady')).toBe(true);
     });
   });
 

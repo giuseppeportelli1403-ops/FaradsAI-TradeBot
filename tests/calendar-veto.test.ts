@@ -203,6 +203,24 @@ describe('vetoWindowForEvent — per-event window widening (CR-1)', () => {
     expect(vetoWindowForEvent({ event: 'fomc minutes' } as EconomicEvent).preMs).toBe(60 * 60_000);
     expect(vetoWindowForEvent({ event: 'NFP RELEASE' } as EconomicEvent).preMs).toBe(60 * 60_000);
   });
+
+  // CR-5 (2026-04-28): close gaps Codex flagged on second-pass review.
+  describe('CR-5: additional Tier-1 events get widened window', () => {
+    it.each([
+      'Core PCE Price Index',
+      'PCE Price Index',
+      'Average Hourly Earnings',
+      'Unemployment Rate',
+      'Retail Sales',
+      'ISM Manufacturing PMI',
+      'ISM Services PMI',
+      'ECB Press Conference',
+    ])('matches "%s" with the widened window', (eventName) => {
+      const result = vetoWindowForEvent({ event: eventName } as EconomicEvent);
+      expect(result.preMs).toBe(60 * 60_000);
+      expect(result.postMs).toBe(30 * 60_000);
+    });
+  });
 });
 
 describe('shouldVetoOrderForCalendar — per-event window integration (CR-1)', () => {

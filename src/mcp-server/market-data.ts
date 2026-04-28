@@ -18,6 +18,7 @@ import { TokenBucket } from './rate-limiter.js';
 import { CandleCache, TIMEFRAME_INTERVAL } from './candle-cache.js';
 import { matchesHighImpactKeyword } from '../news/impact-classifier.js';
 import { parseTwelveDataDatetime } from './td-datetime.js';
+import { canonicalizeUrl } from '../news/url-canonical.js';
 
 export { RateLimitQueuedError } from './rate-limiter.js';
 
@@ -311,6 +312,7 @@ export async function fetchCandles(
   const candles: Candle[] = [];
   let malformedCount = 0;
   let futureDroppedCount = 0;
+  let unparseableDatetimeCount = 0;
   // 60s tolerance: TD bars print at minute boundaries; a few hundred ms of
   // clock skew between the TD server and our VPS shouldn't cause the freshest
   // bar to be dropped as "future".
@@ -335,8 +337,18 @@ export async function fetchCandles(
     // 'YYYY-MM-DD HH:mm:ss' AND ISO forms with Z or offset (CR-3); the
     // prior inline parse silently failed on TZ-qualified inputs and let
     // future candles slip through.
+    //
+    // CR-7 (2026-04-28): when datetime is unparseable, drop the candle
+    // entirely. The prior wire-in only dropped on `tsMs > futureCutoff`,
+    // letting unparseable inputs (epoch strings, malformed locales, junk)
+    // bypass the future-drop guard — exactly the silent-admit class of
+    // bug CR-3 was meant to close. Now: null tsMs → drop + warn.
     const tsMs = parseTwelveDataDatetime(v.datetime);
-    if (tsMs !== null && tsMs > futureCutoff) {
+    if (tsMs === null) {
+      unparseableDatetimeCount++;
+      continue;
+    }
+    if (tsMs > futureCutoff) {
       futureDroppedCount++;
       continue;
     }
@@ -357,6 +369,11 @@ export async function fetchCandles(
   if (futureDroppedCount > 0) {
     console.warn(
       `[Market Data] Dropped ${futureDroppedCount} future-dated ${tdSymbol} ${interval} candle(s) — TD timezone misconfig suspected.`,
+    );
+  }
+  if (unparseableDatetimeCount > 0) {
+    console.warn(
+      `[Market Data] Dropped ${unparseableDatetimeCount} ${tdSymbol} ${interval} candle(s) with unparseable datetime — TD format change suspected.`,
     );
   }
 
@@ -926,8 +943,12 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
         // Primary (ETF) first to preserve existing rank ordering on conflict;
         // unique spot items are appended after.
         for (const item of [...items, ...spotItems]) {
-          const key = item.url && item.url.length > 0
-            ? `url:${item.url}`
+          // CR-8 (2026-04-28): canonicalize URLs before keying so http/https
+          // case, trailing slash, fragments, and utm_* tracking params don't
+          // produce different keys for the same wire story.
+          const canonicalUrl = item.url ? canonicalizeUrl(item.url) : '';
+          const key = canonicalUrl.length > 0
+            ? `url:${canonicalUrl}`
             : `tsd:${(item.title ?? '').toLowerCase().trim()}|${item.source ?? ''}|${item.published_at ?? ''}`;
           if (seen.has(key)) continue;
           seen.add(key);

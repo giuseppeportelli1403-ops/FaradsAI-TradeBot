@@ -44,7 +44,12 @@ const POST_EVENT_SHOCK_MS = 5 * 60_000;
 // rate decisions move markets violently for far longer than a generic
 // medium-impact print. Codex review flagged that the default −5/+30 window
 // is too narrow for these — a position opened 50 min before NFP is just as
-// at-risk as one 25 min before. These events get a −30/+60 window.
+// at-risk as one 25 min before.
+//
+// "Wider" here means: 60 min BEFORE the event (preMs) so the bot doesn't
+// open in the lead-up, and 30 min AFTER (postMs) so we sit out the post-
+// release shock. Mnemonic: pre/post in the variable names is literal —
+// preMs = how far before, postMs = how far after.
 const EXTRA_WIDE_PRE_MS = 60 * 60_000;
 const EXTRA_WIDE_POST_MS = 30 * 60_000;
 const EXTRA_WIDE_PATTERNS: ReadonlyArray<RegExp> = [
@@ -79,6 +84,19 @@ const EXTRA_WIDE_PATTERNS: ReadonlyArray<RegExp> = [
   /\binflation (data|report|print|reading|figure)\b/i,
   /\bGDP\b/i,
   /\bgross domestic product\b/i,
+  // CR-5 (2026-04-28): additional Tier-1 events Codex flagged as missing.
+  // Core PCE is the Fed's preferred inflation gauge — biggest USD/gold mover
+  // outside FOMC + NFP itself. Average Hourly Earnings prints with NFP and
+  // moves the wage-inflation narrative. Unemployment Rate prints same day.
+  // Retail Sales is consensus-Tier-1 USD. ISM PMIs are top-3 leading
+  // indicators. ECB press conference is the post-decision Q&A — bigger
+  // mover than the announcement itself most months.
+  /\b(core )?PCE( price index)?\b/i,
+  /\baverage hourly earnings\b/i,
+  /\bunemployment rate\b/i,
+  /\bretail sales\b/i,
+  /\bISM (manufacturing|services|composite|non[- ]?manufacturing)?( ?PMI)?\b/i,
+  /\b(ECB|BoE|BoJ|RBA|RBNZ|BoC|SNB|Fed) press conference\b/i,
 ];
 
 /**
