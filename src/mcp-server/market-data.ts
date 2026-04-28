@@ -262,12 +262,18 @@ export async function fetchCandles(
 
   let data: { status?: string; message?: string; values?: Array<Record<string, string>> };
   try {
+    // `timezone: 'UTC'` is load-bearing. Without it, TD returns datetimes in
+    // the exchange's local timezone (or CEST for some commodity feeds —
+    // observed on SILVER 2026-04-24 09:27 UTC). Mixing CEST strings with
+    // downstream `new Date(datetime)` UTC interpretation is how the bot
+    // pricing structures landed on bars that hadn't printed yet.
     ({ data } = await axios.get(`${TWELVE_DATA_BASE}/time_series`, {
       params: {
         symbol: tdSymbol,
         interval,
         outputsize: outputSize,
         apikey: apiKey,
+        timezone: 'UTC',
       },
     }));
   } catch (err) {
@@ -302,6 +308,11 @@ export async function fetchCandles(
   // the contract Candle consumers rely on.
   const candles: Candle[] = [];
   let malformedCount = 0;
+  let futureDroppedCount = 0;
+  // 60s tolerance: TD bars print at minute boundaries; a few hundred ms of
+  // clock skew between the TD server and our VPS shouldn't cause the freshest
+  // bar to be dropped as "future".
+  const futureCutoff = Date.now() + 60_000;
   for (const v of data.values || []) {
     const open = parseFloat(v.open);
     const high = parseFloat(v.high);
@@ -317,6 +328,14 @@ export async function fetchCandles(
       malformedCount++;
       continue;
     }
+    // Defense-in-depth on top of `timezone: 'UTC'` — drop any candle whose
+    // datetime parses as future. TD format is "YYYY-MM-DD HH:mm:ss"; replace
+    // space → T and append Z to force UTC parsing.
+    const tsMs = Date.parse(String(v.datetime).replace(' ', 'T') + 'Z');
+    if (Number.isFinite(tsMs) && tsMs > futureCutoff) {
+      futureDroppedCount++;
+      continue;
+    }
     candles.push({
       datetime: v.datetime,
       open,
@@ -329,6 +348,11 @@ export async function fetchCandles(
   if (malformedCount > 0) {
     console.warn(
       `[Market Data] Dropped ${malformedCount} malformed ${tdSymbol} ${interval} candle(s) with non-finite OHLC values.`,
+    );
+  }
+  if (futureDroppedCount > 0) {
+    console.warn(
+      `[Market Data] Dropped ${futureDroppedCount} future-dated ${tdSymbol} ${interval} candle(s) — TD timezone misconfig suspected.`,
     );
   }
 
@@ -447,7 +471,30 @@ export async function fetchEconomicCalendar(daysAhead: number): Promise<Economic
 //
 // yahoo-finance2 v3 dropped the singleton default export — callers must now
 // instantiate YahooFinance. Singleton is safe: no per-call state, no auth.
-const yahooFinance = new YahooFinance();
+//
+// Custom logger silences the "Requires Node >= 22.0.0, found 20.20.2.
+// Things might break or work unexpectedly!" warning that yahoo-finance2 emits
+// on every construction. The library's runtime check is stricter than its
+// actual feature use — its package.json declares engines.node >=20 and the
+// quote() endpoint we depend on works fine on Node 20 (verified live
+// 2026-04-17 → 2026-04-25). The warning was spamming pm2-out.log dozens
+// of times per day before being silenced. All other warns/errors flow
+// through unchanged.
+const yahooFinance = new YahooFinance({
+  logger: {
+    info: (...args: unknown[]) => console.info(...args),
+    warn: (...args: unknown[]) => {
+      const first = args[0];
+      if (typeof first === 'string' && first.includes('[yahoo-finance2] Unsupported environment')) {
+        return;
+      }
+      console.warn(...args);
+    },
+    error: (...args: unknown[]) => console.error(...args),
+    debug: (...args: unknown[]) => console.debug(...args),
+    dir: (...args: unknown[]) => console.dir(...args),
+  },
+});
 
 const SECTOR_ETFS: Array<{ ticker: string; sector: string }> = [
   { ticker: 'XLK', sector: 'Technology' },

@@ -639,3 +639,103 @@ describe('Twelve Data daily-cap circuit breaker', () => {
     expect(_getTwelveDataDailyCap()).not.toBeNull();
   });
 });
+
+describe('fetchCandles UTC timezone enforcement (regression: SILVER 2026-04-24 phantom-data)', () => {
+  // Background: on 2026-04-24 09:27 UTC the SILVER ICT trade analyzed candles
+  // whose `datetime` field arrived in CEST (UTC+2) instead of UTC. Two of the
+  // candles the bot treated as "most recent closed" were dated up to 2 hours
+  // in the future — pricing structures off projected/phantom bars. Planned
+  // entry 75.44 vs actual market 74.77 (0.67 pt gap). Trade voided immediately.
+  //
+  // Two-layer fix:
+  //   (a) Pass `timezone: 'UTC'` in the TD request so the API returns UTC strings
+  //   (b) Drop any candle whose datetime parses to > now() + 60s tolerance.
+  //       Defense-in-depth in case TD ever ignores the tz param or returns junk.
+
+  const originalKey = process.env.TWELVE_DATA_API_KEY;
+
+  beforeEach(() => {
+    process.env.TWELVE_DATA_API_KEY = 'test-key';
+    _resetTwelveDataState();
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    if (originalKey === undefined) delete process.env.TWELVE_DATA_API_KEY;
+    else process.env.TWELVE_DATA_API_KEY = originalKey;
+    _resetTwelveDataState();
+    vi.restoreAllMocks();
+  });
+
+  it('passes timezone=UTC to Twelve Data /time_series', async () => {
+    const getSpy = vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [
+          { datetime: '2020-01-02 17:00:00', open: '1', high: '1.01', low: '0.99', close: '1.005', volume: '0' },
+        ],
+      },
+    });
+
+    await fetchCandles('SILVER', '15m', 5);
+
+    expect(getSpy).toHaveBeenCalledTimes(1);
+    const callArgs = getSpy.mock.calls[0];
+    const params = (callArgs[1] as { params: Record<string, unknown> }).params;
+    expect(params.timezone).toBe('UTC');
+  });
+
+  it('drops candles whose datetime is in the future (CEST-as-UTC reproduction)', async () => {
+    // Reproduce the SILVER scenario: at 09:00 UTC the bot's "11:15-19:00 CEST"
+    // bars were really 11:15-19:00 UTC by string interpretation, i.e. up to
+    // 10 hours ahead. Here we mix valid past bars with future bars and assert
+    // only the past survives.
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60_000);
+    const twoHoursAgo = new Date(now.getTime() - 120 * 60_000);
+    const oneHourAhead = new Date(now.getTime() + 60 * 60_000);
+    const twoHoursAhead = new Date(now.getTime() + 120 * 60_000);
+
+    const fmt = (d: Date) => d.toISOString().slice(0, 19).replace('T', ' ');
+
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [
+          { datetime: fmt(twoHoursAhead), open: '75.44', high: '75.50', low: '75.30', close: '75.40', volume: '0' },
+          { datetime: fmt(oneHourAhead),  open: '75.20', high: '75.30', low: '75.10', close: '75.25', volume: '0' },
+          { datetime: fmt(oneHourAgo),    open: '74.80', high: '74.90', low: '74.70', close: '74.77', volume: '0' },
+          { datetime: fmt(twoHoursAgo),   open: '74.60', high: '74.80', low: '74.55', close: '74.75', volume: '0' },
+        ],
+      },
+    });
+
+    const candles = await fetchCandles('SILVER', '15m', 10);
+
+    expect(candles).toHaveLength(2);
+    expect(candles.every((c) => new Date(c.datetime + 'Z').getTime() <= Date.now())).toBe(true);
+    // Confirm the phantom 75.44 candle did NOT make it into the result.
+    expect(candles.some((c) => c.open === 75.44)).toBe(false);
+  });
+
+  it('keeps candles dated within a 60-second tolerance window for clock skew', async () => {
+    // TD bars are at minute boundaries. If we run fetchCandles at HH:MM:00.500
+    // and the latest bar is HH:MM:00.000, that bar is technically a hair in
+    // the past — but if our clock is 0.5s slow, naïvely treating it as past
+    // would still drop the freshest bar. Tolerance prevents that.
+    const veryRecentPast = new Date(Date.now() - 5_000); // 5 seconds ago
+    const fmt = (d: Date) => d.toISOString().slice(0, 19).replace('T', ' ');
+
+    vi.spyOn(axios, 'get').mockResolvedValue({
+      data: {
+        status: 'ok',
+        values: [
+          { datetime: fmt(veryRecentPast), open: '74.80', high: '74.90', low: '74.70', close: '74.77', volume: '0' },
+        ],
+      },
+    });
+
+    const candles = await fetchCandles('SILVER', '15m', 5);
+    expect(candles).toHaveLength(1);
+  });
+});

@@ -7,6 +7,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
+import { ensureTradeId } from './trade-id.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
 import { alertTradePlaced } from '../notifications/telegram.js';
 
@@ -195,7 +196,11 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       return JSON.stringify({ capital_result: confirmation, local: input });
     }
     case 'log_trade': {
-      const trade = JSON.parse(input.trade_data as string);
+      // ensureTradeId guards against the agent omitting `id` in its JSON payload.
+      // Without this, insertTrade throws "required field(s) missing: id" and the
+      // trade record never lands in the DB — exactly what happened to the SILVER
+      // trade on 2026-04-24 09:27 UTC. See src/agents/trade-id.ts.
+      const trade = ensureTradeId(JSON.parse(input.trade_data as string));
       insertTrade(trade);
       // Leg A (TP1 target) — always present.
       createSlTpOrder({ trade_id: trade.id, leg: 'A', instrument: trade.instrument, direction: trade.direction, quantity: trade.size_a, sl_price: trade.sl, tp_price: trade.tp1, deal_id: trade.position_a_id });
