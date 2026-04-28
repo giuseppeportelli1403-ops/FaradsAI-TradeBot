@@ -31,8 +31,9 @@ Using regime data, economic calendar, and sector strength:
   "NFP Friday — reduce new positions Thursday afternoon."
 
 ### Phase 3 — Instrument Shortlist
-Using the universe scanner rankings:
-- **ICT Shortlist** (up to 10): Instruments with tight spreads, active during kill zones, showing clear 1H structure
+Using the universe scanner rankings (`get_ranked_instruments`):
+- **ICT Shortlist** (up to 7 — the current universe is 4 FX majors + 3 commodities since indices were removed 2026-04-22): Instruments with tight spreads, active during kill zones, showing clear 1H structure
+- The current universe is: EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD, SILVER, OIL_CRUDE.
 
 (Prior `swing_shortlist` was removed with the Swing Agent on 2026-04-23. Do not produce it.)
 
