@@ -5,7 +5,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { dayBucket, journalPathFor, saveJournalEntry } from '../src/agents/eod-journal-agent.js';
+import {
+  dayBucket,
+  journalPathFor,
+  saveJournalEntry,
+  loadRecentJournal,
+} from '../src/agents/eod-journal-agent.js';
 
 describe('dayBucket', () => {
   it('returns YYYY-MM-DD for a UTC noon timestamp', () => {
@@ -76,5 +81,64 @@ describe('saveJournalEntry', () => {
     // saveJournalEntry must be defensive.
     saveJournalEntry(sentinelDate, '# Content');
     expect(existsSync(journalPathFor(sentinelDate))).toBe(true);
+  });
+});
+
+describe('loadRecentJournal — ICT preamble lookup (B, 2026-04-28)', () => {
+  // Sentinel dates well in the past so they don't collide with real entries.
+  const targetDate = '1999-06-15';
+  const sentinelDayBefore = '1999-06-14';
+  const sentinelTwoDaysBefore = '1999-06-13';
+
+  beforeEach(() => {
+    [sentinelDayBefore, sentinelTwoDaysBefore].forEach((d) => {
+      const path = journalPathFor(d);
+      if (existsSync(path)) rmSync(path);
+    });
+  });
+
+  afterEach(() => {
+    [sentinelDayBefore, sentinelTwoDaysBefore].forEach((d) => {
+      const path = journalPathFor(d);
+      if (existsSync(path)) rmSync(path);
+    });
+  });
+
+  it('returns yesterday\'s journal when present', () => {
+    saveJournalEntry(sentinelDayBefore, '# Yesterday\n\nWe traded EURUSD.');
+    const result = loadRecentJournal(new Date(`${targetDate}T08:00:00Z`));
+    expect(result).not.toBeNull();
+    expect(result!.date).toBe(sentinelDayBefore);
+    expect(result!.markdown).toContain('EURUSD');
+  });
+
+  it('walks back to find the most recent journal when yesterday is missing', () => {
+    // Skip yesterday; only "two days ago" exists. Simulates Monday morning
+    // looking back to Friday across the weekend gap.
+    saveJournalEntry(sentinelTwoDaysBefore, '# Two days ago');
+    const result = loadRecentJournal(new Date(`${targetDate}T08:00:00Z`));
+    expect(result).not.toBeNull();
+    expect(result!.date).toBe(sentinelTwoDaysBefore);
+  });
+
+  it('returns null when no journal exists in the lookback window', () => {
+    // No journal saved. Default maxLookbackDays=5 covers 5 prior dates.
+    const result = loadRecentJournal(new Date(`${targetDate}T08:00:00Z`));
+    expect(result).toBeNull();
+  });
+
+  it('respects custom maxLookbackDays — narrower window misses older entry', () => {
+    // Two days ago, but ask only 1 day back.
+    saveJournalEntry(sentinelTwoDaysBefore, '# Two days ago');
+    const result = loadRecentJournal(new Date(`${targetDate}T08:00:00Z`), 1);
+    expect(result).toBeNull();
+  });
+
+  it('prefers the most recent (yesterday wins over 2-days-ago)', () => {
+    saveJournalEntry(sentinelTwoDaysBefore, '# Older');
+    saveJournalEntry(sentinelDayBefore, '# Newer');
+    const result = loadRecentJournal(new Date(`${targetDate}T08:00:00Z`));
+    expect(result!.date).toBe(sentinelDayBefore);
+    expect(result!.markdown).toContain('Newer');
   });
 });

@@ -11,7 +11,7 @@
 // decisive). Mixed model assignment 2026-04-28.
 
 import Anthropic from '@anthropic-ai/sdk';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { loadPromptWithSystemTime } from './load-prompt.js';
@@ -45,6 +45,36 @@ export function dayBucket(now: Date): {
 
 export function journalPathFor(date: string): string {
   return join(JOURNAL_DIR, `${date}.md`);
+}
+
+/**
+ * Read the most recent journal entry on or before `now − 1 day`. Walks back
+ * up to `maxLookbackDays` (default 5) to handle weekend gaps — Monday morning's
+ * ICT cycle reaches for Friday's journal. Returns null when no entry exists
+ * in the lookback window (e.g. first day after deploy).
+ *
+ * Used by the ICT Trading Agent to prepend yesterday's reflection to its
+ * decision-cycle context message — closes the W3 loop so the EOD journal
+ * actually informs the next day's trades.
+ */
+export function loadRecentJournal(
+  now: Date = new Date(),
+  maxLookbackDays: number = 5,
+): { date: string; markdown: string } | null {
+  for (let i = 1; i <= maxLookbackDays; i++) {
+    const d = new Date(now);
+    d.setUTCDate(d.getUTCDate() - i);
+    const date = d.toISOString().slice(0, 10);
+    const path = journalPathFor(date);
+    if (existsSync(path)) {
+      try {
+        return { date, markdown: readFileSync(path, 'utf-8') };
+      } catch {
+        // Read errored — skip this date and try the next one
+      }
+    }
+  }
+  return null;
 }
 
 /**

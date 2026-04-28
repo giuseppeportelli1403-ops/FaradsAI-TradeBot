@@ -8,6 +8,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
 import { ensureTradeId } from './trade-id.js';
+import { loadRecentJournal } from './eod-journal-agent.js';
 import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
 import { alertTradePlaced } from '../notifications/telegram.js';
@@ -285,10 +286,21 @@ export async function runTradingAgent(): Promise<void> {
   const systemPrompt = loadPromptWithDemoContext('ict-agent.md');
   const strategy = loadStrategy('strategy.md');
   const brief = getLatestBrief();
+  // B (2026-04-28): preload yesterday's EOD journal so the ICT cycle
+  // starts with "yesterday I learned X" preamble. Walks back up to 5 days
+  // to handle weekend gaps (Mon morning reaches for Fri's journal).
+  // Returns null on first-day-after-deploy or extended downtime.
+  const journal = loadRecentJournal();
 
   const contextMessage = `Current UTC time: ${new Date().toISOString()}
 
-STRATEGY FILE:
+${journal ? `YESTERDAY'S JOURNAL (${journal.date}) — read this before deciding, it captures patterns from the most recent trading day:
+
+${journal.markdown}
+
+---
+
+` : ''}STRATEGY FILE:
 ${strategy}
 
 ${brief ? `LATEST RESEARCH BRIEF:
