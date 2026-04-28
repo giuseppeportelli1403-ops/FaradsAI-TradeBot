@@ -7,6 +7,8 @@ import { writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { loadPromptWithSystemTime, loadStrategy } from './load-prompt.js';
+import { extractText, parseLastJsonObject, withTimeout } from './llm-output.js';
+import { alertSystemWarning } from '../notifications/telegram.js';
 import { getTradesForWeek, getLessons, getLessonWinRate } from '../database/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -46,7 +48,11 @@ export async function runWeeklyReviewAgent(): Promise<string> {
     return 'No trades to review.';
   }
 
-  const response = await anthropic.messages.create({
+  // 2026-04-29 audit: 60s timeout (Codex AN6). Weekly Review runs only once
+  // per week with effort='max' so Sonnet can take longer; 60s is generous.
+  const timeoutMs = 60_000;
+  const response = await withTimeout(
+    anthropic.messages.create({
     // Cost optimisation (2026-04-21): weekly review runs once per week,
     // so absolute cost is small either way, but keeping all agents on a
     // single model family simplifies cache-warming + reasoning about
@@ -81,88 +87,113 @@ CURRENT SWING STRATEGY:
 ${swingStrategy}
 
 Produce your weekly report and strategy update instructions.`,
-    }],
+      }],
+    }),
+    timeoutMs,
+    'Weekly Review',
+  ).catch((err) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Review] API call failed: ${msg}`);
+    return null;
   });
 
-  const text = response.content[0].type === 'text' ? response.content[0].text : '';
+  if (response === null) {
+    await alertSystemWarning('Weekly Review Agent failed to call Anthropic API. No strategy updates this week.').catch(() => {});
+    return 'Weekly Review API failure — see pm2-err.log.';
+  }
 
-  try {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('No JSON in response');
+  // 2026-04-29 audit fix (P0-A1): use extractText to read all blocks. Pre-
+  // fix `content[0].type === 'text'` returned '' whenever adaptive thinking
+  // was first; the catch silently lost the entire week's review.
+  const text = extractText(response.content);
 
-    const result = JSON.parse(match[0]);
+  // 2026-04-29 audit fix (P0-RV1, RV3): parseLastJsonObject (balanced-brace,
+  // last-object). Pre-fix the greedy regex matched from first `{` to last
+  // `}` and could splice prose example objects.
+  const result = parseLastJsonObject<{
+    report?: string;
+    ict_updates?: Array<{ section: string; change: string; basis: string }>;
+    banned_patterns?: Array<{ pattern: string; win_rate: string; trade_count: number }>;
+    alerts?: string[];
+  }>(text);
 
-    // Log the report
-    console.log('=== WEEKLY PERFORMANCE REPORT ===');
-    console.log(result.report || 'No report generated');
-
-    // Apply ICT strategy updates.
-    // Codex P1 #5 (2026-04-28): pre-fix this block ONLY appended to the
-    // change log; it never patched the actual rule sections. Now we
-    // pattern-match "Increase X weight from Y to Z" instructions and
-    // perform a conservative in-place edit of Section 5 (the scoring
-    // rubric). Anything not matching the supported pattern still falls
-    // through to the audit-log append.
-    if (result.ict_updates?.length > 0) {
-      const date = new Date().toISOString().split('T')[0];
-      let workingStrategy = ictStrategy;
-      const newChangeLogRows: string[] = [];
-      let patchedCount = 0;
-
-      for (const u of result.ict_updates as Array<{ section: string; change: string; basis: string }>) {
-        // Pattern 1: "Increase X weight from Y to Z" / "Decrease X weight from Y to Z"
-        // Where X is a setup type or component name, Y/Z are numeric weights.
-        const weightChangeMatch = /(?:Increase|Decrease|Set|Adjust|Change)\s+(.+?)\s+weight\s+(?:from\s+(\d+(?:\.\d+)?)\s+)?to\s+(\d+(?:\.\d+)?)/i.exec(u.change);
-        if (weightChangeMatch) {
-          const [, _component, oldWeight, newWeight] = weightChangeMatch;
-          if (oldWeight) {
-            // Replace specific weight value in Section 5 table. Conservative:
-            // only swap if the exact numeric appears as a standalone token in
-            // Section 5. Avoids accidentally touching other tables.
-            const section5Re = /(## Section 5[\s\S]*?)(?=## Section 6)/;
-            workingStrategy = workingStrategy.replace(section5Re, (match) => {
-              const updated = match.replace(
-                new RegExp(`\\b${oldWeight}\\b`, 'g'),
-                newWeight,
-              );
-              return updated;
-            });
-            patchedCount++;
-          }
-        }
-        newChangeLogRows.push(`| ${date} | Weekly Review Agent | ${u.change} | ${u.basis} |`);
-      }
-
-      // Always also append to the change log so the audit trail is preserved.
-      workingStrategy = workingStrategy + '\n' + newChangeLogRows.join('\n');
-      saveFile('strategy.md', workingStrategy);
-      console.log(`ICT strategy updated: ${result.ict_updates.length} entries logged, ${patchedCount} sections patched`);
-    }
-
-    // Apply Swing strategy updates
-    if (result.swing_updates?.length > 0) {
-      const date = new Date().toISOString().split('T')[0];
-      const newEntries = result.swing_updates
-        .map((u: { section: string; change: string; basis: string }) =>
-          `| ${date} | Weekly Review Agent | ${u.change} | ${u.basis} |`)
-        .join('\n');
-
-      const updatedSwing = swingStrategy + '\n' + newEntries;
-      saveFile('swing_strategy.md', updatedSwing);
-      console.log(`Swing strategy updated: ${result.swing_updates.length} changes`);
-    }
-
-    // Log alerts
-    if (result.alerts?.length > 0) {
-      for (const alert of result.alerts) {
-        console.warn(`[ALERT] ${alert}`);
-      }
-    }
-
-    return result.report || text;
-  } catch (error) {
-    console.error('Failed to parse weekly review:', error);
-    console.log('Raw response:', text);
+  if (result === null) {
+    console.error('[Review] Failed to parse weekly review JSON. Raw response:');
+    console.error(text.length > 2000 ? text.slice(0, 2000) + '...[truncated]' : text);
+    // Fail loudly via Telegram so Giuseppe knows the week's review is lost.
+    await alertSystemWarning('Weekly Review Agent JSON parse failed — no strategy updates applied this week. Check pm2-err.log.').catch(() => {
+      /* don't let alert failure mask the real failure */
+    });
     return text;
   }
+
+  // Log the report
+  console.log('=== WEEKLY PERFORMANCE REPORT ===');
+  console.log(result.report || 'No report generated');
+
+  // 2026-04-29 audit fix (P0-RV1, RV2, RV3): DISABLE auto-write.
+  // The prior section-patcher had multiple silent corruption paths:
+  //   - Tier-threshold values (80/60/45) lived in same Section 5 region as
+  //     scoring weights — \\b80\\b would replace the Tier 1 cutoff.
+  //   - "Increase X from 10 to 20" replaced both +10 and -10 in news scoring.
+  //   - "Bump"/"Raise"/arrow phrasings escaped the regex silently.
+  //   - Greedy `(?=## Section 6)` lookahead let `[\s\S]*` swallow Section 7
+  //     if Section 6 was missing.
+  // Until the patcher is rewritten to operate on table-row anchors (Codex
+  // recommendation), we run AUDIT-ONLY: log proposed changes to the change
+  // log, never modify rule sections. Banned patterns + alerts are surfaced.
+  //
+  // Codex final-review fix (P1, 2026-04-29): single mutable `workingStrategy`
+  // through the whole function. Pre-fix the banned-patterns block reset
+  // workingStrategy = ictStrategy, so banned-patterns saves OVERWROTE the
+  // ict_updates change-log rows that had just been written.
+  let workingStrategy = ictStrategy;
+  let strategyMutated = false;
+  const date = new Date().toISOString().slice(0, 10);
+
+  if (result.ict_updates && result.ict_updates.length > 0) {
+    const newChangeLogRows = result.ict_updates.map(
+      (u) => `| ${date} | Weekly Review Agent (PROPOSED, NOT APPLIED) | ${u.change} | ${u.basis} |`,
+    );
+    workingStrategy = workingStrategy + '\n' + newChangeLogRows.join('\n');
+    strategyMutated = true;
+    console.log(`[Review] ICT updates: ${result.ict_updates.length} PROPOSED, 0 applied (auto-write disabled per 2026-04-29 audit).`);
+  }
+
+  // 2026-04-29 audit fix (P0-RV4): banned_patterns was being silently
+  // dropped — code didn't handle it at all. Now we append to Section 6
+  // of strategy.md when patterns are present.
+  if (result.banned_patterns && result.banned_patterns.length > 0) {
+    const bannedRows = result.banned_patterns.map(
+      (p) => `| ${p.pattern} | ${p.win_rate} | ${p.trade_count} | ${date} |`,
+    );
+    // Conservative: append after the placeholder comment line in Section 6.
+    // Won't delete anything; just adds rows.
+    const section6PlaceholderRe = /(## Section 6: Banned Patterns[\s\S]*?<!-- Format[^\n]*-->\n)/;
+    if (section6PlaceholderRe.test(workingStrategy)) {
+      workingStrategy = workingStrategy.replace(section6PlaceholderRe, `$1\n${bannedRows.join('\n')}\n`);
+      strategyMutated = true;
+      console.log(`[Review] Banned ${result.banned_patterns.length} pattern(s) under Section 6.`);
+    } else {
+      console.warn('[Review] Could not locate Section 6 placeholder — banned patterns NOT applied. Manual update required.');
+    }
+  }
+
+  // Single save for the whole pass — eliminates the overwrite race.
+  if (strategyMutated) {
+    saveFile('strategy.md', workingStrategy);
+  }
+
+  // 2026-04-29 audit fix (P0-RV5): SYSTEM_REVIEW + other alerts now go to
+  // Telegram, not just console.warn. Pre-fix Giuseppe never saw them.
+  if (result.alerts && result.alerts.length > 0) {
+    for (const alert of result.alerts) {
+      console.warn(`[ALERT] ${alert}`);
+      await alertSystemWarning(`Weekly Review alert: ${alert}`).catch(() => {
+        /* don't let alert failure block the rest */
+      });
+    }
+  }
+
+  return result.report || text;
 }

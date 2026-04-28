@@ -6,10 +6,11 @@
 // from AGENT_SYSTEM_PROMPTS_V3 Section 1 to guide its reasoning.
 
 import Anthropic from '@anthropic-ai/sdk';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
 import { ensureTradeId } from './trade-id.js';
 import { loadRecentJournal } from './eod-journal-agent.js';
+import { withTimeout } from './llm-output.js';
 import { runAnalystAgent, type TradeProposal } from './analyst-agent.js';
 import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
 import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
@@ -46,12 +47,23 @@ export function _resetAnalystApprovals(): void {
  * analyst_token. The agent cannot mutate proposal fields between approval
  * and placement: place_split_trade re-hashes the supplied proposal and
  * verifies it matches the analyst_token.
+ *
+ * 2026-04-29 audit fix (P0-TA2): expanded the canonical projection to
+ * include `instrument`, `instrument_category`, and `kill_zone`. Pre-fix
+ * the hash was anchored on `epic` only — usually identical to instrument
+ * but if they ever diverged the coordination lock + DB persistence used
+ * `instrument` while the hash anchored on `epic`. Including all three
+ * eliminates any opportunity for the LLM to swap them between approval
+ * and placement. instrument_category and kill_zone affect tier sizing
+ * downstream and were similarly omitted.
  */
-export function proposalHash(proposal: TradeProposal): string {
+export function proposalHash(proposal: Omit<TradeProposal, 'trade_id'>): string {
   // Canonicalise: explicit field order, fixed precision on numbers, lower-
   // case strings where applicable. Drop fields that don't affect the trade
-  // identity (trade_id is generated post-approval; reasoning is free-text).
+  // identity (trade_id is generated FROM this hash; reasoning is free-text).
   const canonical = {
+    instrument: proposal.instrument.toUpperCase(),
+    instrument_category: proposal.instrument_category.toLowerCase(),
     epic: proposal.epic.toUpperCase(),
     direction: proposal.direction,
     entry: Number(proposal.entry.toFixed(5)),
@@ -66,6 +78,7 @@ export function proposalHash(proposal: TradeProposal): string {
     tier: proposal.tier,
     total_risk_pct: Number(proposal.total_risk_pct.toFixed(4)),
     setup_type: proposal.setup_type.toLowerCase(),
+    kill_zone: proposal.kill_zone.toLowerCase(),
     strategy_tag: proposal.strategy_tag,
   };
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16);
@@ -314,13 +327,21 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       return JSON.stringify({ lessons, win_rate: wr });
     }
     case 'request_analyst_review': {
-      // Codex P0 #1 fix (2026-04-28): wire the Analyst Agent into the actual
-      // decision path. The agent calls this BEFORE place_split_trade.
-      // Returns analyst_token = proposalHash(proposal) on APPROVE.
+      // 2026-04-29 audit fix (P0-AN1): trade_id chain. Pre-fix this case
+      // generated trade-{8hex} for the analyst_log row, and place_split_trade
+      // separately generated trade-{12hex} for trades.id — different hashes,
+      // different lengths, no possible JOIN. Every analyst_log row was
+      // ORPHANED and Weekly Review's calibration calc was permanently broken.
+      //
+      // Fix: derive trade_id deterministically from the proposal hash. The
+      // hash is content-addressed and stable; place_split_trade re-hashes
+      // and uses the SAME `trade-${hash}` as trades.id, so analyst_log.trade_id
+      // joins to trades.id by construction.
       pruneStaleApprovals();
-      const proposal: TradeProposal = {
-        trade_id: `trade-${createHash('sha256').update(`${Date.now()}-${input.instrument}-${input.direction}`).digest('hex').slice(0, 8)}`,
-        strategy_tag: 'ICT_INTRADAY',
+      const proposalDraft = {
+        // trade_id placeholder — overwritten below with a unique id.
+        trade_id: '',
+        strategy_tag: 'ICT_INTRADAY' as const,
         instrument: String(input.instrument),
         epic: String(input.epic ?? input.instrument),
         instrument_category: String(input.instrument_category ?? 'unknown'),
@@ -340,8 +361,19 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         kill_zone: String(input.kill_zone),
         reasoning: String(input.reasoning ?? ''),
       };
+      const hash = proposalHash(proposalDraft);
+      // Codex P1 (final review, 2026-04-29): unique trade_id, NOT
+      // `trade-${hash}` directly. The hash is content-addressed and
+      // identical for identical proposals; if the same setup recurs
+      // (e.g. EURUSD long at 1.0850 SL 1.0830 — common pattern), the
+      // second trade would collide on trades.id PRIMARY KEY at the
+      // DB write step in place_split_trade. Use `trade-${hash}-${uuid}`
+      // for uniqueness; the hash is still part of the id for
+      // log-grepping and is still in the analyst_token for verification.
+      const tradeId = `trade-${hash}-${randomUUID().slice(0, 8)}`;
+      const proposal: TradeProposal = { ...proposalDraft, trade_id: tradeId };
+
       const decision = await runAnalystAgent(proposal);
-      const hash = proposalHash(proposal);
       if (decision.decision === 'APPROVE') {
         approvedProposals.set(hash, { approvedAt: Date.now(), proposal });
       }
@@ -350,6 +382,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         reason: decision.reason,
         analyst_token: hash,
         proposal_hash: hash,
+        trade_id: proposal.trade_id,
         confidence: decision.confidence,
         modifications: decision.modifications,
       });
@@ -462,12 +495,68 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         });
       }
 
+      // === Step 3.5: code-enforced 6% daily kill switch (Codex P0-TA1, 2026-04-29)
+      // strategy.md Section 7.2 says daily 6% loss is non-negotiable.
+      // Pre-fix this was only visible to the LLM via get_daily_pnl as a
+      // FLAG — no code-level gate. Now enforced before any order touches
+      // Capital.
+      try {
+        const balance = await getPreferredAccountBalance();
+        const today = new Date().toISOString().split('T')[0];
+        const daily = getDailyPnl(today);
+        const pnl = balance.profitLoss + (daily?.realised_pnl ?? 0);
+        const equity = balance.balance;
+        const pct = equity ? (pnl / equity) * 100 : 0;
+        if (pct <= -6) {
+          console.error(`[ICT Agent] DAILY KILL SWITCH ACTIVE: ${pct.toFixed(2)}% — refusing place_split_trade for ${input.instrument}.`);
+          return JSON.stringify({
+            error: 'DAILY_KILL_SWITCH_ACTIVE',
+            reason: `Daily P&L is ${pct.toFixed(2)}% — at or beyond the -6% kill-switch threshold. No new positions until UTC midnight.`,
+            current_pct: pct,
+            threshold_pct: -6,
+          });
+        }
+      } catch (err) {
+        // Fail-CLOSED on inability to read balance/PnL. A risk gate cannot
+        // be allowed to silently bypass on data-source failure.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[ICT Agent] DAILY P&L FETCH FAILED: ${msg}. Refusing place_split_trade — cannot verify kill switch.`);
+        return JSON.stringify({
+          error: 'DAILY_PNL_FETCH_FAILED',
+          reason: `Cannot verify daily kill switch: ${msg}. Refusing order — risk gate fails closed.`,
+        });
+      }
+
       // === Step 4: code-enforced coordination lock
+      // 2026-04-29 audit fix (P0-TA3): check BOTH the local DB AND the
+      // live Capital state. Pre-fix the lock checked only the DB, so a
+      // restart with empty DB while Capital had open positions would let
+      // the LLM open a duplicate. Now we union the two.
       const existing = getOpenTradesByInstrument(String(input.instrument));
       if (existing.length > 0) {
         return JSON.stringify({
           error: 'COORDINATION_LOCK',
-          reason: `An open ${input.instrument} position already exists (trade_id=${existing[0].id}, status=${existing[0].status}). Coordination lock prevents duplicate-instrument entries.`,
+          reason: `An open ${input.instrument} position already exists in DB (trade_id=${existing[0].id}, status=${existing[0].status}). Coordination lock prevents duplicate-instrument entries.`,
+        });
+      }
+      try {
+        const livePositions = await capital.getOpenPositions();
+        const sameEpic = livePositions.filter(
+          (p) => String(p.market?.epic ?? '').toUpperCase() === epic.toUpperCase(),
+        );
+        if (sameEpic.length > 0) {
+          return JSON.stringify({
+            error: 'COORDINATION_LOCK_LIVE',
+            reason: `Capital.com has ${sameEpic.length} live position(s) on ${epic} that are NOT in the local DB. Possible orphan from a prior session — manual reconciliation required before opening more.`,
+            live_deal_ids: sameEpic.map((p) => p.position?.dealId).filter(Boolean),
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[ICT Agent] LIVE POSITION CHECK FAILED for ${epic}: ${msg}. Refusing place_split_trade — coordination gate fails closed.`);
+        return JSON.stringify({
+          error: 'LIVE_POSITION_CHECK_FAILED',
+          reason: `Cannot verify Capital.com live state for coordination lock: ${msg}. Refusing order — fails closed.`,
         });
       }
 
@@ -497,6 +586,16 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           });
         }
       }
+
+      // === Step 5.5: consume the approval BEFORE placement begins
+      // 2026-04-29 audit fix (P1-TA4): pre-fix the approval was deleted
+      // AFTER the DB write succeeded. If DB write failed (rare but
+      // possible), the approval token stayed alive in the Map for the
+      // 10-min TTL — a duplicate place_split_trade call with the same
+      // token could attempt a duplicate trade. Now we delete BEFORE we
+      // touch Capital — once placement starts, the token is gone whether
+      // the placement succeeds or fails.
+      approvedProposals.delete(hash);
 
       // === Step 6: place legs sequentially with compensation
       const tsCompact = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
@@ -550,7 +649,13 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       }
 
       // === Step 7: persist trade record + SL/TP rows + Telegram alert
-      const tradeId = `trade-${createHash('sha256').update(`${Date.now()}-${input.instrument}-${direction}-${labelBase}`).digest('hex').slice(0, 12)}`;
+      // 2026-04-29 audit fix (P0-AN1): use the trade_id from the approved
+      // proposal — the ONE generated in request_analyst_review and stored
+      // in the approval map. analyst_log.trade_id row was written with this
+      // exact id when the Analyst returned APPROVE, so trades.id JOINs
+      // cleanly. Codex final-review fix: this id includes a UUID suffix to
+      // prevent collision when the same setup recurs across time.
+      const tradeId = approval.proposal.trade_id;
       // The tradeRow shape is the agent's payload that insertTrade
       // normalises defensively. We use `as any` here because Parameters<
       // typeof insertTrade>[0] resolves to a strict type that TS struggles
@@ -608,8 +713,8 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         });
       }
 
-      // Mark approval consumed so the same token can't be reused
-      approvedProposals.delete(hash);
+      // Approval was consumed at step 5.5 (before placement) so we don't
+      // re-delete here. (Comment kept as breadcrumb for the next reader.)
 
       await alertTradePlaced(tradeRow);
       console.log(`[ICT Agent] Trade placed: ${tradeId} ${input.instrument} ${direction} ${score}/T${tier} (3 legs)`);
@@ -688,8 +793,21 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
   // borderline cases, significant tail-cost saving.
   const maxIterations = 8;
 
+  // 2026-04-29 audit (continued bug hunt): the ICT main loop had no per-
+  // iteration timeout. With 8 iterations and the SDK's 600s default, a
+  // wedged Anthropic call could hold the cycle for 80 minutes. Now each
+  // iteration has a 90s budget — long enough for typical thinking +
+  // tool-routing, short enough that 8 wedged iterations is "only" 12 min
+  // (still bad, but bounded). A wedged iteration throws, the loop's
+  // outer scheduler catches it via safeRun.
+  const iterationTimeoutMs = 90_000;
+  // Track whether the loop exited via `break` (clean end_turn) or by
+  // exhausting maxIterations. Codex final-review P2: pre-fix the
+  // "CYCLE TIMED OUT" log fired even on a clean break.
+  let cleanlyCompleted = false;
+
   for (let i = 0; i < maxIterations; i++) {
-    const response = await anthropic.messages.create({
+    const response = await withTimeout(anthropic.messages.create({
       // Cost optimisation (2026-04-21): ICT reasoning is quantitative
       // (order blocks, FVGs, structure detection, R:R math). Sonnet 4.6
       // handles this well at roughly 1/3 the token cost of Opus. The ICT
@@ -713,7 +831,7 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       tools: MCP_TOOLS,
       messages,
-    });
+    }), iterationTimeoutMs, `ICT iter ${i + 1}/${maxIterations}`);
 
     // Collect text and thinking output
     for (const block of response.content) {
@@ -727,6 +845,7 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
     // If stop_reason is end_turn, the agent is done
     if (response.stop_reason === 'end_turn') {
       console.log('ICT Trading Agent decision cycle complete.');
+      cleanlyCompleted = true;
       break;
     }
 
@@ -764,9 +883,14 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
   // already completed (placed orders persist), but it's worth knowing
   // the agent was still mid-thought when the hammer dropped.
   // No Telegram alert here to avoid noise; pm2 log review covers it.
-  console.error(
-    `[ICT Agent] CYCLE TIMED OUT after ${maxIterations} iterations without end_turn. ` +
-      `Decision may be incomplete. If this happens repeatedly, raise the cap or audit ` +
-      `which tool the agent is looping on.`,
-  );
+  // Codex final-review P2 (2026-04-29): only log the warning when the
+  // loop exhausted iterations — pre-fix it fired on every clean
+  // end_turn break too, polluting pm2-err.log.
+  if (!cleanlyCompleted) {
+    console.error(
+      `[ICT Agent] CYCLE TIMED OUT after ${maxIterations} iterations without end_turn. ` +
+        `Decision may be incomplete. If this happens repeatedly, raise the cap or audit ` +
+        `which tool the agent is looping on.`,
+    );
+  }
 }

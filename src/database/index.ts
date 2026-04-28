@@ -544,24 +544,64 @@ export function countOpenPositions(): number {
 
 // ==================== LESSONS ====================
 
+// 2026-04-29 audit fix (P0-RF1): the lessons table schema declares
+// `position_c_outcome` and `pnl_c_r` columns (added 2026-04-21 with the
+// 3-leg upgrade), the Lesson interface declares them, the prompt asks
+// the LLM for them — but pre-fix this INSERT statement OMITTED both
+// columns. Every Reflection run silently dropped the Leg-C outcome on
+// the floor, leaving NULLs in the data the Weekly Review Agent learns
+// from. Pre-fix shape: 25 columns, 25 placeholders. Post-fix: 27 each.
+//
+// 2026-04-29 audit fix (P1-RF3): boolean coercion. Pre-fix
+// `lesson.was_bias_correct ? 1 : 0` would coerce the STRING "false" to
+// 1 because non-empty strings are truthy in JS. The LLM occasionally
+// emits stringy booleans. coerceBool() below strictly maps the
+// recognised true-shapes only; everything else (including "false",
+// null, undefined, NaN) maps to 0.
+function coerceBool(v: unknown): 0 | 1 {
+  if (v === true) return 1;
+  if (typeof v === 'number') return v === 1 ? 1 : 0;
+  if (typeof v === 'string') {
+    const lower = v.toLowerCase().trim();
+    return lower === 'true' || lower === 'yes' || lower === '1' ? 1 : 0;
+  }
+  return 0;
+}
+
+function asNumOrNull(v: unknown): number | null {
+  if (v === undefined || v === null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function asStrOrNull(v: unknown): string | null {
+  if (v === undefined || v === null) return null;
+  return String(v);
+}
+
 export function insertLesson(lesson: Lesson): void {
   db.run(`
     INSERT INTO lessons (lesson_id, timestamp, strategy_tag, instrument, instrument_category,
       direction, setup_type, kill_zone, hold_duration, news_category, news_description,
-      composite_score, analyst_decision, position_a_outcome, position_b_outcome,
-      pnl_a_r, pnl_b_r, pnl_total_r, was_bias_correct, was_trigger_valid,
+      composite_score, analyst_decision, position_a_outcome, position_b_outcome, position_c_outcome,
+      pnl_a_r, pnl_b_r, pnl_c_r, pnl_total_r, was_bias_correct, was_trigger_valid,
       was_news_correctly_weighted, was_split_execution_clean, score_accuracy_notes,
       lesson, rule_suggestion)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     lesson.lesson_id, lesson.timestamp, lesson.strategy_tag, lesson.instrument,
     lesson.instrument_category, lesson.direction, lesson.setup_type, lesson.kill_zone,
-    lesson.hold_duration, lesson.news_category, lesson.news_description,
-    lesson.composite_score, lesson.analyst_decision, lesson.position_a_outcome,
-    lesson.position_b_outcome, lesson.pnl_a_r, lesson.pnl_b_r, lesson.pnl_total_r,
-    lesson.was_bias_correct ? 1 : 0, lesson.was_trigger_valid ? 1 : 0,
-    lesson.was_news_correctly_weighted ? 1 : 0, lesson.was_split_execution_clean ? 1 : 0,
-    lesson.score_accuracy_notes, lesson.lesson, lesson.rule_suggestion,
+    asStrOrNull(lesson.hold_duration), asStrOrNull(lesson.news_category), asStrOrNull(lesson.news_description),
+    asNumOrNull(lesson.composite_score), asStrOrNull(lesson.analyst_decision),
+    asStrOrNull(lesson.position_a_outcome), asStrOrNull(lesson.position_b_outcome),
+    asStrOrNull(lesson.position_c_outcome), // 2026-04-29 audit fix
+    asNumOrNull(lesson.pnl_a_r), asNumOrNull(lesson.pnl_b_r),
+    asNumOrNull(lesson.pnl_c_r), // 2026-04-29 audit fix
+    asNumOrNull(lesson.pnl_total_r),
+    coerceBool(lesson.was_bias_correct), coerceBool(lesson.was_trigger_valid),
+    coerceBool(lesson.was_news_correctly_weighted), coerceBool(lesson.was_split_execution_clean),
+    asStrOrNull(lesson.score_accuracy_notes), String(lesson.lesson ?? ''),
+    asStrOrNull(lesson.rule_suggestion),
   ]);
   saveToFile();
 }

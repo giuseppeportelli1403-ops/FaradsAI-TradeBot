@@ -344,6 +344,17 @@ export interface RegimeData {
     us10y: number;
     us30y: number;
   };
+  // 2026-04-29 audit fix (P0-R3): the Researcher prompt promises a
+  // risk-on / risk-off / mixed classification but the code never
+  // produced one. Now computed deterministically from yield-curve
+  // shape + sector dispersion (see classifyRegime in researcher-agent.ts).
+  // Optional so historical pre-2026-04-29 briefs in the DB still parse.
+  classification?: 'risk-on' | 'risk-off' | 'mixed' | 'unknown';
+  // 2026-04-29 audit fix (P0-R2): sector strength was being fetched
+  // for theme extraction but dropped from the saved brief. Persist it
+  // so the ICT agent / Weekly Review can see what sector rotation
+  // looked like on a given day. Optional for backwards compat.
+  sectors?: SectorStrength[];
 }
 
 export interface SectorStrength {

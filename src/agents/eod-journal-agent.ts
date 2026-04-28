@@ -16,6 +16,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { loadPromptWithSystemTime } from './load-prompt.js';
 import { loadStrategy } from './load-prompt.js';
+import { extractText, withTimeout } from './llm-output.js';
 import { getTradesForWeek, getLessons, getDailyPnl, getLatestBrief } from '../database/index.js';
 
 const anthropic = new Anthropic();
@@ -113,15 +114,21 @@ export async function runEodJournalAgent(now: Date = new Date()): Promise<string
 
   const systemPrompt = loadPromptWithSystemTime('eod-journal.md', now);
 
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2000,
-    thinking: { type: 'adaptive' },
-    output_config: { effort: 'medium' },
-    system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-    messages: [{
-      role: 'user',
-      content: `EOD CONTEXT — ${bucket.date}
+  // 2026-04-29 audit: 30s timeout (Codex AN6 — Anthropic SDK default is
+  // 600s, way too long for a daily summary).
+  const timeoutMs = 30_000;
+  let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
+  try {
+    response = await withTimeout(
+      anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2000,
+        thinking: { type: 'adaptive' },
+        output_config: { effort: 'medium' },
+        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+        messages: [{
+          role: 'user',
+          content: `EOD CONTEXT — ${bucket.date}
 
 DAILY P&L: ${dailyPnl ? JSON.stringify(dailyPnl) : 'No P&L record for today.'}
 
@@ -138,10 +145,22 @@ CURRENT STRATEGY (excerpt):
 ${strategy.slice(0, 2000)}
 
 Write the journal entry in the exact Markdown format from your system prompt. Output ONLY the Markdown document — no JSON, no preamble.`,
-    }],
-  });
+        }],
+      }),
+      timeoutMs,
+      'EOD Journal',
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[EOD Journal] API call failed for ${bucket.date}: ${msg}.`);
+    return '';
+  }
 
-  const text = response.content[0]?.type === 'text' ? response.content[0].text : '';
+  // 2026-04-29 audit fix (P0-A1): use extractText to read all blocks.
+  // Pre-fix `response.content[0]?.type === 'text'` returned '' whenever
+  // adaptive thinking placed a ThinkingBlock at index 0 — every EOD
+  // journal entry was silently empty.
+  const text = extractText(response.content);
   if (!text) {
     console.warn(`[EOD Journal] Empty response for ${bucket.date}; skipping save.`);
     return '';

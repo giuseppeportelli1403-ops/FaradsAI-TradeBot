@@ -3,7 +3,9 @@
 // Uses Claude to analyse the trade and generate a structured lesson
 
 import Anthropic from '@anthropic-ai/sdk';
+import { randomUUID } from 'node:crypto';
 import { loadPromptWithSystemTime } from './load-prompt.js';
+import { extractText, parseLastJsonObject, withTimeout } from './llm-output.js';
 import { getTradeById, insertLesson } from '../database/index.js';
 import type { Lesson, StrategyTag } from '../types.js';
 
@@ -19,20 +21,25 @@ export async function runReflectionAgent(tradeId: string): Promise<void> {
     return;
   }
 
-  const response = await anthropic.messages.create({
-    // Model: Sonnet 4.6 — REVERTED from Haiku 4.5 on 2026-04-28 second-pass
-    // codex review. Reflection writes structured lessons that the Weekly
-    // Review Agent later learns from. Bad-but-parseable Haiku output would
-    // pollute the learning loop without surfacing as a runtime error
-    // (insertLesson accepts any object). Pay for Sonnet quality here —
-    // Reflection runs only after each trade close (~5-15/week), so absolute
-    // cost is small.
-    model: 'claude-sonnet-4-6',
-    max_tokens: 4000,
-    thinking: { type: 'adaptive' },
-    output_config: { effort: 'high' },
-    system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-    messages: [{
+  // 2026-04-29 audit: 45s timeout (Reflection runs effort='high' on a
+  // larger context than Analyst, so allow more wall time).
+  const timeoutMs = 45_000;
+  let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
+  try {
+    response = await withTimeout(anthropic.messages.create({
+      // Model: Sonnet 4.6 — REVERTED from Haiku 4.5 on 2026-04-28 second-pass
+      // codex review. Reflection writes structured lessons that the Weekly
+      // Review Agent later learns from. Bad-but-parseable Haiku output would
+      // pollute the learning loop without surfacing as a runtime error
+      // (insertLesson accepts any object). Pay for Sonnet quality here —
+      // Reflection runs only after each trade close (~5-15/week), so absolute
+      // cost is small.
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4000,
+      thinking: { type: 'adaptive' },
+      output_config: { effort: 'high' },
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: [{
       role: 'user',
       content: `Analyse this completed trade and generate a structured lesson JSON:
 
@@ -56,32 +63,51 @@ Generate a lesson with ALL these fields:
 - rule_suggestion (optional rule change suggestion)
 
 Output ONLY the JSON object.`,
-    }],
-  });
+      }],
+    }), timeoutMs, 'Reflection');
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[Reflection] API call failed for trade ${tradeId}: ${msg}. Lesson NOT saved.`);
+    return;
+  }
 
-  const text = response.content[0].type === 'text' ? response.content[0].text : '';
+  // 2026-04-29 audit fix (P0-A1): use extractText to read ALL content blocks.
+  // Pre-fix `response.content[0].type === 'text' ? ...` returned '' whenever
+  // adaptive thinking placed a ThinkingBlock at index 0 — meaning Reflection
+  // wrote ZERO lessons across many cycles.
+  const text = extractText(response.content);
+
+  // 2026-04-29 audit fix (P0-RF2): use parseLastJsonObject (balanced-brace,
+  // last-object-wins). Pre-fix the greedy regex `/\{[\s\S]*\}/` matched from
+  // the first `{` to the LAST `}` — any `}` in trailing prose corrupted the
+  // parse target.
+  const lesson = parseLastJsonObject<Lesson>(text);
+  if (lesson === null) {
+    console.error('[Reflection] Failed to parse lesson JSON from response. Raw text:');
+    console.error(text.length > 1000 ? text.slice(0, 1000) + '...[truncated]' : text);
+    return;
+  }
 
   try {
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('No JSON found in response');
-
-    const lesson: Lesson = JSON.parse(match[0]);
-
-    // Ensure required fields
-    lesson.lesson_id = lesson.lesson_id || `lesson-${Date.now()}`;
+    // Ensure required fields. crypto.randomUUID() not Date.now() to avoid
+    // collisions if two reflections fire within the same millisecond
+    // (Codex P2-2).
+    lesson.lesson_id = lesson.lesson_id || `lesson-${randomUUID()}`;
     lesson.timestamp = lesson.timestamp || new Date().toISOString();
     lesson.strategy_tag = trade.strategy_tag as StrategyTag;
     lesson.instrument = trade.instrument;
 
     insertLesson(lesson);
     console.log(`Lesson saved: ${lesson.lesson_id}`);
-    console.log(`Key insight: ${lesson.lesson.substring(0, 100)}...`);
+    if (typeof lesson.lesson === 'string') {
+      console.log(`Key insight: ${lesson.lesson.substring(0, 100)}...`);
+    }
 
     if (lesson.rule_suggestion) {
       console.log(`Rule suggestion: ${lesson.rule_suggestion}`);
     }
   } catch (error) {
-    console.error('Failed to parse reflection lesson:', error);
-    console.error('Raw response:', text);
+    console.error('[Reflection] insertLesson failed:', error);
+    console.error('Raw lesson object:', JSON.stringify(lesson));
   }
 }
