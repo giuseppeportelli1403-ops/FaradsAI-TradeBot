@@ -26,6 +26,7 @@ import { runTradingAgent } from '../agents/trading-agent.js';
 import { runResearcherAgent } from '../agents/researcher-agent.js';
 import { runReflectionAgent } from '../agents/reflection-agent.js';
 import { runWeeklyReviewAgent } from '../agents/review-agent.js';
+import { runEodJournalAgent } from '../agents/eod-journal-agent.js';
 import {
   getActiveSlTpOrders as realGetActiveSlTpOrders,
   deactivateSlTpOrder as realDeactivateSlTpOrder,
@@ -550,6 +551,14 @@ export function startScheduler(): void {
     await safeRun('Weekly Review Agent', runWeeklyReviewAgent);
   });
 
+  // Mon-Fri at 21:30 UTC: EOD Journal Agent (W3, 2026-04-28).
+  // Runs after the US close, before Asia open. Writes a short Markdown
+  // reflection to journal/YYYY-MM-DD.md that the next morning's ICT
+  // Researcher cycle reads as preamble. Haiku 4.5 — informational, low-stakes.
+  cron.schedule('30 21 * * 1-5', async () => {
+    await safeRun('EOD Journal Agent', () => runEodJournalAgent());
+  });
+
   // Daily at 00:05 UTC: dump previous day's reject metrics.
   // Added 2026-04-23 (P4). Spawned as a detached process so the scheduler
   // event loop isn't blocked by the ~10s log scrape. Failures swallowed
@@ -573,5 +582,6 @@ export function startScheduler(): void {
   console.log('  30 5 * * *            — Market Researcher (daily pre-London)');
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
   console.log('  0 0 * * 0             — Weekly Review Agent');
+  console.log('  30 21 * * 1-5         — EOD Journal Agent (Mon-Fri after US close)');
   console.log('  5 0 * * *             — Reject metrics dump (previous UTC day)');
 }

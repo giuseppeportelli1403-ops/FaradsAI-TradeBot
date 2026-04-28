@@ -9,6 +9,36 @@ export function loadPrompt(filename: string): string {
   return readFileSync(path, 'utf-8');
 }
 
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
+
+/**
+ * W1 (2026-04-28): build a small system-time block to append to every system
+ * prompt. AutoHedge `workers.py:19-24` pattern — every agent gets the current
+ * UTC time + day of week injected. Without this, the LLM uses training-data
+ * baseline ("it's probably Monday") and hallucinates session state. Pure
+ * function — caller supplies `now` so tests are deterministic.
+ */
+export function buildSystemTimeBlock(now: Date = new Date()): string {
+  const utcIso = now.toISOString();
+  const dayOfWeek = DAY_NAMES[now.getUTCDay()];
+  return (
+    `\n\n---\n\n` +
+    `## CURRENT TIME\n\n` +
+    `UTC: ${utcIso} (${dayOfWeek}). Decide based on this exact time — do not rely on training-data baseline assumptions about what session it is.\n` +
+    `Kill zones (UTC): London Open 07:00–10:00, NY Open 13:00–16:00, London Close 15:00–17:00.\n`
+  );
+}
+
+/**
+ * Loads a prompt and appends the current-time block. Use for non-trade-gating
+ * agents (Researcher, Reflection, EOD Journal). For trade-gating agents
+ * (ICT, Analyst), use loadPromptWithDemoContext which composes time + demo
+ * gates on top.
+ */
+export function loadPromptWithSystemTime(filename: string, now: Date = new Date()): string {
+  return loadPrompt(filename) + buildSystemTimeBlock(now);
+}
+
 export function loadStrategy(filename: string): string {
   const path = join(__dirname, '..', '..', 'memory', filename);
   try {
@@ -82,10 +112,10 @@ still matters. If a Tier 3 setup looks weak, SKIP IT.
  * those, loadPrompt directly is correct. (swing-agent.md was removed
  * 2026-04-23 with the Swing subsystem.)
  */
-export function loadPromptWithDemoContext(filename: string): string {
-  const base = loadPrompt(filename);
+export function loadPromptWithDemoContext(filename: string, now: Date = new Date()): string {
+  const baseWithTime = loadPromptWithSystemTime(filename, now);
   if (process.env.DEMO_RELAXED_GATES !== 'true') {
-    return base;
+    return baseWithTime;
   }
-  return base + DEMO_RELAXED_GATES_CONTEXT;
+  return baseWithTime + DEMO_RELAXED_GATES_CONTEXT;
 }

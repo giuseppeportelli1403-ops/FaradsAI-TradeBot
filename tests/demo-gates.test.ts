@@ -18,18 +18,24 @@ describe('loadPromptWithDemoContext', () => {
     else process.env.DEMO_RELAXED_GATES = originalFlag;
   });
 
-  it('returns unmodified prompt when DEMO_RELAXED_GATES is unset', () => {
+  it('omits the demo-gates block when DEMO_RELAXED_GATES is unset (system-time still injected)', () => {
     const base = loadPrompt('ict-agent.md');
     const wrapped = loadPromptWithDemoContext('ict-agent.md');
-    expect(wrapped).toBe(base);
+    // W1 (2026-04-28): every system prompt now carries a CURRENT TIME block
+    // appended by buildSystemTimeBlock. The demo-gates block is still NOT
+    // present unless the env flag is set.
+    expect(wrapped.startsWith(base)).toBe(true);
+    expect(wrapped).toContain('CURRENT TIME');
     expect(wrapped).not.toContain('DEMO-PHASE RELAXED GATES');
   });
 
-  it('returns unmodified prompt when DEMO_RELAXED_GATES is anything other than "true"', () => {
+  it('omits the demo-gates block when DEMO_RELAXED_GATES is anything other than "true"', () => {
     process.env.DEMO_RELAXED_GATES = 'false';
     const base = loadPrompt('ict-agent.md');
     const wrapped = loadPromptWithDemoContext('ict-agent.md');
-    expect(wrapped).toBe(base);
+    expect(wrapped.startsWith(base)).toBe(true);
+    expect(wrapped).toContain('CURRENT TIME');
+    expect(wrapped).not.toContain('DEMO-PHASE RELAXED GATES');
   });
 
   it('appends the demo-context block when DEMO_RELAXED_GATES=true', () => {

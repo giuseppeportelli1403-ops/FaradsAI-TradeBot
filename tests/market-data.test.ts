@@ -321,7 +321,15 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
       data: [{
         uuid: 'aaaa-bbbb-' + opts.symbol,
         title: opts.title ?? `${opts.symbol} headline`,
-        description: opts.description ?? `${opts.symbol} news description content exceeding twenty chars`,
+        // Default description is intentionally padded to > 320 chars so
+        // the W4 Jina-Reader enrichment path does NOT fire in tests that
+        // count axios calls. Production MarketAux descriptions are
+        // routinely this length on macro stories. Tests that exercise
+        // enrichment specifically pass a shorter `description` via
+        // opts.description.
+        description:
+          opts.description ??
+          `${opts.symbol} news description content exceeding twenty characters and well over three hundred so the W4 enrichment threshold is cleared comfortably. Production MarketAux descriptions on real macro stories are routinely 200-500 chars; this synthetic body matches that distribution and avoids muddying axios call-count assertions. End padding content here.`,
         snippet: opts.snippet ?? `${opts.symbol} news snippet content.`,
         keywords: '',
         url: `https://example.com/${opts.symbol}`,
@@ -649,7 +657,14 @@ describe('fetchNewsContext — dual-source commodity news (P1 #7, 2026-04-28)', 
     return {
       uuid: `uuid-${symbol}-${title}`,
       title,
-      description: `Description: ${title}`,
+      // Description is padded > 300 chars by default so the W4 Jina-Reader
+      // enrichment path doesn't fire in these dual-source tests (which
+      // count axios calls). Tests that want enrichment pass shorter
+      // descriptions explicitly.
+      description:
+        `Description: ${title}. Padded so the article exceeds 300 characters and avoids triggering Jina enrichment. ` +
+        `Macro headlines in real wire feeds typically come with multi-paragraph summaries. ` +
+        `This synthetic body matches that distribution and ensures enrichment requests do not muddy axios call-count assertions.`,
       snippet: `Snippet ${title}`,
       published_at: '2026-04-28T08:00:00.000Z',
       source: 'TestWire',

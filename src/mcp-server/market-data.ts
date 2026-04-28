@@ -19,6 +19,7 @@ import { CandleCache, TIMEFRAME_INTERVAL } from './candle-cache.js';
 import { matchesHighImpactKeyword } from '../news/impact-classifier.js';
 import { parseTwelveDataDatetime } from './td-datetime.js';
 import { canonicalizeUrl } from '../news/url-canonical.js';
+import { fetchArticleBody } from '../news/jina-reader.js';
 
 export { RateLimitQueuedError } from './rate-limiter.js';
 
@@ -835,7 +836,7 @@ async function fetchMarketAuxBatch(
     `[Market Data] MarketAux news for ${instrumentForLog} (as ${mappedTicker}): ${data.data.length} articles`,
   );
 
-  return data.data.map((article: Record<string, unknown>) => {
+  const items: NewsItem[] = data.data.map((article: Record<string, unknown>) => {
     const entities = (article.entities as Array<Record<string, unknown>>) || [];
 
     const matchedEntity =
@@ -876,6 +877,49 @@ async function fetchMarketAuxBatch(
       url: url || undefined,
     };
   });
+
+  // W4 (2026-04-28): enrich items whose snippet is too short for the impact
+  // classifier to score reliably. Hit Jina Reader in parallel; concatenate
+  // the body onto the summary; re-run the classifier on the enriched
+  // haystack. Failures are silent (item keeps the original summary +
+  // category). Caches per-URL for 30 min in jina-reader, so a heavy
+  // first-cycle pays the latency once and subsequent cycles serve from
+  // cache. Only enrich items below ENRICH_THRESHOLD chars to keep request
+  // volume reasonable.
+  const ENRICH_THRESHOLD = 300;
+  const enrichments = await Promise.all(
+    items.map((item) =>
+      item.url && item.summary.length < ENRICH_THRESHOLD
+        ? fetchArticleBody(item.url)
+        : Promise.resolve(null),
+    ),
+  );
+
+  const enriched: NewsItem[] = items.map((item, i) => {
+    const body = enrichments[i];
+    if (!body) return item;
+    const enrichedSummary = `${item.summary}\n\n${body}`;
+    // Re-classify on the full body. Same logic as the inline classifier
+    // above — kept duplicated rather than extracting a helper because the
+    // map above also assigns sentiment/relevance fields the helper
+    // wouldn't have access to without a wider refactor.
+    const absScore = Math.abs(item.sentiment_score);
+    let newCategory: 'A' | 'B' | 'C';
+    if (matchesHighImpactKeyword(item.title, enrichedSummary)) {
+      newCategory = 'A';
+    } else if (absScore >= 0.15) {
+      newCategory = 'B';
+    } else {
+      newCategory = 'C';
+    }
+    return {
+      ...item,
+      summary: enrichedSummary.slice(0, 8500),
+      category: newCategory,
+    };
+  });
+
+  return enriched;
 }
 
 export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> {

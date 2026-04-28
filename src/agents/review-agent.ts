@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { loadPrompt, loadStrategy } from './load-prompt.js';
+import { loadPromptWithSystemTime, loadStrategy } from './load-prompt.js';
 import { getTradesForWeek, getLessons, getLessonWinRate } from '../database/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -19,7 +19,7 @@ function saveFile(filename: string, content: string): void {
 export async function runWeeklyReviewAgent(): Promise<string> {
   console.log('Weekly Review Agent starting...');
 
-  const systemPrompt = loadPrompt('review-agent.md');
+  const systemPrompt = loadPromptWithSystemTime('review-agent.md');
 
   // Calculate week boundaries (last Mon 00:00 to this Sun 00:00)
   const now = new Date();

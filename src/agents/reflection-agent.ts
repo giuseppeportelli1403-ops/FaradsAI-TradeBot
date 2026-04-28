@@ -3,7 +3,7 @@
 // Uses Claude to analyse the trade and generate a structured lesson
 
 import Anthropic from '@anthropic-ai/sdk';
-import { loadPrompt } from './load-prompt.js';
+import { loadPromptWithSystemTime } from './load-prompt.js';
 import { getTradeById, insertLesson } from '../database/index.js';
 import type { Lesson, StrategyTag } from '../types.js';
 
@@ -12,7 +12,7 @@ const anthropic = new Anthropic();
 export async function runReflectionAgent(tradeId: string): Promise<void> {
   console.log(`Reflection Agent analysing trade: ${tradeId}`);
 
-  const systemPrompt = loadPrompt('reflection-agent.md');
+  const systemPrompt = loadPromptWithSystemTime('reflection-agent.md');
   const trade = getTradeById(tradeId);
   if (!trade) {
     console.error(`Trade ${tradeId} not found in database`);
@@ -20,7 +20,11 @@ export async function runReflectionAgent(tradeId: string): Promise<void> {
   }
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
+    // Model: Haiku 4.5 — Reflection writes a fixed-schema JSON lesson per
+    // closed trade; structured-output task, not real-time decision. Mixed
+    // model assignment 2026-04-28. The downstream Weekly Review Agent that
+    // generalises across many lessons stays on Sonnet 4.6.
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 4000,
     thinking: { type: 'adaptive' },
     output_config: { effort: 'high' },

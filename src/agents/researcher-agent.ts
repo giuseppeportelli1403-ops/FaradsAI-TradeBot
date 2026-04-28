@@ -8,7 +8,7 @@
 //   3. Which instruments are in play?
 
 import Anthropic from '@anthropic-ai/sdk';
-import { loadPrompt } from './load-prompt.js';
+import { loadPrompt, buildSystemTimeBlock } from './load-prompt.js';
 import { fetchYieldCurve, fetchEconomicCalendar, fetchSectorStrength } from '../mcp-server/market-data.js';
 import { getRankedInstruments, INSTRUMENT_UNIVERSE } from '../scanner/index.js';
 import { getNewsContext } from '../news/index.js';
@@ -35,13 +35,22 @@ async function extractThemes(
   const topSectors = sectors.slice(0, 3).map(s => s.sector);
   const bottomSectors = sectors.slice(-3).map(s => s.sector);
 
-  // Use Claude to synthesise themes from raw data
+  // Use Claude to synthesise themes from raw data.
+  // Model: Haiku 4.5 — Researcher is a structured-template-fill task (regime
+  // data → 3-5 sentence themes), not load-bearing reasoning. Mixed-model
+  // assignment 2026-04-28: support roles → Haiku, decision roles → Sonnet.
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 1000,
     thinking: { type: 'adaptive' },
     output_config: { effort: 'medium' },
-    system: [{ type: 'text', text: 'You are a market research analyst. Given market data, produce 3-5 concise theme statements for today/this week. Each theme is one sentence. No filler. Factual and actionable.', cache_control: { type: 'ephemeral' } }],
+    system: [{
+      type: 'text',
+      text:
+        'You are a market research analyst. Given market data, produce 3-5 concise theme statements for today/this week. Each theme is one sentence. No filler. Factual and actionable.' +
+        buildSystemTimeBlock(),
+      cache_control: { type: 'ephemeral' },
+    }],
     messages: [{
       role: 'user',
       content: `Regime: 10Y yield ${regime.yields.us10y}%, 2Y/10Y spread ${Math.round((regime.yields.us10y - regime.yields.us2y) * 100) / 100}%
