@@ -25,6 +25,43 @@ describe('matchesHighImpactKeyword', () => {
       'Reserve Bank of Australia decision',
       'Hawkish tone from Powell',
       'Dovish pivot signalled',
+      // CR-2 additions
+      'BoC holds overnight rate at 4.75%',
+      'Bank of Canada delivers 25bp cut',
+      'SNB unexpectedly cuts to 1.50%',
+      'Swiss National Bank policy meeting',
+      'RBNZ on hold',
+      'Reserve Bank of New Zealand surprises',
+      'OCR held steady at 5.25%',
+      'Monetary policy statement released',
+      'Monetary policy decision on Wednesday',
+      'Monetary policy report unveiled',
+    ])('matches "%s" as high-impact', (title) => {
+      expect(matchesHighImpactKeyword(title, '')).toBe(true);
+    });
+  });
+
+  describe('CR-2: named central bankers', () => {
+    it.each([
+      'Powell: economy resilient',
+      'Lagarde signals patience',
+      'Bailey: pace of cuts gradual',
+      'Ueda hints at policy normalisation',
+      'Macklem on Canada outlook',
+      'Jordan: SNB ready to act',
+      'Orr: NZ inflation persistent',
+    ])('matches "%s" as high-impact', (title) => {
+      expect(matchesHighImpactKeyword(title, '')).toBe(true);
+    });
+  });
+
+  describe('CR-2: trade / sanctions / geopolitical events', () => {
+    it.each([
+      'New tariffs imposed on China imports',
+      'Tariff hike announced',
+      'Trade war escalates',
+      'US imposes sanctions on Russian oil',
+      'Sanctions lifted as deal reached',
     ])('matches "%s" as high-impact', (title) => {
       expect(matchesHighImpactKeyword(title, '')).toBe(true);
     });
@@ -105,5 +142,12 @@ describe('matchesHighImpactKeyword', () => {
 
   it('does not false-positive on "PCE" inside other words', () => {
     expect(matchesHighImpactKeyword('SPCE jumps 5%', '')).toBe(false);
+  });
+
+  it('does not false-positive on banker names inside other words', () => {
+    // We want exact-token matches, not partial. "Powerful" must not match Powell.
+    expect(matchesHighImpactKeyword('Powerful rally in tech', '')).toBe(false);
+    // "Bailout" must not match Bailey.
+    expect(matchesHighImpactKeyword('Bailout package agreed', '')).toBe(false);
   });
 });

@@ -308,6 +308,11 @@ export interface NewsItem {
   // the bot doesn't trade INTO unseen bearish news during quota-degraded
   // windows.
   stale_minutes?: number;
+  // Added 2026-04-28 (CR-4): article URL when MarketAux returned one. Used
+  // by fetchNewsContext as the primary dedup key when merging spot+ETF
+  // commodity batches — same wire story rebroadcast across feeds shares a
+  // stable URL even when titles drift, so URL beats title for dedup.
+  url?: string;
 }
 
 // ==================== MARKET DATA ====================

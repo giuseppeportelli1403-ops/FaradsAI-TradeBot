@@ -635,7 +635,17 @@ describe('fetchNewsContext — dual-source commodity news (P1 #7, 2026-04-28)', 
     vi.restoreAllMocks();
   });
 
-  function mkArticle(symbol: string, title: string, sentiment = 0): Record<string, unknown> {
+  function mkArticle(
+    symbol: string,
+    title: string,
+    sentiment = 0,
+    urlSuffix?: string,
+  ): Record<string, unknown> {
+    // URL is derived from title by default — that mirrors real MarketAux
+    // behaviour where the same wire story has the same canonical URL across
+    // entity hits (so URL-based dedup folds spot+ETF copies of one event).
+    // Pass an explicit `urlSuffix` to force-vary the URL per symbol when
+    // testing the "different stories that share a generic title" edge case.
     return {
       uuid: `uuid-${symbol}-${title}`,
       title,
@@ -643,7 +653,9 @@ describe('fetchNewsContext — dual-source commodity news (P1 #7, 2026-04-28)', 
       snippet: `Snippet ${title}`,
       published_at: '2026-04-28T08:00:00.000Z',
       source: 'TestWire',
-      url: `https://example.com/${symbol}/${encodeURIComponent(title)}`,
+      url: urlSuffix !== undefined
+        ? `https://example.com/${urlSuffix}`
+        : `https://example.com/wire/${encodeURIComponent(title)}`,
       entities: [
         { symbol, sentiment_score: sentiment, match_score: 90 },
       ],
@@ -676,10 +688,11 @@ describe('fetchNewsContext — dual-source commodity news (P1 #7, 2026-04-28)', 
     expect(getSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('dedupes articles with the same title from spot and ETF queries', async () => {
+  it('dedupes articles by URL when same wire story appears in both spot and ETF queries (CR-4)', async () => {
     vi.spyOn(axios, 'get').mockImplementation(async (_url, opts) => {
       const symbol = (opts as { params: { symbols: string } }).params.symbols;
-      // Both responses include the SAME title — same wire story picked up by both feeds.
+      // Same OPEC headline, same canonical URL across both feed entities —
+      // URL-based dedup must collapse to one item.
       return {
         data: {
           data: [
@@ -692,11 +705,59 @@ describe('fetchNewsContext — dual-source commodity news (P1 #7, 2026-04-28)', 
 
     const items = await fetchNewsContext('OIL_CRUDE');
 
-    // Expected: 3 articles (1 deduped OPEC + 2 unique "Other USO/WTI/USD" stories)
-    const titles = items.map((i) => i.title);
-    const opecCount = titles.filter((t) => t === 'OPEC announces production cut').length;
+    // Expected: 3 articles. The shared OPEC story has the same URL in both
+    // batches → folded to 1. The two "Other USO/WTI/USD story" entries have
+    // different titles and different URLs → both kept.
+    const opecCount = items.filter((i) => i.title === 'OPEC announces production cut').length;
     expect(opecCount).toBe(1);
-    expect(items.length).toBe(3);
+    expect(items).toHaveLength(3);
+  });
+
+  it('keeps distinct articles that share an exact title but different URLs (CR-4)', async () => {
+    vi.spyOn(axios, 'get').mockImplementation(async (_url, opts) => {
+      const symbol = (opts as { params: { symbols: string } }).params.symbols;
+      return {
+        data: {
+          data: [
+            // Same generic title, but URLs differ (different wire articles
+            // that happened to use the same headline). Title-only dedup
+            // would lose one; URL-based dedup keeps both.
+            mkArticle(symbol, 'Markets in focus', 0.1, `${symbol}/article-1`),
+            mkArticle(symbol, 'Markets in focus', -0.1, `${symbol}/article-2`),
+          ],
+        },
+      };
+    });
+
+    const items = await fetchNewsContext('GOLD');
+    expect(items).toHaveLength(4); // 2 from each batch, all distinct URLs
+  });
+
+  it('falls back to (title|source|published_at) dedup when URL is missing (CR-4)', async () => {
+    vi.spyOn(axios, 'get').mockImplementation(async (_url, opts) => {
+      const symbol = (opts as { params: { symbols: string } }).params.symbols;
+      // Construct an article without `url` — mkArticle path skipped, raw object.
+      return {
+        data: {
+          data: [
+            {
+              uuid: `${symbol}-x`,
+              title: 'Untitled wire',
+              description: 'desc',
+              snippet: 'snip',
+              published_at: '2026-04-28T08:00:00.000Z',
+              source: 'TestWire',
+              entities: [{ symbol, sentiment_score: 0, match_score: 90 }],
+            },
+          ],
+        },
+      };
+    });
+
+    const items = await fetchNewsContext('SILVER');
+    // Both batches return the same (title|source|published_at) tuple with no
+    // URL → fallback dedup folds to one item.
+    expect(items).toHaveLength(1);
   });
 
   it('falls back gracefully when spot fetch errors but ETF succeeds', async () => {

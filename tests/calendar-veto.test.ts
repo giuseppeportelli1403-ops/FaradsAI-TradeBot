@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 import {
   instrumentToCurrencies,
   shouldVetoOrderForCalendar,
+  vetoWindowForEvent,
 } from '../src/news/calendar-veto.js';
 import type { EconomicEvent } from '../src/types.js';
 
@@ -154,5 +155,104 @@ describe('shouldVetoOrderForCalendar', () => {
     const events = [event({ date: '2026-04-28', time: '12:45:00', country: 'US', impact: 'high' })]; // 45 min ahead
     expect(shouldVetoOrderForCalendar(['USD'], events, nowMs).veto).toBe(false); // default 30
     expect(shouldVetoOrderForCalendar(['USD'], events, nowMs, 60 * 60_000).veto).toBe(true); // custom 60
+  });
+});
+
+describe('vetoWindowForEvent — per-event window widening (CR-1)', () => {
+  // Codex review CR-1: the default −5/+30 window is right for a generic
+  // medium-impact macro event, but FOMC / NFP / CPI / rate decisions are
+  // larger market-movers. Widen the window to −30/+60 for those events so
+  // the bot doesn't open positions 50 min before NFP.
+
+  it('returns the wider window (60 pre / 30 post) for FOMC events', () => {
+    const result = vetoWindowForEvent({ event: 'FOMC Rate Decision' } as EconomicEvent);
+    expect(result.preMs).toBe(60 * 60_000);
+    expect(result.postMs).toBe(30 * 60_000);
+  });
+
+  it('returns the wider window for NFP / non-farm payrolls', () => {
+    expect(vetoWindowForEvent({ event: 'NFP release' } as EconomicEvent).preMs).toBe(60 * 60_000);
+    expect(vetoWindowForEvent({ event: 'Non-farm payrolls' } as EconomicEvent).preMs).toBe(60 * 60_000);
+    expect(vetoWindowForEvent({ event: 'Nonfarm payrolls report' } as EconomicEvent).preMs).toBe(60 * 60_000);
+  });
+
+  it('returns the wider window for CPI / inflation events', () => {
+    expect(vetoWindowForEvent({ event: 'CPI release' } as EconomicEvent).preMs).toBe(60 * 60_000);
+    expect(vetoWindowForEvent({ event: 'Core CPI MoM' } as EconomicEvent).preMs).toBe(60 * 60_000);
+  });
+
+  it('returns the wider window for ECB / BoE / BoJ rate decisions', () => {
+    expect(vetoWindowForEvent({ event: 'ECB Rate Decision' } as EconomicEvent).preMs).toBe(60 * 60_000);
+    expect(vetoWindowForEvent({ event: 'BoE Bank Rate' } as EconomicEvent).preMs).toBe(60 * 60_000);
+    expect(vetoWindowForEvent({ event: 'BoJ Policy Statement' } as EconomicEvent).preMs).toBe(60 * 60_000);
+    expect(vetoWindowForEvent({ event: 'Federal Reserve rate decision' } as EconomicEvent).preMs).toBe(60 * 60_000);
+  });
+
+  it('returns the default window (30 pre / 5 post) for generic events', () => {
+    const result = vetoWindowForEvent({ event: 'German Manufacturing PMI' } as EconomicEvent);
+    expect(result.preMs).toBe(30 * 60_000);
+    expect(result.postMs).toBe(5 * 60_000);
+  });
+
+  it('returns the default window for unknown / empty event names', () => {
+    expect(vetoWindowForEvent({ event: '' } as EconomicEvent).preMs).toBe(30 * 60_000);
+    expect(vetoWindowForEvent({} as EconomicEvent).preMs).toBe(30 * 60_000);
+  });
+
+  it('is case-insensitive on event title matching', () => {
+    expect(vetoWindowForEvent({ event: 'fomc minutes' } as EconomicEvent).preMs).toBe(60 * 60_000);
+    expect(vetoWindowForEvent({ event: 'NFP RELEASE' } as EconomicEvent).preMs).toBe(60 * 60_000);
+  });
+});
+
+describe('shouldVetoOrderForCalendar — per-event window integration (CR-1)', () => {
+  const nowMs = Date.parse('2026-04-28T12:00:00Z');
+
+  it('vetoes FOMC event 50 min ahead (within widened 60-min pre-window)', () => {
+    const events = [
+      {
+        date: '2026-04-28', time: '12:50:00',
+        event: 'FOMC Rate Decision', country: 'US', impact: 'high' as const,
+        actual: null, estimate: null, previous: null, affected_instruments: [],
+      },
+    ];
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(true);
+  });
+
+  it('does NOT veto a generic high-impact event 50 min ahead (outside default 30-min)', () => {
+    const events = [
+      {
+        date: '2026-04-28', time: '12:50:00',
+        event: 'German Industrial Orders', country: 'DE', impact: 'high' as const,
+        actual: null, estimate: null, previous: null, affected_instruments: [],
+      },
+    ];
+    const result = shouldVetoOrderForCalendar(['EUR'], events, nowMs);
+    expect(result.veto).toBe(false);
+  });
+
+  it('vetoes NFP event 25 min after now (within widened 30-min post-window)', () => {
+    const events = [
+      {
+        date: '2026-04-28', time: '11:35:00',
+        event: 'Non-farm payrolls', country: 'US', impact: 'high' as const,
+        actual: null, estimate: null, previous: null, affected_instruments: [],
+      },
+    ];
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(true);
+  });
+
+  it('does NOT veto a generic high-impact event 10 min after now (outside default 5-min post)', () => {
+    const events = [
+      {
+        date: '2026-04-28', time: '11:50:00',
+        event: 'German Industrial Orders', country: 'DE', impact: 'high' as const,
+        actual: null, estimate: null, previous: null, affected_instruments: [],
+      },
+    ];
+    const result = shouldVetoOrderForCalendar(['EUR'], events, nowMs);
+    expect(result.veto).toBe(false);
   });
 });

@@ -40,6 +40,68 @@ const DEFAULT_VETO_WINDOW_MS = 30 * 60_000;
 // 2 min before.
 const POST_EVENT_SHOCK_MS = 5 * 60_000;
 
+// Per-event window widening (CR-1, 2026-04-28). FOMC / NFP / CPI / major
+// rate decisions move markets violently for far longer than a generic
+// medium-impact print. Codex review flagged that the default −5/+30 window
+// is too narrow for these — a position opened 50 min before NFP is just as
+// at-risk as one 25 min before. These events get a −30/+60 window.
+const EXTRA_WIDE_PRE_MS = 60 * 60_000;
+const EXTRA_WIDE_POST_MS = 30 * 60_000;
+const EXTRA_WIDE_PATTERNS: ReadonlyArray<RegExp> = [
+  // Central-bank rate decisions — biggest scheduled movers
+  /\bFOMC\b/i,
+  /\bFederal Reserve\b/i,
+  /\bFed (rate|funds|decision|chair|meeting|minutes)\b/i,
+  /\bECB\b/i,
+  /\bEuropean Central Bank\b/i,
+  /\bBoE\b/i,
+  /\bBank of England\b/i,
+  /\bBoJ\b/i,
+  /\bBank of Japan\b/i,
+  /\bRBA\b/i,
+  /\bReserve Bank of Australia\b/i,
+  /\bRBNZ\b/i,
+  /\bReserve Bank of New Zealand\b/i,
+  /\bBoC\b/i,
+  /\bBank of Canada\b/i,
+  /\bSNB\b/i,
+  /\bSwiss National Bank\b/i,
+  /\b(rate|cash rate|policy) (decision|statement|meeting)\b/i,
+  /\bmonetary policy (decision|statement|meeting|report)\b/i,
+  // Top-tier macro prints
+  /\bNFP\b/i,
+  /\bnon[- ]?farm payrolls?\b/i,
+  /\bnonfarm payrolls?\b/i,
+  /\bpayrolls report\b/i,
+  /\bjobs report\b/i,
+  /\bCPI\b/i,
+  /\bcore CPI\b/i,
+  /\binflation (data|report|print|reading|figure)\b/i,
+  /\bGDP\b/i,
+  /\bgross domestic product\b/i,
+];
+
+/**
+ * Returns the (preMs, postMs) veto window for a given economic event.
+ *
+ * Default for generic high-impact events: −5 min / +30 min (kept narrow so
+ * the bot isn't blocked from trading the whole morning every time a low-tier
+ * regional event prints).
+ *
+ * Wider window for Tier-1 movers (FOMC, NFP, CPI, central-bank rate
+ * decisions, GDP): −30 min / +60 min.
+ */
+export function vetoWindowForEvent(ev: EconomicEvent): { preMs: number; postMs: number } {
+  const eventName = ev?.event ?? '';
+  if (!eventName) return { preMs: DEFAULT_VETO_WINDOW_MS, postMs: POST_EVENT_SHOCK_MS };
+  for (const pattern of EXTRA_WIDE_PATTERNS) {
+    if (pattern.test(eventName)) {
+      return { preMs: EXTRA_WIDE_PRE_MS, postMs: EXTRA_WIDE_POST_MS };
+    }
+  }
+  return { preMs: DEFAULT_VETO_WINDOW_MS, postMs: POST_EVENT_SHOCK_MS };
+}
+
 /**
  * Maps a Farad ticker to the list of ISO currency codes whose macro events
  * could materially move it. FX pairs split into the two component currencies;
@@ -86,14 +148,21 @@ export type VetoResult =
 
 /**
  * Return veto:true when any high-impact event in `events` for any currency in
- * `tradeCurrencies` falls inside the window [now − 5min, now + vetoWindowMs].
- * Otherwise veto:false. Pure function — callers supply now and events.
+ * `tradeCurrencies` falls inside the per-event window. The window is
+ * derived from `vetoWindowForEvent(ev)` per-event — see CR-1 widening for
+ * Tier-1 events (FOMC/NFP/CPI/rate decisions). Pure function — callers
+ * supply now and events.
+ *
+ * @param vetoWindowMs Optional pre-event window override. When supplied,
+ *   overrides the per-event lookup for the pre-event side; the post-event
+ *   window remains per-event-derived. Used by callers who want a stricter
+ *   blanket rule (e.g. tests, or operator-temporary tightening).
  */
 export function shouldVetoOrderForCalendar(
   tradeCurrencies: string[],
   events: EconomicEvent[],
   nowMs: number,
-  vetoWindowMs: number = DEFAULT_VETO_WINDOW_MS,
+  vetoWindowMs?: number,
 ): VetoResult {
   if (tradeCurrencies.length === 0) return { veto: false };
 
@@ -106,8 +175,12 @@ export function shouldVetoOrderForCalendar(
     const ts = eventTimestampMs(ev);
     if (ts === null) continue;
 
+    const window = vetoWindowForEvent(ev);
+    const preMs = vetoWindowMs !== undefined ? vetoWindowMs : window.preMs;
+    const postMs = window.postMs;
+
     const delta = ts - nowMs;
-    if (delta >= -POST_EVENT_SHOCK_MS && delta <= vetoWindowMs) {
+    if (delta >= -postMs && delta <= preMs) {
       const minutes = Math.round(delta / 60_000);
       const direction = minutes >= 0 ? `${minutes} min from now` : `${-minutes} min ago`;
       return {

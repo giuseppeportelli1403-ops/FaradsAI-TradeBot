@@ -29,9 +29,29 @@ const HIGH_IMPACT_PATTERNS: ReadonlyArray<RegExp> = [
   /\bBank of Japan\b/i,
   /\bRBA\b/i,
   /\bReserve Bank of Australia\b/i,
+  // CR-2 (2026-04-28): additional G10 central banks
+  /\bBoC\b/i,
+  /\bBank of Canada\b/i,
+  /\bSNB\b/i,
+  /\bSwiss National Bank\b/i,
+  /\bRBNZ\b/i,
+  /\bReserve Bank of New Zealand\b/i,
+  /\bOCR\b/i, // NZ Official Cash Rate
+  // Monetary-policy event keywords (statement/decision/meeting/report)
+  /\bmonetary policy (statement|decision|meeting|report|outlook)\b/i,
   /\b(interest |cash )?rate (decision|hike|cut|hold|move|meeting)\b/i,
   /\bhawkish\b/i,
   /\bdovish\b/i,
+
+  // ---- CR-2: named central-bank chairs ----
+  // Word-bounded to avoid false positives ("Powerful" / "Bailout" must not match).
+  /\bPowell\b/i,
+  /\bLagarde\b/i,
+  /\bBailey\b/i,
+  /\bUeda\b/i,
+  /\bMacklem\b/i,
+  /\bJordan\b/i,
+  /\bOrr\b/i,
 
   // ---- Macro prints ----
   /\bNFP\b/i,
@@ -54,6 +74,11 @@ const HIGH_IMPACT_PATTERNS: ReadonlyArray<RegExp> = [
   /\bOPEC(\+|-plus)?\b/i,
   /\b(oil|crude) inventor(y|ies)\b/i,
   /\bcrude (oil )?stocks?\b/i,
+
+  // ---- CR-2: trade / sanctions / geopolitical ----
+  /\btariffs?\b/i,
+  /\btrade war\b/i,
+  /\bsanctions?\b/i,
 ];
 
 /**

@@ -17,6 +17,7 @@ import type {
 import { TokenBucket } from './rate-limiter.js';
 import { CandleCache, TIMEFRAME_INTERVAL } from './candle-cache.js';
 import { matchesHighImpactKeyword } from '../news/impact-classifier.js';
+import { parseTwelveDataDatetime } from './td-datetime.js';
 
 export { RateLimitQueuedError } from './rate-limiter.js';
 
@@ -330,10 +331,12 @@ export async function fetchCandles(
       continue;
     }
     // Defense-in-depth on top of `timezone: 'UTC'` — drop any candle whose
-    // datetime parses as future. TD format is "YYYY-MM-DD HH:mm:ss"; replace
-    // space → T and append Z to force UTC parsing.
-    const tsMs = Date.parse(String(v.datetime).replace(' ', 'T') + 'Z');
-    if (Number.isFinite(tsMs) && tsMs > futureCutoff) {
+    // datetime parses as future. parseTwelveDataDatetime handles bare
+    // 'YYYY-MM-DD HH:mm:ss' AND ISO forms with Z or offset (CR-3); the
+    // prior inline parse silently failed on TZ-qualified inputs and let
+    // future candles slip through.
+    const tsMs = parseTwelveDataDatetime(v.datetime);
+    if (tsMs !== null && tsMs > futureCutoff) {
       futureDroppedCount++;
       continue;
     }
@@ -842,6 +845,8 @@ async function fetchMarketAuxBatch(
       category = 'C';
     }
 
+    const url = (article.url as string | undefined) ?? '';
+
     return {
       title,
       source: article.source as string,
@@ -851,6 +856,7 @@ async function fetchMarketAuxBatch(
       category,
       summary,
       stale_minutes: 0,
+      url: url || undefined,
     };
   });
 }
@@ -908,13 +914,22 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
     if (spotTicker && spotTicker !== mappedTicker) {
       try {
         const spotItems = await fetchMarketAuxBatch(apiKey, spotTicker, instrument);
+        // CR-4 (2026-04-28): dedup primarily by article URL when present —
+        // exact same wire story re-broadcast through different MarketAux
+        // entity hits has a stable URL even when title text drifts. Falls
+        // back to (lowercased title | source | published_at) for items
+        // missing a URL. Empty-title items are kept (untitled tickers
+        // sometimes produce empty title strings, dropping them lost legit
+        // signal in the prior version).
         const seen = new Set<string>();
         const merged: NewsItem[] = [];
         // Primary (ETF) first to preserve existing rank ordering on conflict;
         // unique spot items are appended after.
         for (const item of [...items, ...spotItems]) {
-          const key = item.title.toLowerCase().trim();
-          if (key.length === 0 || seen.has(key)) continue;
+          const key = item.url && item.url.length > 0
+            ? `url:${item.url}`
+            : `tsd:${(item.title ?? '').toLowerCase().trim()}|${item.source ?? ''}|${item.published_at ?? ''}`;
+          if (seen.has(key)) continue;
           seen.add(key);
           merged.push(item);
         }
