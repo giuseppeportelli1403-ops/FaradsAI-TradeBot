@@ -233,21 +233,52 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
             });
           }
         } catch (err) {
-          // fetchEconomicCalendar is wrapped in withFallback and should not
-          // throw, but be defensive — calendar errors must NOT block the
-          // order silently. Log loudly and proceed.
+          // CR-9 + Codex P1 #16 (2026-04-28): FAIL CLOSED on calendar fetch
+          // failure. Previous behaviour was log-warn-and-proceed, which
+          // turned every calendar outage into "no veto coverage" — the bot
+          // could blow into NFP because Finnhub had a hiccup. A risk gate
+          // must fail closed.
           const msg = err instanceof Error ? err.message : String(err);
-          console.warn(`[ICT Agent] Calendar veto check skipped (calendar fetch failed: ${msg}). Proceeding with place_order.`);
+          console.error(`[ICT Agent] CALENDAR FETCH FAILED for ${epic}: ${msg}. Refusing place_order — risk gate fails closed.`);
+          return JSON.stringify({
+            error: 'CALENDAR_FETCH_FAILED',
+            reason: `Calendar fetch failed (${msg}). Cannot verify no high-impact event in window. Refusing order — risk gate fails closed.`,
+            guidance: 'Retry on next cycle. If calendar continues to fail, ops should investigate Finnhub/ForexFactory feed health.',
+          });
         }
+      }
+
+      // Codex missing-item (2026-04-28): order-side validation. Reject
+      // obviously broken trades before forwarding to Capital.
+      //   long  → SL < entry < TP (we don't have entry; check SL < TP)
+      //   short → TP < entry < SL (so SL > TP)
+      // Reject NaN/Infinity/zero values explicitly. The proper home for
+      // this is the upcoming place_split_trade tool (Commit C); applying
+      // here too as a belt-and-braces guard while bare place_order exists.
+      const slNum = Number(input.sl);
+      const tpNum = Number(input.tp);
+      const sizeNum = Math.abs(Number(input.size));
+      if (!Number.isFinite(slNum) || !Number.isFinite(tpNum) || !Number.isFinite(sizeNum) || sizeNum === 0) {
+        return JSON.stringify({
+          error: 'INVALID_ORDER_NUMERICS',
+          reason: `Non-finite or zero numeric in order: sl=${input.sl} tp=${input.tp} size=${input.size}`,
+        });
+      }
+      const sideOk = input.direction === 'long' ? slNum < tpNum : tpNum < slNum;
+      if (!sideOk) {
+        return JSON.stringify({
+          error: 'INVALID_ORDER_SIDE',
+          reason: `For direction='${input.direction}', SL/TP relationship is inverted: sl=${slNum} tp=${tpNum}. Long requires SL<TP; short requires TP<SL.`,
+        });
       }
 
       const direction: 'BUY' | 'SELL' = input.direction === 'long' ? 'BUY' : 'SELL';
       const confirmation = await capital.openPosition({
         direction,
         epic,
-        size: Math.abs(Number(input.size)),
-        stopLevel: Number(input.sl),
-        profitLevel: Number(input.tp),
+        size: sizeNum,
+        stopLevel: slNum,
+        profitLevel: tpNum,
       });
       return JSON.stringify({ capital_result: confirmation, local: input });
     }

@@ -508,8 +508,24 @@ export function startScheduler(): void {
   console.log('Starting scheduler...');
 
   // Every 5 minutes: split-position monitor + candle-close detection.
+  // Codex P1 #11 (2026-04-28): added separate mutexes for the monitor
+  // and the ICT cycle so a slow ICT decision doesn't block position
+  // monitoring (the monitor handles TP1→BE moves and is load-bearing).
+  // Each mutex resets in `finally` so a thrown error doesn't leave the
+  // flag stuck-on.
+  let monitorRunning = false;
+  let ictRunning = false;
   cron.schedule('*/5 * * * *', async () => {
-    await monitorSplitPositions();
+    if (!monitorRunning) {
+      monitorRunning = true;
+      try {
+        await monitorSplitPositions();
+      } finally {
+        monitorRunning = false;
+      }
+    } else {
+      console.warn('[Scheduler] Skipping monitorSplitPositions — previous run still in flight.');
+    }
 
     const new15m = await check15mCandleClose();
     const new1h = await check1hCandleClose();
@@ -528,7 +544,16 @@ export function startScheduler(): void {
         );
         return;
       }
-      await safeRun('ICT Trading Agent', runTradingAgent);
+      if (ictRunning) {
+        console.warn('[Scheduler] Skipping ICT cycle — previous cycle still in flight (likely an 8-iteration tool churn). Will retry next 5-min tick.');
+        return;
+      }
+      ictRunning = true;
+      try {
+        await safeRun('ICT Trading Agent', runTradingAgent);
+      } finally {
+        ictRunning = false;
+      }
     }
   }, CRON_UTC);
 

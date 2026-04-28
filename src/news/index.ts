@@ -35,6 +35,11 @@ export interface ScoredNews {
   // STALE_BEARISH_DAMPEN_MINUTES constant below.
   stale_minutes: number;
   stale_dampened: boolean;
+  // Added 2026-04-28 (Codex P1 #15). True when ALL news sources failed
+  // (MarketAux fetch threw + RSS aggregator empty). The downstream agent
+  // should treat this as DEGRADED-DATA and refuse to take Cat-A-driven
+  // sizing rather than treating "no news" as "no news risk."
+  news_unavailable: boolean;
 }
 
 // If cached news is older than this AND the aggregate is bearish, its
@@ -49,11 +54,13 @@ export const STALE_BEARISH_DAMPEN_MINUTES = 60;
 
 export async function getNewsContext(instrument: string): Promise<ScoredNews> {
   let items: NewsItem[];
+  let marketauxFailed = false;
 
   try {
     items = await fetchNewsContext(instrument);
   } catch {
     items = [];
+    marketauxFailed = true;
   }
 
   // B3 (2026-04-28): merge cached RSS articles into the MarketAux pool.
@@ -80,20 +87,34 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
   }
 
   if (items.length === 0) {
+    // Differentiate between "fetch failed entirely" (data degraded — bot
+    // should treat as risk-on, not risk-neutral) and "fetch succeeded
+    // but returned 0 articles" (genuinely quiet news cycle, treat neutral).
+    const newsUnavailable = marketauxFailed;
     return {
       items: [],
       overall_score: 0,
       dominant_category: 'none',
       dominant_sentiment: 'neutral',
-      summary: 'No recent news for this instrument',
+      summary: newsUnavailable
+        ? '⚠️ NEWS DATA UNAVAILABLE — both MarketAux and RSS aggregator returned no results. DO NOT treat as "no news risk." Refuse Cat-A-driven sizing decisions until the next cycle.'
+        : 'No recent news for this instrument',
       stale_minutes: 0,
       stale_dampened: false,
+      news_unavailable: newsUnavailable,
     };
   }
 
-  // Aggregate sentiment
-  const totalSentiment = items.reduce((sum, item) => sum + item.sentiment_score, 0);
-  const avgSentiment = totalSentiment / items.length;
+  // Aggregate sentiment over items that ACTUALLY carry sentiment.
+  // RSS items default sentiment_score=0 (RSS doesn't carry sentiment scores;
+  // the impact-keyword classifier handles Cat A/B/C from title+body).
+  // Averaging RSS zeros into MarketAux sentiment dilutes directional signal —
+  // see Codex P1 #14, 2026-04-28. We average only items with non-zero score
+  // (typically MarketAux), and fall back to 0 if every item is sentiment-less.
+  const sentimentItems = items.filter((item) => item.sentiment_score !== 0);
+  const avgSentiment = sentimentItems.length > 0
+    ? sentimentItems.reduce((sum, item) => sum + item.sentiment_score, 0) / sentimentItems.length
+    : 0;
 
   // Find dominant category (highest impact news wins)
   const catACounts = items.filter(i => i.category === 'A').length;
@@ -159,6 +180,7 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
     summary,
     stale_minutes: staleMinutes,
     stale_dampened: staleDampened,
+    news_unavailable: false,
   };
 }
 

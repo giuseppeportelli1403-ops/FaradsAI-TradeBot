@@ -493,8 +493,16 @@ export function updateTradeStatus(
   saveToFile();
 }
 
+// Status values that count as "still has live exposure on Capital.com":
+//   - 'open'     — all 3 legs still active
+//   - 'tp1_hit'  — Leg A closed, Legs B+C still running
+//   - 'tp2_hit'  — Legs A+B closed, Leg C still running (added 2026-04-28
+//                  audit; previously omitted, which made tp2_hit trades
+//                  invisible to the coordination lock — Codex P1 #10)
+const OPEN_STATUSES_SQL = "status IN ('open', 'tp1_hit', 'tp2_hit')";
+
 export function getOpenTrades(): TradeRecord[] {
-  const result = db.exec("SELECT * FROM trades WHERE status IN ('open', 'tp1_hit') ORDER BY opened_at DESC");
+  const result = db.exec(`SELECT * FROM trades WHERE ${OPEN_STATUSES_SQL} ORDER BY opened_at DESC`);
   return resultToObjects<TradeRecord>(result);
 }
 
@@ -523,14 +531,14 @@ export function getTradesForWeek(weekStart: string, weekEnd: string): TradeRecor
 
 export function getOpenTradesByInstrument(instrument: string): TradeRecord[] {
   const result = db.exec(
-    "SELECT * FROM trades WHERE instrument = ? AND status IN ('open', 'tp1_hit')",
+    `SELECT * FROM trades WHERE instrument = ? AND ${OPEN_STATUSES_SQL}`,
     [instrument]
   );
   return resultToObjects<TradeRecord>(result);
 }
 
 export function countOpenPositions(): number {
-  const result = db.exec("SELECT COUNT(*) as count FROM trades WHERE status IN ('open', 'tp1_hit')");
+  const result = db.exec(`SELECT COUNT(*) as count FROM trades WHERE ${OPEN_STATUSES_SQL}`);
   return result[0]?.values[0]?.[0] as number || 0;
 }
 
@@ -633,9 +641,28 @@ export function saveResearchBrief(brief: ResearchBrief): void {
   saveToFile();
 }
 
+// Maximum age for a "fresh" research brief. Beyond this, getLatestBrief()
+// returns null + logs a loud warning so the ICT cycle treats the brief as
+// missing rather than stale-but-current. The Researcher cron runs daily at
+// 05:30 UTC + Sunday 22:00 UTC; with the bot up, the latest brief is always
+// < 24h old. After bot downtime, this guard prevents week-old briefs from
+// silently shaping today's decisions. Codex P1 #7, 2026-04-28.
+const BRIEF_FRESHNESS_MAX_MS = 24 * 60 * 60_000;
+
 export function getLatestBrief(): ResearchBrief | null {
-  const result = db.exec('SELECT content FROM research_briefs ORDER BY created_at DESC LIMIT 1');
+  const result = db.exec('SELECT content, created_at FROM research_briefs ORDER BY created_at DESC LIMIT 1');
   if (!result[0]?.values[0]?.[0]) return null;
+  const createdAt = result[0].values[0][1] as string | undefined;
+  if (createdAt) {
+    const ageMs = Date.now() - Date.parse(createdAt);
+    if (Number.isFinite(ageMs) && ageMs > BRIEF_FRESHNESS_MAX_MS) {
+      console.warn(
+        `[Database] Latest research brief is ${Math.round(ageMs / 60_000 / 60)}h old (cutoff ${BRIEF_FRESHNESS_MAX_MS / 60_000 / 60}h). ` +
+          `Returning null — Researcher cron may be failing or bot was offline. Run: node check the scheduler logs.`,
+      );
+      return null;
+    }
+  }
   return JSON.parse(result[0].values[0][0] as string);
 }
 
