@@ -79,11 +79,24 @@ export const RSS_FEEDS: ReadonlyArray<FeedConfig> = [
   //   - BIS — https://www.bis.org/list/press_releases/index.rss (XML parse failure)
 
   // ====== TIER 2 — FX & commodity specialists (HIGH WEIGHT) ======
+  // FXStreet (https://www.fxstreet.com/rss/news) REMOVED 2026-04-28: works
+  // from local laptop but Hetzner IP is blocked at the network layer (403
+  // in <80ms regardless of User-Agent — datacenter/geo block, not UA gating).
+  // No header spoof works. Replaced with ActionForex + Investing.com Forex
+  // Opinion both confirmed 200 OK from VPS in ~200-800ms.
   {
-    name: 'FXStreet news',
+    name: 'ActionForex',
     tier: 2,
-    url: 'https://www.fxstreet.com/rss/news',
+    url: 'https://www.actionforex.com/feed/',
     tags: ['EUR', 'GBP', 'USD', 'JPY', 'AUD'],
+    notes: 'Replacement for FXStreet (Hetzner-blocked). FX commentary + analysis. Validated 200 OK from VPS 2026-04-28.',
+  },
+  {
+    name: 'Investing.com Forex Opinion',
+    tier: 2,
+    url: 'https://www.investing.com/rss/forex.rss',
+    tags: ['EUR', 'GBP', 'USD', 'JPY', 'AUD'],
+    notes: 'FX-focused subset of Investing.com (separate URL from the broader Investing.com news feed below). Validated 200 OK from VPS 2026-04-28.',
   },
   {
     name: 'ForexLive',
