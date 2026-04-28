@@ -31,6 +31,11 @@ export interface FeedConfig {
   notes?: string;
 }
 
+// 2026-04-28 validation pass via scripts/validate-rss-feeds.ts removed 6
+// dead feeds (US Treasury/AP/IMF — 401/403/404; BIS — XML parse fail;
+// DailyFX/Kitco — 403/404). Replaced with CNBC Top News + Yahoo Finance Top
+// Stories. Re-validate before adding more — every addition incurs a 10-min
+// poll cycle on the production scheduler.
 export const RSS_FEEDS: ReadonlyArray<FeedConfig> = [
   // ====== TIER 1 — wires & regulators (PRIMARY SOURCES) ======
   {
@@ -54,13 +59,6 @@ export const RSS_FEEDS: ReadonlyArray<FeedConfig> = [
     tags: ['GBP', 'BoE', 'MPC'],
   },
   {
-    name: 'US Treasury press releases',
-    tier: 1,
-    url: 'https://home.treasury.gov/rss-feeds/press-releases',
-    tags: ['USD'],
-    notes: 'Yields, sanctions, debt-issuance announcements.',
-  },
-  {
     name: 'BBC Business',
     tier: 1,
     url: 'https://feeds.bbci.co.uk/news/business/rss.xml',
@@ -68,25 +66,17 @@ export const RSS_FEEDS: ReadonlyArray<FeedConfig> = [
     notes: 'Reliable global wire alternative since Reuters retired free RSS in 2020.',
   },
   {
-    name: 'AP Business',
+    name: 'CNBC Top News',
     tier: 1,
-    url: 'https://apnews.com/index.rss',
+    url: 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114',
     tags: ['*'],
-    notes: 'AP throttles aggressive polling; respect 10-min interval.',
+    notes: 'Replacement for AP Business (401) — major US business wire, validated 2026-04-28.',
   },
-  {
-    name: 'IMF press releases',
-    tier: 1,
-    url: 'https://www.imf.org/en/News/RSS?Language=ENG&series=Press%20Releases',
-    tags: ['*'],
-  },
-  {
-    name: 'Bank for International Settlements (BIS)',
-    tier: 1,
-    url: 'https://www.bis.org/list/press_releases/index.rss',
-    tags: ['*'],
-    notes: 'Central-bank-of-central-banks; useful for systemic stress signals.',
-  },
+  // REMOVED 2026-04-28 (validation):
+  //   - US Treasury press releases — https://home.treasury.gov/rss-feeds/press-releases (404, RSS deprecated)
+  //   - AP Business — https://apnews.com/index.rss (401, requires API auth now)
+  //   - IMF press releases — https://www.imf.org/en/News/RSS?... (403)
+  //   - BIS — https://www.bis.org/list/press_releases/index.rss (XML parse failure)
 
   // ====== TIER 2 — FX & commodity specialists (HIGH WEIGHT) ======
   {
@@ -103,19 +93,6 @@ export const RSS_FEEDS: ReadonlyArray<FeedConfig> = [
     notes: 'Live-blogging style; great for breaking FX moves.',
   },
   {
-    name: 'DailyFX articles',
-    tier: 2,
-    url: 'https://www.dailyfx.com/feeds/all',
-    tags: ['EUR', 'GBP', 'USD', 'JPY', 'AUD'],
-  },
-  {
-    name: 'Kitco News',
-    tier: 2,
-    url: 'https://www.kitco.com/rss/KitcoNews.xml',
-    tags: ['GOLD', 'SILVER', 'USD'],
-    notes: 'Gold/silver specialist; always relevant for XAU/XAG trades.',
-  },
-  {
     name: 'OilPrice.com',
     tier: 2,
     url: 'https://oilprice.com/rss/main',
@@ -129,6 +106,16 @@ export const RSS_FEEDS: ReadonlyArray<FeedConfig> = [
     tags: ['*'],
     notes: 'Broad markets feed with FX + commodity coverage.',
   },
+  {
+    name: 'Yahoo Finance Top Stories',
+    tier: 2,
+    url: 'https://finance.yahoo.com/rss/topstories',
+    tags: ['*'],
+    notes: 'Replacement for Kitco/DailyFX — broad markets, validated 2026-04-28.',
+  },
+  // REMOVED 2026-04-28 (validation):
+  //   - DailyFX articles — https://www.dailyfx.com/feeds/all (403)
+  //   - Kitco News — https://www.kitco.com/rss/KitcoNews.xml (404, URL changed)
 
   // ====== TIER 3 — analysis & blogs (SUPPORTING CONTEXT ONLY) ======
   {
@@ -142,7 +129,8 @@ export const RSS_FEEDS: ReadonlyArray<FeedConfig> = [
     tier: 3,
     url: 'https://www.calculatedriskblog.com/feeds/posts/default',
     tags: ['USD'],
-    notes: 'Bill McBride; macro-trend + housing-cycle commentary.',
+    notes:
+      'Bill McBride; macro-trend + housing-cycle commentary. NOTE 2026-04-28: validator showed latest article ~106 days old — feed parses OK but author may be on hiatus. Monitor; remove if stays stale.',
   },
   {
     name: 'Wolf Street',
