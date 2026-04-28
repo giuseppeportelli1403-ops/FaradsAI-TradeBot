@@ -297,13 +297,20 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       return JSON.stringify(await fetchEconomicCalendar(daysAhead));
     }
     case 'get_lessons': {
-      const lessons = getLessons({
+      const filters = {
         setup_type: input.setup_type as string | undefined,
         instrument_category: input.instrument_category as string | undefined,
         kill_zone: input.kill_zone as string | undefined,
-        strategy_tag: 'ICT_INTRADAY',
-      });
-      const wr = getLessonWinRate({ strategy_tag: 'ICT_INTRADAY' });
+        strategy_tag: 'ICT_INTRADAY' as const,
+      };
+      const lessons = getLessons(filters);
+      // Codex P1 #13 (2026-04-28): pass the SAME filters to the win-rate
+      // calculation. Previously this was passed only strategy_tag, so the
+      // setup-specific penalty in the agent prompt ("if win rate <50% on
+      // 5+ trades on this exact setup × kill zone, -10 points") was being
+      // applied based on the GLOBAL ICT win rate across all setups —
+      // unrelated history poisoning the score.
+      const wr = getLessonWinRate(filters);
       return JSON.stringify({ lessons, win_rate: wr });
     }
     case 'request_analyst_review': {
@@ -750,4 +757,16 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
       messages.push({ role: 'user', content: toolResults });
     }
   }
+
+  // Codex P2 #18 (2026-04-28): if the loop exhausted maxIterations
+  // without an end_turn, the agent ran out of room mid-reasoning. Loud
+  // alert via console.error so ops can review pm2-err.log; the cycle
+  // already completed (placed orders persist), but it's worth knowing
+  // the agent was still mid-thought when the hammer dropped.
+  // No Telegram alert here to avoid noise; pm2 log review covers it.
+  console.error(
+    `[ICT Agent] CYCLE TIMED OUT after ${maxIterations} iterations without end_turn. ` +
+      `Decision may be incomplete. If this happens repeatedly, raise the cap or audit ` +
+      `which tool the agent is looping on.`,
+  );
 }

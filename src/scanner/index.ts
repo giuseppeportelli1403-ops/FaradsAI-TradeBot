@@ -144,25 +144,35 @@ export function detectBias(candles: Candle[]): BiasResult {
   }
 
   // ============== SLOPE-BASED CLARITY FALLBACK (2026-04-22) ==============
-  // If formal swing structure is inconclusive, check whether the last 10
-  // closes are strongly monotonic. >=7 of the 9 transitions in the same
-  // direction earns clarity=15 — weaker than clean HH+HL (20) but stronger
-  // than a single partial-swing signal (10). Added to resolve the "scanner
-  // says bearish, 1H says bullish" conflicts that dominated morning SKIP
-  // decisions on 2026-04-22.
-  const last10 = recent.slice(0, 10);
-  let upTransitions = 0;
-  let downTransitions = 0;
-  for (let i = 0; i < last10.length - 1; i++) {
-    // last10 is reverse-chronological: index i is newer than index i+1.
-    if (last10[i].close > last10[i + 1].close) upTransitions++;
-    else if (last10[i].close < last10[i + 1].close) downTransitions++;
-  }
-  if (upTransitions >= 7) {
-    return { bias: 'bullish', clarity: 15, recent_high: recentHigh, recent_low: recentLow, atr };
-  }
-  if (downTransitions >= 7) {
-    return { bias: 'bearish', clarity: 15, recent_high: recentHigh, recent_low: recentLow, atr };
+  // CODEX P1 #6 + #6 again on third pass (2026-04-28): this fallback is
+  // momentum-following ("7 of last 9 closes went up → call it bullish").
+  // ICT methodology is REVERSAL/STRUCTURAL — trade against extended momentum
+  // at premium/discount levels. Calling something "bullish bias" precisely
+  // when it has been going up for 7 closes is the OPPOSITE of what ICT
+  // teaches; the bot may have been entering longs at the top of momentum
+  // runs where ICT wants to short.
+  //
+  // Now feature-flagged behind SCANNER_SLOPE_FALLBACK=true (default OFF).
+  // Disabled by default; enable only after a controlled A/B with logged
+  // win-rate by bias-source (clean HH/LL vs slope-fallback) shows it
+  // beats the ICT-pure baseline.
+  if (process.env.SCANNER_SLOPE_FALLBACK === 'true') {
+    const last10 = recent.slice(0, 10);
+    let upTransitions = 0;
+    let downTransitions = 0;
+    for (let i = 0; i < last10.length - 1; i++) {
+      // last10 is reverse-chronological: index i is newer than index i+1.
+      if (last10[i].close > last10[i + 1].close) upTransitions++;
+      else if (last10[i].close < last10[i + 1].close) downTransitions++;
+    }
+    if (upTransitions >= 7) {
+      console.log(`[Scanner] Slope fallback fired: bullish (${upTransitions}/9 up). Feature-flag-gated.`);
+      return { bias: 'bullish', clarity: 15, recent_high: recentHigh, recent_low: recentLow, atr };
+    }
+    if (downTransitions >= 7) {
+      console.log(`[Scanner] Slope fallback fired: bearish (${downTransitions}/9 down). Feature-flag-gated.`);
+      return { bias: 'bearish', clarity: 15, recent_high: recentHigh, recent_low: recentLow, atr };
+    }
   }
   // ============== END SLOPE FALLBACK ==============
 

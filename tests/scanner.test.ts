@@ -59,46 +59,86 @@ describe('detectBias', () => {
     expect(result.recent_high).toBeGreaterThanOrEqual(result.recent_low);
   });
 
-  it('assigns slope-based clarity=15 when closes are >=7/9 monotonic up but swings are mixed', () => {
-    // 20 candles needed for the code to attempt analysis. First 10 (newest)
-    // have mixed highs/lows (no valid swing structure) but closes are
-    // strongly uptrending — 8 of 9 transitions go up.
-    const candles: Candle[] = [];
-    // Candles are reverse-chronological (newest first). Build a steady
-    // climb in closes with noisy highs/lows to prevent formal swings from
-    // registering.
-    for (let i = 0; i < 20; i++) {
-      const close = 100 - i * 0.5; // newer closes are HIGHER (i=0 is newest)
-      candles.push({
-        datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
-        open: close,
-        high: close + (i % 2 === 0 ? 0.1 : 0.8), // alternating spikes, no clean swing highs
-        low: close - (i % 2 === 0 ? 0.8 : 0.1),
-        close,
-        volume: 0,
-      });
+  // After Codex P1 #6 (CR-D2 2026-04-28) the slope fallback is feature-flag
+  // gated behind SCANNER_SLOPE_FALLBACK=true (default OFF — contradicts ICT
+  // reversal philosophy). These two tests now scope the env flag locally
+  // so they exercise the fallback behaviour as documented while leaving
+  // the production default unchanged.
+  it('assigns slope-based clarity=15 when closes are >=7/9 monotonic up but swings are mixed (FLAG ON)', () => {
+    const prev = process.env.SCANNER_SLOPE_FALLBACK;
+    process.env.SCANNER_SLOPE_FALLBACK = 'true';
+    try {
+      const candles: Candle[] = [];
+      for (let i = 0; i < 20; i++) {
+        const close = 100 - i * 0.5;
+        candles.push({
+          datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
+          open: close,
+          high: close + (i % 2 === 0 ? 0.1 : 0.8),
+          low: close - (i % 2 === 0 ? 0.8 : 0.1),
+          close,
+          volume: 0,
+        });
+      }
+      const result = detectBias(candles);
+      expect(result.bias).toBe('bullish');
+      expect(result.clarity).toBe(15);
+    } finally {
+      if (prev === undefined) delete process.env.SCANNER_SLOPE_FALLBACK;
+      else process.env.SCANNER_SLOPE_FALLBACK = prev;
     }
-    const result = detectBias(candles);
-    expect(result.bias).toBe('bullish');
-    expect(result.clarity).toBe(15);
   });
 
-  it('assigns slope-based clarity=15 when closes are >=7/9 monotonic down but swings are mixed', () => {
-    const candles: Candle[] = [];
-    for (let i = 0; i < 20; i++) {
-      const close = 100 + i * 0.5; // newer closes are LOWER (i=0 is newest)
-      candles.push({
-        datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
-        open: close,
-        high: close + (i % 2 === 0 ? 0.1 : 0.8),
-        low: close - (i % 2 === 0 ? 0.8 : 0.1),
-        close,
-        volume: 0,
-      });
+  it('assigns slope-based clarity=15 when closes are >=7/9 monotonic down but swings are mixed (FLAG ON)', () => {
+    const prev = process.env.SCANNER_SLOPE_FALLBACK;
+    process.env.SCANNER_SLOPE_FALLBACK = 'true';
+    try {
+      const candles: Candle[] = [];
+      for (let i = 0; i < 20; i++) {
+        const close = 100 + i * 0.5;
+        candles.push({
+          datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
+          open: close,
+          high: close + (i % 2 === 0 ? 0.1 : 0.8),
+          low: close - (i % 2 === 0 ? 0.8 : 0.1),
+          close,
+          volume: 0,
+        });
+      }
+      const result = detectBias(candles);
+      expect(result.bias).toBe('bearish');
+      expect(result.clarity).toBe(15);
+    } finally {
+      if (prev === undefined) delete process.env.SCANNER_SLOPE_FALLBACK;
+      else process.env.SCANNER_SLOPE_FALLBACK = prev;
     }
-    const result = detectBias(candles);
-    expect(result.bias).toBe('bearish');
-    expect(result.clarity).toBe(15);
+  });
+
+  it('returns neutral when slope fallback is OFF (default), even on monotonic closes', () => {
+    // Production default: SCANNER_SLOPE_FALLBACK is unset/false → the
+    // momentum-following heuristic does NOT fire, regardless of how clean
+    // the run is. ICT-pure baseline.
+    const prev = process.env.SCANNER_SLOPE_FALLBACK;
+    delete process.env.SCANNER_SLOPE_FALLBACK;
+    try {
+      const candles: Candle[] = [];
+      for (let i = 0; i < 20; i++) {
+        const close = 100 - i * 0.5;
+        candles.push({
+          datetime: `2026-04-22 ${String(20 - i).padStart(2, '0')}:00:00`,
+          open: close,
+          high: close + (i % 2 === 0 ? 0.1 : 0.8),
+          low: close - (i % 2 === 0 ? 0.8 : 0.1),
+          close,
+          volume: 0,
+        });
+      }
+      const result = detectBias(candles);
+      expect(result.bias).toBe('neutral');
+      expect(result.clarity).toBe(0);
+    } finally {
+      if (prev !== undefined) process.env.SCANNER_SLOPE_FALLBACK = prev;
+    }
   });
 
   it('returns neutral when closes are noisy (fewer than 7/9 monotonic)', () => {

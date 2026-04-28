@@ -96,17 +96,47 @@ Produce your weekly report and strategy update instructions.`,
     console.log('=== WEEKLY PERFORMANCE REPORT ===');
     console.log(result.report || 'No report generated');
 
-    // Apply ICT strategy updates (append to change log)
+    // Apply ICT strategy updates.
+    // Codex P1 #5 (2026-04-28): pre-fix this block ONLY appended to the
+    // change log; it never patched the actual rule sections. Now we
+    // pattern-match "Increase X weight from Y to Z" instructions and
+    // perform a conservative in-place edit of Section 5 (the scoring
+    // rubric). Anything not matching the supported pattern still falls
+    // through to the audit-log append.
     if (result.ict_updates?.length > 0) {
       const date = new Date().toISOString().split('T')[0];
-      const newEntries = result.ict_updates
-        .map((u: { section: string; change: string; basis: string }) =>
-          `| ${date} | Weekly Review Agent | ${u.change} | ${u.basis} |`)
-        .join('\n');
+      let workingStrategy = ictStrategy;
+      const newChangeLogRows: string[] = [];
+      let patchedCount = 0;
 
-      const updatedIct = ictStrategy + '\n' + newEntries;
-      saveFile('strategy.md', updatedIct);
-      console.log(`ICT strategy updated: ${result.ict_updates.length} changes`);
+      for (const u of result.ict_updates as Array<{ section: string; change: string; basis: string }>) {
+        // Pattern 1: "Increase X weight from Y to Z" / "Decrease X weight from Y to Z"
+        // Where X is a setup type or component name, Y/Z are numeric weights.
+        const weightChangeMatch = /(?:Increase|Decrease|Set|Adjust|Change)\s+(.+?)\s+weight\s+(?:from\s+(\d+(?:\.\d+)?)\s+)?to\s+(\d+(?:\.\d+)?)/i.exec(u.change);
+        if (weightChangeMatch) {
+          const [, _component, oldWeight, newWeight] = weightChangeMatch;
+          if (oldWeight) {
+            // Replace specific weight value in Section 5 table. Conservative:
+            // only swap if the exact numeric appears as a standalone token in
+            // Section 5. Avoids accidentally touching other tables.
+            const section5Re = /(## Section 5[\s\S]*?)(?=## Section 6)/;
+            workingStrategy = workingStrategy.replace(section5Re, (match) => {
+              const updated = match.replace(
+                new RegExp(`\\b${oldWeight}\\b`, 'g'),
+                newWeight,
+              );
+              return updated;
+            });
+            patchedCount++;
+          }
+        }
+        newChangeLogRows.push(`| ${date} | Weekly Review Agent | ${u.change} | ${u.basis} |`);
+      }
+
+      // Always also append to the change log so the audit trail is preserved.
+      workingStrategy = workingStrategy + '\n' + newChangeLogRows.join('\n');
+      saveFile('strategy.md', workingStrategy);
+      console.log(`ICT strategy updated: ${result.ict_updates.length} entries logged, ${patchedCount} sections patched`);
     }
 
     // Apply Swing strategy updates

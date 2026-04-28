@@ -71,8 +71,17 @@ export class CapitalDealError extends Error {
 
 const DEFAULT_BASE_URL = 'https://demo-api-capital.backend-capital.com';
 const SESSION_IDLE_MS = 9 * 60 * 1000; // 9 minutes (Capital idle-timeout is 10)
-const DEAL_CONFIRM_POLL_MS = 200;
-const DEAL_CONFIRM_MAX_ATTEMPTS = 10;
+// Codex P1 #12 (2026-04-28): increased polling budget from 10×200ms (2s
+// total) to 25 attempts with mild exponential backoff (~10s total worst
+// case). The prior tight bound caused a real failure mode: Capital
+// accepted an order, was slow on /confirms/ (occasionally takes 2-4s
+// even when fully accepted), the agent saw a CapitalDealError timeout
+// and retried place_order — duplicate live position. The base 200ms
+// covers the typical case (~99% confirms in <1s); the long tail goes
+// up to ~10s before we give up.
+const DEAL_CONFIRM_POLL_BASE_MS = 200;
+const DEAL_CONFIRM_MAX_ATTEMPTS = 25;
+const DEAL_CONFIRM_BACKOFF_FACTOR = 1.08; // mild backoff: 200, 216, 233, ... up to ~1300ms by attempt 25
 const AUTH_RETRY_BACKOFF_MS = 50;
 
 // ==================== TIMEFRAME MAP ====================
@@ -563,7 +572,8 @@ export class CapitalClient {
   // ==================== INTERNAL HELPERS ====================
 
   /**
-   * Poll /confirms/:dealReference every 200ms, up to 10 attempts (2s total).
+   * Poll /confirms/:dealReference with mild exponential backoff (200ms
+   * base × 1.08^attempt), up to 25 attempts (~10s worst case).
    * Throws CapitalDealError on REJECTED status or on timeout.
    *
    * IMPORTANT: Capital.com's /confirms/ body returns a top-level `dealId` that
@@ -611,7 +621,8 @@ export class CapitalClient {
       }
 
       if (attempt < DEAL_CONFIRM_MAX_ATTEMPTS - 1) {
-        await this.sleep(DEAL_CONFIRM_POLL_MS);
+        const sleepMs = Math.round(DEAL_CONFIRM_POLL_BASE_MS * Math.pow(DEAL_CONFIRM_BACKOFF_FACTOR, attempt));
+        await this.sleep(sleepMs);
       }
     }
 
