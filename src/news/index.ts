@@ -16,6 +16,9 @@
 
 import { fetchNewsContext } from '../mcp-server/market-data.js';
 import type { NewsItem } from '../types.js';
+import { getRssNewsForInstrument, rssArticleToNewsItem } from './rss-aggregator.js';
+import { instrumentToCurrencies } from './calendar-veto.js';
+import { canonicalizeUrl } from './url-canonical.js';
 
 // ==================== NEWS SCORING ====================
 
@@ -50,15 +53,30 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
   try {
     items = await fetchNewsContext(instrument);
   } catch {
-    return {
-      items: [],
-      overall_score: 0,
-      dominant_category: 'none',
-      dominant_sentiment: 'neutral',
-      summary: 'No news data available',
-      stale_minutes: 0,
-      stale_dampened: false,
-    };
+    items = [];
+  }
+
+  // B3 (2026-04-28): merge cached RSS articles into the MarketAux pool.
+  // RSS feeds (FXStreet, Kitco, OilPrice, Fed/ECB/BoE, etc) cover FX +
+  // commodity narratives that MarketAux's equity-centric entity DB misses.
+  // The aggregator polls 18 feeds every 10 min via cron; here we just read
+  // from cache. Articles deduped by canonical URL against MarketAux items.
+  const currencies = instrumentToCurrencies(instrument);
+  const rssArticles = getRssNewsForInstrument(instrument, currencies, {
+    maxAgeHours: 24,
+    limit: 30,
+  });
+  if (rssArticles.length > 0) {
+    const seenUrls = new Set<string>();
+    for (const item of items) {
+      if (item.url) seenUrls.add(canonicalizeUrl(item.url));
+    }
+    for (const article of rssArticles) {
+      const key = article.canonicalLink;
+      if (key && seenUrls.has(key)) continue;
+      if (key) seenUrls.add(key);
+      items.push(rssArticleToNewsItem(article));
+    }
   }
 
   if (items.length === 0) {

@@ -10,6 +10,7 @@ import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prom
 import { ensureTradeId } from './trade-id.js';
 import { loadRecentJournal } from './eod-journal-agent.js';
 import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
+import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
 import { alertTradePlaced } from '../notifications/telegram.js';
 
@@ -212,7 +213,15 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const tradeCurrencies = instrumentToCurrencies(epic);
       if (tradeCurrencies.length > 0) {
         try {
-          const calendar = await fetchEconomicCalendar(1);
+          // B3 (2026-04-28): union of Finnhub + Forex Factory calendars.
+          // Each feed has known gaps; FF is the FX-trader gold standard
+          // and includes Tier-1 events Finnhub sometimes misses (and vice
+          // versa). Both are cached so the cost of unioning is small.
+          const [finnhubCalendar, ffCalendar] = await Promise.all([
+            fetchEconomicCalendar(1),
+            fetchForexFactoryCalendar().catch(() => []),
+          ]);
+          const calendar = [...finnhubCalendar, ...ffCalendar];
           const veto = shouldVetoOrderForCalendar(tradeCurrencies, calendar, Date.now());
           if (veto.veto) {
             console.warn(`[ICT Agent] place_order vetoed by calendar guard for ${epic}: ${veto.reason}`);

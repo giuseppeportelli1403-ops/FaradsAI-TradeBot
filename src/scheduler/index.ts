@@ -27,6 +27,7 @@ import { runResearcherAgent } from '../agents/researcher-agent.js';
 import { runReflectionAgent } from '../agents/reflection-agent.js';
 import { runWeeklyReviewAgent } from '../agents/review-agent.js';
 import { runEodJournalAgent } from '../agents/eod-journal-agent.js';
+import { pollAllFeeds } from '../news/rss-aggregator.js';
 import {
   getActiveSlTpOrders as realGetActiveSlTpOrders,
   deactivateSlTpOrder as realDeactivateSlTpOrder,
@@ -569,6 +570,19 @@ export function startScheduler(): void {
     await safeRun('EOD Journal Agent', () => runEodJournalAgent());
   }, CRON_UTC);
 
+  // Every 10 minutes: poll all 18 RSS feeds (B3, 2026-04-28).
+  // Tiered FX/commodity-specialist news pipeline — see src/news/rss-feeds.ts.
+  // Failures isolated per feed; one dead source doesn't take down the rest.
+  cron.schedule('*/10 * * * *', async () => {
+    await safeRun('RSS news poll', () => pollAllFeeds());
+  }, CRON_UTC);
+
+  // Initial RSS poll on startup so the first agent cycles have data
+  // immediately rather than waiting up to 10 min for the first cron tick.
+  pollAllFeeds().catch((err) => {
+    console.warn(`[Scheduler] Initial RSS poll failed: ${(err as Error).message}`);
+  });
+
   // Daily at 00:05 UTC: dump previous day's reject metrics.
   // Added 2026-04-23 (P4). Spawned as a detached process so the scheduler
   // event loop isn't blocked by the ~10s log scrape. Failures swallowed
@@ -593,5 +607,6 @@ export function startScheduler(): void {
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
   console.log('  0 0 * * 0             — Weekly Review Agent');
   console.log('  30 21 * * 1-5         — EOD Journal Agent (Mon-Fri after US close)');
+  console.log('  */10 * * * *          — RSS news poll (18 feeds, Tier 1/2/3)');
   console.log('  5 0 * * *             — Reject metrics dump (previous UTC day)');
 }
