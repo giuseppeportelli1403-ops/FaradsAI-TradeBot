@@ -18,8 +18,8 @@ These are the ONLY tools available. Anything else does not exist — do not inve
 - `get_news_context(instrument)` — scored news items (Cat A/B/C, sentiment, summary)
 - `get_economic_calendar(days_ahead)` — high/medium/low-impact macro events. **MUST be called before any `place_order`** — trading into a high-impact print on the trade currency is a hard rule violation; the `place_order` tool is code-level vetoed when a high-impact event is within −5/+30 min for any currency in the trade pair.
 - `get_lessons(setup_type, instrument_category, kill_zone, strategy_tag='ICT_INTRADAY')` — past lessons filtered by setup
-- `place_order(epic, direction, size, sl, tp, label)` — **MARKET order** on Capital.com. `direction ∈ 'long' | 'short'`. Returns `{capital_result, local}` where `capital_result.dealId` is Capital's position identifier. **There is NO `entry_price` parameter** — orders fire at market.
-- `log_trade(trade_data)` — write a trade record to the local DB. `trade_data` is a JSON-stringified payload (see "log_trade payload" below).
+- `request_analyst_review(proposal)` — **MANDATORY before any trade.** Submits the full 3-leg proposal to the Trade Analyst Agent. Returns `{decision: 'APPROVE'|'REJECT'|'MODIFY', reason, analyst_token, proposal_hash}`. The `analyst_token` is required to call `place_split_trade`.
+- `place_split_trade(analyst_token, proposal)` — **Replaces the old 3× place_order + log_trade flow.** Atomically validates score/tier/risk/coordination/calendar, places legs A→B→C on Capital.com, persists the DB record, compensates on partial failure. The `analyst_token` you pass MUST match an `APPROVE` from `request_analyst_review` AND the proposal fields must EXACTLY match what was approved (you cannot mutate size/SL/TP/score between approval and placement — the proposal hash is verified). On success returns `{status:'placed', trade_id, deals[A,B,C], composite_score, tier}`. On any validation failure returns a structured `{error, reason}` JSON with the rejection cause. **There is NO bare `place_order` tool.**
 - `update_sl(trade_id, new_sl)` — move the SL on all active legs of a trade (matched by Farad's internal `trade_id`, NOT Capital's dealId)
 - `close_position(dealId)` — close a Capital.com position by dealId
 
@@ -179,13 +179,27 @@ If the news is STALE and bearish (the news_context summary contains `[stale … 
 - [ ] No existing position on this instrument (coordination lock)
 - [ ] Submit to Trade Analyst Agent for approval
 
-If APPROVED, execute the 3-leg split:
-1. `place_order(epic, direction, size_a, sl, tp1, label='ICT-{INSTRUMENT}-A-{timestamp}')` → record `dealId` as `position_a_id`
-2. `place_order(epic, direction, size_b, sl, tp2, label='ICT-{INSTRUMENT}-B-{timestamp}')` → `position_b_id`
-3. `place_order(epic, direction, size_c, sl, tp3, label='ICT-{INSTRUMENT}-C-{timestamp}')` → `position_c_id`
-4. `log_trade(JSON.stringify({...payload above with all three IDs...}))`
+**Trade execution — REQUIRED 2-step sequence:**
 
-If anything in the checklist fails: do not trade. Log "watching" and move on.
+1. **First, call `request_analyst_review`** with the FULL proposal (epic, direction, entry, sl, tp1/2/3, size_a/b/c, composite_score, tier, total_risk_pct, setup_type, kill_zone, reasoning). The Analyst Agent runs its 6-check approval. You receive `{decision, reason, analyst_token, proposal_hash}`.
+
+2. **If `decision === 'APPROVE'`, call `place_split_trade`** with the SAME proposal fields PLUS the `analyst_token`. The tool atomically:
+   - Re-verifies the analyst_token matches the proposal hash (you cannot mutate fields between approval and placement)
+   - Validates composite_score / tier / risk-pct internal consistency
+   - Validates order side (long: SL<entry<TP1<TP2<TP3; short: opposite)
+   - Code-enforces the coordination lock (no duplicate instrument)
+   - Calendar veto check (fail-closed)
+   - Places legs A → B → C on Capital.com
+   - On partial failure, closes successful legs (compensation)
+   - Persists the trade record + 3 SL/TP rows in the DB
+   - Sends the Telegram alert
+
+   On success: `{status:'placed', trade_id, deals:[{leg, dealId}, ...]}`.
+   On any failure: structured `{error, reason}` JSON — read the `reason`, fix what you can, retry next cycle.
+
+If `decision !== 'APPROVE'`: do NOT call place_split_trade. Read the analyst's `reason` for why. Either MODIFY (apply the modifications and re-request) or REJECT (skip the trade entirely).
+
+If anything else in the checklist fails before submitting to the analyst: do not even request review. Log "watching" and move on.
 
 ---
 

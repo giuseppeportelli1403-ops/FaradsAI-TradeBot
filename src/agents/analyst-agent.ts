@@ -29,19 +29,26 @@ export function parseAnalystResponse(text: string): AnalystDecision {
   }
 }
 
-interface TradeProposal {
+export interface TradeProposal {
   trade_id: string;
   strategy_tag: StrategyTag;
   instrument: string;
+  epic: string;
   instrument_category: string;
   direction: 'long' | 'short';
   entry: number;
   sl: number;
   tp1: number;
   tp2: number;
-  size_per_leg: number;
+  // Added 2026-04-28: 3-leg split-position. tp3 is required for new
+  // ICT trades since the 3-leg upgrade on 2026-04-21.
+  tp3: number;
+  size_a: number;
+  size_b: number;
+  size_c: number;
   total_risk_pct: number;
   composite_score: number;
+  tier: 1 | 2 | 3;
   setup_type: string;
   kill_zone: string;
   reasoning: string;
