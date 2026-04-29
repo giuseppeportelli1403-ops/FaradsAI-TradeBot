@@ -62,7 +62,9 @@ const capital = new CapitalClient({
 // Production behaviour is unchanged when `deps` is undefined.
 
 export interface MonitorDeps {
-  capital: Pick<CapitalClient, 'getOpenPositions' | 'getActivityHistory' | 'updatePosition'>;
+  // 2026-04-29 audit-3 r6: added 'getMarketDetails' for price-proximity
+  // close-reason classification.
+  capital: Pick<CapitalClient, 'getOpenPositions' | 'getActivityHistory' | 'updatePosition' | 'getMarketDetails'>;
   getActiveSlTpOrders: typeof realGetActiveSlTpOrders;
   getTradeById: typeof realGetTradeById;
   deactivateSlTpOrder: typeof realDeactivateSlTpOrder;
@@ -71,6 +73,35 @@ export interface MonitorDeps {
   alertTp2Hit?: typeof realAlertTp2Hit;
   alertTp3Hit?: typeof realAlertTp3Hit;   // NEW (3-leg): fired on Leg C TP
   alertSlHit?: typeof realAlertSlHit;
+}
+
+// 2026-04-29 audit-3 r6: price-proximity helper. Fetches current market
+// price for a trade's epic and returns the mid (bid+offer)/2 for use in
+// classifyCloseReason's Tier-2 distance check. Returns null on any
+// failure — caller falls back to 'OTHER' in that case (existing behavior
+// for unclassifiable closes is to deactivate-without-status, which is
+// safer than guessing).
+async function fetchClosePriceForTrade(
+  trade: TradeRecord,
+  capital: Pick<CapitalClient, 'getMarketDetails'>,
+): Promise<number | null> {
+  try {
+    // The Capital `epic` is what the bot recorded on placement. We need
+    // the same value for getMarketDetails. For our 7-instrument universe
+    // epic == ticker (per the scanner invariant test), so trade.instrument
+    // works as the epic too. If a future universe addition uses different
+    // epic ↔ ticker mapping we'll need a lookup helper.
+    const md = await capital.getMarketDetails(trade.instrument);
+    const bid = md?.snapshot?.bid;
+    const offer = md?.snapshot?.offer;
+    if (typeof bid === 'number' && typeof offer === 'number' && Number.isFinite(bid) && Number.isFinite(offer)) {
+      return (bid + offer) / 2;
+    }
+    return null;
+  } catch (err) {
+    console.warn(`[Monitor] fetchClosePriceForTrade failed for ${trade.instrument}: ${summarizeError(err)}`);
+    return null;
+  }
 }
 
 // Track last processed candle timestamps to detect new closes
@@ -122,35 +153,72 @@ async function check1hCandleClose(): Promise<boolean> {
 //   Position A (the TP1 leg) closed by Capital → if it was a TP hit, move
 //   Position B's SL to break-even (our custom split-position rule).
 
-/** Classify why a Capital position closed. Looks up the most recent activity
- *  record for `dealId` and returns 'TP', 'SL', or 'OTHER' based on the
- *  activity/status fields. Exported for testing. */
+/** Classify why a Capital position closed.
+ *
+ * 2026-04-29 audit-3 r6 P0: previously this read `a.activity` against
+ * Capital's response, but live probing showed Capital uses `type` (not
+ * `activity`) and the `status` field is just `"ACCEPTED"` / `"EXECUTED"` —
+ * never `"PROFIT_HIT"` / `"STOP_HIT"`. Result: every close classified as
+ * `'OTHER'` in production. Unit tests passed only because their fixture
+ * status strings (PROFIT_HIT etc.) don't reflect Capital's real shape.
+ *
+ * Two-tier classifier:
+ *
+ *   Tier 1 — activity-string match (legacy / future-proof). Reads BOTH
+ *   `a.type` and `a.activity` (back-compat) and BOTH `a.status` for any
+ *   keyword fingerprint of TP vs SL. In real Capital data this never
+ *   hits today, but if Capital ever adds explicit lifecycle-event status
+ *   strings we get it for free.
+ *
+ *   Tier 2 — price proximity (load-bearing). When Tier 1 returns 'OTHER',
+ *   we look up the trade's recorded SL + TP1/TP2/TP3 and compare the
+ *   leg's TP target against the SL using the supplied `closePrice` (from
+ *   getMarketDetails snapshot, queried by the caller right when the
+ *   close was detected). Whichever level the price is closer to is the
+ *   level that was hit. Robust to spread/wick because typical SL-to-TP
+ *   distances are >> typical wick errors.
+ *
+ * Returns 'OTHER' only when (a) Tier 1 misses AND (b) Tier 2 inputs are
+ * unavailable (no trade record, no closePrice). Caller can then decide
+ * to fall back to deactivate-without-status or fetch a fresh price.
+ */
 export function classifyCloseReason(
   activities: Activity[],
   dealId: string,
+  // Optional price-proximity inputs. When supplied and Tier 1 misses,
+  // we use the trade's recorded levels + closePrice to decide.
+  trade?: TradeRecord,
+  leg?: 'A' | 'B' | 'C',
+  closePrice?: number,
 ): 'TP' | 'SL' | 'OTHER' {
+  // ----- Tier 1: activity-string match -----
   const relevant = activities.filter((a) => a.dealId === dealId);
-  if (relevant.length === 0) return 'OTHER';
-
-  // Capital.com activity statuses include strings like 'PROFIT' or 'STOP'/'LIMIT'.
-  // We match on substring for robustness against casing / field naming.
-  //
-  // 2026-04-29 audit-3 fix (scheduler-audit BUG-S2): check STOP/SL BEFORE
-  // PROFIT/LIMIT/TP. Pre-fix the order let `STOP_LIMIT_*` activity strings
-  // match LIMIT first and silently flip a real stop-out into a fake TP,
-  // cascading handleTp1Hit (move B/C SL to BE) on a losing trade and
-  // permanently corrupting status + P&L tracking. STOP-prefixed wording is
-  // the more dangerous misclassification (loss → fake win), so it wins
-  // priority on ambiguous strings.
   for (const a of relevant) {
-    const blob = `${a.activity} ${a.status}`.toUpperCase();
-    if (blob.includes('STOP') || blob.includes('SL_')) {
-      return 'SL';
-    }
-    if (blob.includes('PROFIT') || blob.includes('LIMIT') || blob.includes('TP_')) {
-      return 'TP';
+    // 2026-04-29: include `a.type` (real Capital field) AND `a.activity`
+    // (legacy / test-fixture field) so this works on both real data and
+    // existing tests. STOP/SL_ takes priority over PROFIT/LIMIT/TP_ to
+    // prevent the BUG-S2 STOP_LIMIT misclassification.
+    const blob = `${a.type ?? ''} ${a.activity ?? ''} ${a.status}`.toUpperCase();
+    if (blob.includes('STOP') || blob.includes('SL_')) return 'SL';
+    if (blob.includes('PROFIT') || blob.includes('LIMIT') || blob.includes('TP_')) return 'TP';
+  }
+
+  // ----- Tier 2: price proximity -----
+  if (trade && leg && typeof closePrice === 'number' && Number.isFinite(closePrice)) {
+    const slLevel = trade.sl;
+    const tpLevel =
+      leg === 'A' ? trade.tp1
+      : leg === 'B' ? trade.tp2
+      : (trade.tp3 ?? trade.tp2);
+    if (Number.isFinite(slLevel) && Number.isFinite(tpLevel)) {
+      const slDist = Math.abs(closePrice - slLevel);
+      const tpDist = Math.abs(closePrice - tpLevel);
+      // If SL and TP are equidistant (extremely unlikely), prefer SL —
+      // safer to flag as a stop-out than to mark a loss as a win.
+      return slDist <= tpDist ? 'SL' : 'TP';
     }
   }
+
   return 'OTHER';
 }
 
@@ -267,13 +335,16 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
     try {
       if (openDealIds.has(order.deal_id)) continue;
 
-      const reason = classifyCloseReason(activities, order.deal_id);
       const trade = d.getTradeById(order.trade_id);
       if (!trade) {
         console.warn(`[Monitor] Trade ${order.trade_id} not found for closed Leg A`);
         d.deactivateSlTpOrder(order.trade_id, 'A');
         continue;
       }
+      // Tier-2 price-proximity input. Fetched per-leg-close, not per-tick,
+      // to avoid wasting Capital quota when nothing closed.
+      const closePrice = await fetchClosePriceForTrade(trade, d.capital);
+      const reason = classifyCloseReason(activities, order.deal_id, trade, 'A', closePrice ?? undefined);
 
       if (reason === 'TP') {
         await handleTp1Hit(trade, order.trade_id, d);
@@ -282,7 +353,7 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
       } else {
         console.warn(
           `[Monitor] Leg A for trade ${order.trade_id} (deal ${order.deal_id}) ` +
-            `closed but reason could not be classified. Deactivating Leg A only.`,
+            `closed but reason could not be classified (closePrice=${closePrice ?? 'unavailable'}). Deactivating Leg A only.`,
         );
         d.deactivateSlTpOrder(order.trade_id, 'A');
       }
@@ -300,12 +371,13 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
     try {
       if (openDealIds.has(order.deal_id)) continue;
 
-      const reason = classifyCloseReason(activities, order.deal_id);
       const trade = d.getTradeById(order.trade_id);
       if (!trade) {
         d.deactivateSlTpOrder(order.trade_id, 'B');
         continue;
       }
+      const closePrice = await fetchClosePriceForTrade(trade, d.capital);
+      const reason = classifyCloseReason(activities, order.deal_id, trade, 'B', closePrice ?? undefined);
 
       if (reason === 'TP') {
         await handleTp2Hit(trade, order.trade_id, d);
@@ -325,12 +397,13 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
     try {
       if (openDealIds.has(order.deal_id)) continue;
 
-      const reason = classifyCloseReason(activities, order.deal_id);
       const trade = d.getTradeById(order.trade_id);
       if (!trade) {
         d.deactivateSlTpOrder(order.trade_id, 'C');
         continue;
       }
+      const closePrice = await fetchClosePriceForTrade(trade, d.capital);
+      const reason = classifyCloseReason(activities, order.deal_id, trade, 'C', closePrice ?? undefined);
 
       if (reason === 'TP') {
         await handleTp3Hit(trade, order.trade_id, d);

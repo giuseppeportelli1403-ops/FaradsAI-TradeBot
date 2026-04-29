@@ -175,14 +175,28 @@ export interface UpdateWorkingOrderParams {
   profitLevel?: number;
 }
 
+/**
+ * 2026-04-29: corrected Activity shape after live probe of Capital's
+ * /history/activity endpoint. Capital uses `type` for the action class
+ * ("POSITION" / "WORKING_ORDER"), not `activity`. The previous interface
+ * mis-matched and caused classifyCloseReason to read undefined into a
+ * keyword-substring check — every close classified as 'OTHER' silently.
+ *
+ * Real fields returned: date, dateUTC, epic, dealId, source, type, status.
+ * Capital does NOT include `level` or `size` on activity entries — those
+ * are removed (use Transaction or getMarketDetails for prices).
+ */
 export interface Activity {
   date: string;
+  dateUTC?: string;
   epic: string;
   dealId: string;
-  activity: string;
-  status: string;
-  size: number;
-  level: number;
+  source?: string;            // "USER" / "DEALER" / "SYSTEM"
+  type: string;               // "POSITION" / "WORKING_ORDER"
+  status: string;             // "ACCEPTED" / "EXECUTED" / "REJECTED"
+  /** @deprecated Capital does not return this field. Kept optional for
+   * backwards compat with old tests + serialised legacy DB rows. */
+  activity?: string;
 }
 
 export interface Transaction {
@@ -191,6 +205,8 @@ export interface Transaction {
   transactionType: string;
   size: number;
   currency: string;
+  profitAndLoss?: string;
+  note?: string;
 }
 
 export interface Sentiment {

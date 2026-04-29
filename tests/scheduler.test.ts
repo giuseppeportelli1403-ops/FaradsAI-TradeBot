@@ -161,6 +161,86 @@ describe('classifyCloseReason', () => {
     ];
     expect(classifyCloseReason(activities, 'DEAL-A')).toBe('SL');
   });
+
+  // 2026-04-29 audit-3 r6: live probe of Capital's /history/activity returned
+  // type='POSITION'/'WORKING_ORDER' with status='ACCEPTED'/'EXECUTED' — none
+  // of which contain TP/SL keywords. Real production data classified as
+  // 'OTHER' on Tier 1, requiring Tier 2 (price proximity) to decide.
+
+  it("real Capital data: type=POSITION + status=ACCEPTED falls through to OTHER without trade input", () => {
+    const activities: Activity[] = [
+      { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED' },
+    ];
+    expect(classifyCloseReason(activities, 'DEAL-A')).toBe('OTHER');
+  });
+
+  it("real Capital data: type=WORKING_ORDER + status=EXECUTED falls through to OTHER", () => {
+    const activities: Activity[] = [
+      { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-A', type: 'WORKING_ORDER', status: 'EXECUTED' },
+    ];
+    expect(classifyCloseReason(activities, 'DEAL-A')).toBe('OTHER');
+  });
+
+  it("Tier 2 price-proximity: closePrice closer to SL → returns 'SL'", () => {
+    const trade = makeTrade({ entry: 1.10, sl: 1.0900, tp1: 1.1100, tp2: 1.1200, tp3: 1.1300 });
+    const activities: Activity[] = [
+      { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED' },
+    ];
+    // closePrice 1.0905 is 5 pips from SL (1.0900) and 195 pips from TP1 (1.1100)
+    expect(classifyCloseReason(activities, 'DEAL-A', trade, 'A', 1.0905)).toBe('SL');
+  });
+
+  it("Tier 2 price-proximity: closePrice closer to TP1 → returns 'TP'", () => {
+    const trade = makeTrade({ entry: 1.10, sl: 1.0900, tp1: 1.1100, tp2: 1.1200, tp3: 1.1300 });
+    const activities: Activity[] = [
+      { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED' },
+    ];
+    expect(classifyCloseReason(activities, 'DEAL-A', trade, 'A', 1.1095)).toBe('TP');
+  });
+
+  it("Tier 2: leg B uses tp2 as its target", () => {
+    const trade = makeTrade({ entry: 1.10, sl: 1.0900, tp1: 1.1100, tp2: 1.1200, tp3: 1.1300 });
+    const activities: Activity[] = [
+      { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-B', type: 'POSITION', status: 'ACCEPTED' },
+    ];
+    // 1.1199 is closer to tp2 (1.1200) than to sl (1.0900)
+    expect(classifyCloseReason(activities, 'DEAL-B', trade, 'B', 1.1199)).toBe('TP');
+  });
+
+  it("Tier 2: leg C uses tp3 (or tp2 fallback) as its target", () => {
+    const trade = makeTrade({ entry: 1.10, sl: 1.0900, tp1: 1.1100, tp2: 1.1200, tp3: 1.1300 });
+    const activities: Activity[] = [
+      { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-C', type: 'POSITION', status: 'ACCEPTED' },
+    ];
+    expect(classifyCloseReason(activities, 'DEAL-C', trade, 'C', 1.1299)).toBe('TP');
+  });
+
+  it("Tier 2: equidistant defaults to SL (safer to flag loss than mark a loss as a win)", () => {
+    const trade = makeTrade({ entry: 1.10, sl: 1.0900, tp1: 1.1100, tp2: 1.1200, tp3: 1.1300 });
+    const activities: Activity[] = [
+      { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED' },
+    ];
+    // 1.1000 is exactly equidistant from SL (1.0900) and TP1 (1.1100)
+    expect(classifyCloseReason(activities, 'DEAL-A', trade, 'A', 1.1000)).toBe('SL');
+  });
+
+  it("Tier 2: closePrice undefined → returns 'OTHER' (caller decides fallback)", () => {
+    const trade = makeTrade({ entry: 1.10, sl: 1.0900, tp1: 1.1100 });
+    const activities: Activity[] = [
+      { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED' },
+    ];
+    expect(classifyCloseReason(activities, 'DEAL-A', trade, 'A', undefined)).toBe('OTHER');
+  });
+
+  it("Tier 1 wins over Tier 2 when activity has SL/TP keywords (back-compat)", () => {
+    const trade = makeTrade({ entry: 1.10, sl: 1.0900, tp1: 1.1100 });
+    const activities: Activity[] = [
+      // PROFIT_HIT keyword in status — Tier 1 wins, returns TP regardless of closePrice
+      makeActivity({ dealId: 'DEAL-A', activity: 'POSITION', status: 'PROFIT_HIT' }),
+    ];
+    // closePrice would say SL (close to 1.0900) but Tier 1 PROFIT_HIT wins
+    expect(classifyCloseReason(activities, 'DEAL-A', trade, 'A', 1.0905)).toBe('TP');
+  });
 });
 
 // ==================== monitorSplitPositions ====================
