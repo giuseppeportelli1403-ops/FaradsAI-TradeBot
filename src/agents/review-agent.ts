@@ -53,14 +53,15 @@ export async function runWeeklyReviewAgent(): Promise<string> {
   const timeoutMs = 60_000;
   const response = await withTimeout(
     anthropic.messages.create({
-    // Cost optimisation (2026-04-21): weekly review runs once per week,
-    // so absolute cost is small either way, but keeping all agents on a
-    // single model family simplifies cache-warming + reasoning about
-    // quality deltas. Sonnet 4.6 at effort 'max' produces thorough
-    // reviews; if weekly strategy tuning output regresses, revert to
-    // 'claude-opus-4-6' (highest-leverage reasoning is the review's
-    // strategy-file-edit decision, which happens once per week).
-    model: 'claude-sonnet-4-6',
+    // 2026-04-29: downgraded Sonnet → Haiku 4.5 per user direction.
+    // Weekly Review runs once per week, so absolute cost was small
+    // either way — but the bot's auto-write paths to strategy.md were
+    // disabled in audit-2 (P0-RV1/RV2/RV3) and the review output is
+    // now AUDIT-ONLY (logs proposed changes, no auto-edits to rule
+    // sections). Haiku is sufficient for that audit-log role. Revert
+    // to 'claude-sonnet-4-6' if the weekly write-back logic is ever
+    // re-enabled.
+    model: 'claude-haiku-4-5-20251001',
     // max_tokens 16000 → 12000 (2026-04-21) — weekly review output is
     // structured + concise, rarely needs more than 8k tokens.
     max_tokens: 12000,

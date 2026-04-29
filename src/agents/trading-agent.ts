@@ -924,14 +924,17 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
 
   for (let i = 0; i < maxIterations; i++) {
     const response = await withTimeout(anthropic.messages.create({
-      // Cost optimisation (2026-04-21): ICT reasoning is quantitative
-      // (order blocks, FVGs, structure detection, R:R math). Sonnet 4.6
-      // handles this well at roughly 1/3 the token cost of Opus. The ICT
-      // agent fires up to ~70× per day across kill zones — Opus on this
-      // cadence was the single biggest Claude-API burn line-item. If
-      // decision quality regresses noticeably vs the Opus run, revert
-      // the `model` field to `claude-opus-4-6`.
-      model: 'claude-sonnet-4-6',
+      // Cost optimisation (2026-04-29): downgraded Sonnet → Haiku 4.5 per
+      // user direction. ICT runs ~70× per kill-zone-active day, so it's
+      // the single biggest Claude-API line-item. Trade-off: Haiku is a
+      // smaller model, so quantitative reasoning (R:R math, order-block
+      // structure detection) may regress versus Sonnet. If decision
+      // quality demonstrably drops (more bad-trigger trades / fewer
+      // legitimate setups taken) revert the `model` field to
+      // 'claude-sonnet-4-6'. Trade-Analyst stays on Sonnet — ALL trade
+      // approvals still run through analyst review, so Haiku ICT errors
+      // are caught at the analyst gate before any Capital order.
+      model: 'claude-haiku-4-5-20251001',
       // max_tokens 16000 → 12000 (2026-04-21): caps the output each
       // iteration can generate. Typical response is 2-5k, so 12k is
       // still generous headroom. Rare verbose responses now truncate

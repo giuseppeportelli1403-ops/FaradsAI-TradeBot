@@ -27,14 +27,15 @@ export async function runReflectionAgent(tradeId: string): Promise<void> {
   let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
   try {
     response = await withTimeout(anthropic.messages.create({
-      // Model: Sonnet 4.6 — REVERTED from Haiku 4.5 on 2026-04-28 second-pass
-      // codex review. Reflection writes structured lessons that the Weekly
-      // Review Agent later learns from. Bad-but-parseable Haiku output would
-      // pollute the learning loop without surfacing as a runtime error
-      // (insertLesson accepts any object). Pay for Sonnet quality here —
-      // Reflection runs only after each trade close (~5-15/week), so absolute
-      // cost is small.
-      model: 'claude-sonnet-4-6',
+      // 2026-04-29: re-downgraded Sonnet → Haiku 4.5 per user direction.
+      // Caveat from the 2026-04-28 codex review still applies: Reflection
+      // writes structured lessons that the Weekly Review Agent learns
+      // from, so bad-but-parseable Haiku output can pollute the learning
+      // loop without surfacing as a runtime error. Mitigation:
+      // Reflection runs at most ~5-15× per week (one per closed trade)
+      // so we will eyeball every lesson during the demo window and
+      // upgrade to Sonnet if quality drops. Revert via 'claude-sonnet-4-6'.
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 4000,
       thinking: { type: 'adaptive' },
       output_config: { effort: 'high' },
