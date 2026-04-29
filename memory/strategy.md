@@ -1,6 +1,6 @@
 # ICT Intraday Trading Strategy — BetterOpsAI Trading Bot
-> Last Updated: 2026-04-28
-> Updated By: 2026-04-28 audit pass — corrected drift between strategy.md and code
+> Last Updated: 2026-04-29
+> Updated By: 2026-04-29 structural overhaul — TP1 R:R, trigger quantification, score rebalance, history-WR threshold, calendar window sync
 > Strategy Tag: ICT_INTRADAY
 
 ---
@@ -28,10 +28,29 @@ Trading outside kill zones: scanner applies a kill-zone bonus that pushes the co
 
 ## Section 3: Entry Triggers (15M)
 
-1. **OB Retest** — rejection candle closing back in bias direction
-2. **FVG Fill** — candle closing back out of gap in bias direction
-3. **Liquidity Sweep** — sweep of swing high/low with strong reversal candle
-4. **Breakout Retest** — broken level hold confirmed on 15M close
+Every trigger requires a quantitative match — no subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; the agent must log "watching, no trigger" and move on.
+
+1. **OB Retest**
+   - Price taps an order block from the bias-aligned side and prints a *rejection candle* with ALL of:
+     - body ≥ 0.5 × candle range (`|close - open| / (high - low) ≥ 0.5`)
+     - close in the bias direction (close > open for bullish, < for bearish)
+     - opposing wick ≥ 1.0 × body (the rejection wick is at least as long as the body)
+     - tap depth ≤ 50% inside the OB (close deeper than 50% invalidates the retest)
+
+2. **FVG Fill**
+   - Price closes back inside (≥ 50% fill of the FVG range) AND the next candle closes in the bias direction with body ≥ 0.5 × range.
+   - Partial fills (< 50%) followed by reversal do NOT qualify — wait for a real fill or pass.
+
+3. **Liquidity Sweep**
+   - Wick exceeds the prior swing high/low by ≥ 1 × spread (so it's a real sweep, not just spread tag).
+   - Reversal candle within ≤ 2 candles of the sweep, with: body ≥ 0.6 × range, closing back through the swept level by ≥ 1 × spread, in the bias direction.
+
+4. **Breakout Retest**
+   - Level broken on a 1H or 15M close (not just intraday touch).
+   - Retest within ≤ 6 × 15M candles of the break.
+   - Hold confirmed by 2 × 15M closes on the bias side of the broken level after retest.
+
+In all four cases, "spread" = current bid/ask spread on the instrument at trigger evaluation time; "candle" = 15M candle unless otherwise specified.
 
 ---
 
@@ -55,20 +74,29 @@ Indices may be re-added when a real index feed is wired (Pro-tier Twelve Data or
 
 ## Section 5: Composite Scoring Rubric (0–100)
 
+**Rebalanced 2026-04-29:** structure now dominates the score. Pre-rebalance, news + kill-zone + spread-bonus could carry an instrument to Tier 2 (~70 points) without ANY structural backing (zero on bias clarity AND zero on ICT array quality). Post-rebalance, no-structure setups top out around 50 points and never qualify.
+
+Kill zone is **no longer a score component** — it is a hard gate (Section 2). Trading outside kill zones is impossible regardless of score.
+
 | Component | Points |
 |-----------|--------|
-| 1H bias clarity | 0 (unclear) / 10 (moderate) / 15 (slope-derived) / 20 (clean HH+HL or LH+LL) |
-| ICT array quality | 0 (none) / 12 (weak) / 18 (moderate) / 25 (strong) |
-| Kill zone alignment | -5 (outside) / 0 (no zone) / 15 (inside) |
-| News catalyst | -15 (opposing Cat A) / -5 (opposing Cat B) / 0 (neutral) / +10 (aligned Cat B) / +20 (aligned Cat A) |
-| Historical win rate adjustment | -10 (<50% over 5+ trades on this exact setup × kill zone) / 0 (neutral) / +10 (>70% over 5+ trades) |
+| 1H bias clarity | 0 (unclear) / 15 (moderate) / 20 (slope-derived) / 25 (clean HH+HL or LH+LL) |
+| ICT array quality | 0 (none) / 15 (weak) / 25 (moderate) / 35 (strong) |
+| News catalyst | -15 (opposing Cat A) / -5 (opposing Cat B) / 0 (neutral) / +5 (aligned Cat B) / +10 (aligned Cat A) |
+| Historical win rate adjustment | -10 (<50% over **2+ trades** on this setup × kill zone) / 0 (neutral / no history) / +10 (>70% over **2+ trades**) |
 | Spread quality bonus | 0 (medium) / +5 (tight) |
-| Base | 30 |
+| Base | 25 |
+
+Maximum theoretical score: 25 (base) + 25 (bias) + 35 (ICT array) + 10 (news) + 10 (history) + 5 (spread) = **110**, capped at 100. Realistic A+ setup ~95.
+
+Maximum no-structure score: 25 (base) + 0 + 0 + 10 (news) + 10 (history) + 5 (spread) = **50**. Below the 45 floor only when there is also no aligned news and no history bonus, which is correct — a chart that shows no bias clarity and no ICT array is not a setup, regardless of news context.
 
 **Tier 1 (score 80–100):** Risk **1.5%** of account. Trailing-stop option on Leg C.
-**Tier 2 (score 60–79):** Risk **1.0%** of account. Fixed TP3 only.
-**Tier 3 (score 45–59):** Risk **0.5%** of account. Fixed TP3 only. Minimum R:R to TP2: 1.5:1 on tight-spread instruments only.
+**Tier 2 (score 60–79):** Risk **1.0%** of account. Fixed TP3.
+**Tier 3 (score 45–59):** Risk **0.5%** of account. Fixed TP3. Minimum R:R to TP2: 1.5:1 on tight-spread instruments only.
 **Below 45:** No trade. Skip instrument.
+
+**On the historical win-rate adjustment:** the previous 5-trades-per-bucket threshold was effectively dead code — at the bot's typical ~0.5 trades/day, hitting 5 trades per (setup × kill zone × instrument) bucket would take ~2 years. Lowering the activation threshold to 2 trades opens the feedback loop within the demo window. The signal is noisier (a 0/2 vs 1/2 swing matters), but a noisy active feedback loop is better than a clean dead one.
 
 ---
 
@@ -92,9 +120,19 @@ Total risk    = Account_balance × tier_risk_pct  (1.5% T1 / 1.0% T2 / 0.5% T3)
 Size per leg  = (Total risk / 3) / (entry − SL in price terms)
 ```
 
-- **Position A (Leg A):** ~34% of total size, TP at TP1 (≥ 2:1 R:R)
-- **Position B (Leg B):** ~33% of total size, TP at TP2 (≥ 3:1 R:R)
-- **Position C (Leg C):** ~33% of total size, TP at TP3 (≥ 4:1 R:R) or trailing stop (Tier 1 only)
+- **Position A (Leg A — partial-profit / de-risk leg):** ~34% of total size, TP at TP1 (**1:1 R:R**, or 1.2:1 for breathing room)
+- **Position B (Leg B — primary target):** ~33% of total size, TP at TP2 (**≥ 2:1 R:R**)
+- **Position C (Leg C — runner):** ~33% of total size, TP at TP3 (**≥ 3:1 R:R**) or trailing stop (Tier 1 only)
+
+**Why TP1 is 1:1 (changed 2026-04-29):** TP1 is the *grab-something-and-de-risk* level, not a trend-continuation target. With TP1 = 1:1, the typical 15M reversal move (which extends 1:1 to 1.5:1 in your favor before chopping back) locks in partial profit and triggers the BE-move on legs B+C. Pre-fix, TP1 was set at 2:1 — meaning even when the analysis was correct, price had to deliver a *trend continuation* to hit TP1, not just a *normal mean-reverting move*. In choppy intraday action this rarely happened, all three legs rode the reversal back through entry to SL together, and the trade took a full -1R loss instead of locking in +0.33R.
+
+**Math after fix (TP1=1R, TP2=2R, TP3=3R, sizes 34%/33%/33%):**
+- All three TPs hit: +0.34R + 0.66R + 0.99R = **+1.99R**
+- TP1 + TP2 hit, C stopped at TP1 trail: +0.34R + 0.66R + 0.33R = **+1.33R**
+- TP1 only, B+C ride to BE-stop: +0.34R + 0R + 0R = **+0.34R**
+- All SL: **−1R** (unchanged)
+
+Positive expectancy is achievable at ~50% TP1 hit rate with no further targets. Pre-fix, you needed both TP1 (which is hard at 2:1) AND TP2 to hit just to break even.
 
 If all three are stopped out simultaneously, total loss = exactly the tier risk %. Never size each leg at the full risk %.
 
@@ -111,8 +149,11 @@ When triggered:
 
 ### Section 7.3: R:R Minimums
 
-- **Tier 1 & 2:** R:R to TP2 ≥ **2:1**
-- **Tier 3:** R:R to TP2 ≥ **1.5:1** on tight-spread instruments only (EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD)
+- **TP1 (Leg A):** ≥ **1:1** (de-risk threshold; can be 1.2:1 for breathing room)
+- **TP2 (Leg B):** ≥ **2:1** for Tier 1 & Tier 2; ≥ **1.5:1** for Tier 3 on tight-spread instruments only (EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD)
+- **TP3 (Leg C):** ≥ **3:1**
+
+The TP1 ≥ 1:1 is mandatory — Leg A's job is to lock in something on every winning move, not to wait for trend continuation.
 
 ### Section 7.4: Pre-Trade Approval (CODE-ENFORCED, 2026-04-28)
 
@@ -130,8 +171,10 @@ No new ICT trade may open on an instrument with an existing open or `tp1_hit` or
 ### Section 7.6: Calendar Veto (CODE-ENFORCED)
 
 Before any order is forwarded to Capital.com, the calendar veto helper checks for high-impact macro events on the trade currencies:
-- Default window: −5 / +30 min (block orders 5 min before to 30 min after a generic high-impact event)
-- Wide window for FOMC / NFP / CPI / ECB / BoE / BoJ / RBA / BoC / SNB / RBNZ rate decisions / Core PCE / GDP: −30 / +60 min
+- **Generic high-impact event:** −5 / +30 min window
+- **Tier-1 events (FOMC, NFP, CPI, ECB / BoE / BoJ / RBA / BoC / SNB / RBNZ rate decisions, Core PCE, GDP, ISM PMI, Average Hourly Earnings, Unemployment Rate, Retail Sales, central-bank press conferences):** **−60 / +30 min** (wider pre-event window — these prints have known multi-hour lead-up volatility)
+
+The agent's prompt MUST mirror the code window exactly (`-5/+30` generic, `-60/+30` tier-1) — out-of-sync prompts cause the agent to skip trades that the code allows, leaking opportunities. Sync verified 2026-04-29.
 
 If the calendar fetch fails, the veto fails CLOSED — orders are refused until calendar fetch succeeds.
 
@@ -152,3 +195,4 @@ If the calendar fetch fails, the veto fails CLOSED — orders are refused until 
 | 2026-04-16 | Manual | V3 update: coordination lock, weekly kill switch, VIX sizing, analyst gate, combined ICT+Swing | N/A — V3 architecture |
 | 2026-04-23 | Manual | Swing Agent retired (cost > profit contribution) | Empirical |
 | 2026-04-28 | Manual (audit) | **AUDIT REWRITE.** Drift between this file and code identified by 2026-04-28 codex review pass: 2-leg → 3-leg, /2 → /3 sizing, Tier 3 50→45, removed VIX-based sizing (VIX feed retired 2026-04-24), populated empty Section 4 universe, removed Swing references, added Section 7.4 code-enforced analyst gate, Section 7.5 code-enforced coordination lock, Section 7.6 calendar veto, Section 7.7 news layer doc | Manual audit |
+| 2026-04-29 | Manual (structural overhaul) | **TP1 R:R 2:1 → 1:1** (de-risk leg, partial-profit target — was structurally negative-expectancy at 2:1). **TP2 floor 2:1 unchanged**, TP3 floor 4:1 → 3:1. **Quantified all 4 trigger definitions** in Section 3 (body/range ratios, fill thresholds, sweep size, retest count). **Rebalanced score rubric**: structure dominates (bias 0–25, ICT 0–35), kill-zone removed as score component (now hard gate only), news capped at +10 / -15. **History-WR threshold lowered** 5+ → 2+ trades to activate the feedback loop within the demo window. **Calendar veto window** doc synced to code: generic -5/+30, tier-1 -60/+30. | Structural fix to documented strategy; addresses negative-expectancy math + trigger ambiguity flagged in 2026-04-29 internal review |

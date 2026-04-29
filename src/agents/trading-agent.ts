@@ -541,6 +541,50 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         });
       }
 
+      // === Step 3.7: minimum-size guardrail (2026-04-29 structural fix #7)
+      // Capital.com instruments have per-instrument minimum deal sizes
+      // exposed via getMarketDetails().dealingRules.minDealSize. On a
+      // small demo account (e.g. $500), Tier 3 sizing
+      // ((500 * 0.005 / 3) / 0.0020 = 416 contracts) can fall BELOW the
+      // FX major minimum of typically 1000 contracts. Pre-fix the order
+      // would reach Capital, get rejected with a min-size error, and
+      // the executor would silently compensation-rollback — wasting the
+      // full validation cascade. Now we fail fast with a structured
+      // error the agent can act on (skip the trade or restructure to
+      // larger size on the next cycle).
+      try {
+        const md = await capital.getMarketDetails(epic);
+        const minRule = md?.dealingRules?.minDealSize;
+        const minSize = typeof minRule?.value === 'number' && Number.isFinite(minRule.value)
+          ? minRule.value
+          : null;
+        if (minSize !== null) {
+          const undersized: Array<{ leg: 'A' | 'B' | 'C'; size: number }> = [];
+          if (sizeA < minSize) undersized.push({ leg: 'A', size: sizeA });
+          if (sizeB < minSize) undersized.push({ leg: 'B', size: sizeB });
+          if (sizeC < minSize) undersized.push({ leg: 'C', size: sizeC });
+          if (undersized.length > 0) {
+            return JSON.stringify({
+              error: 'BELOW_MIN_SIZE',
+              reason: `Capital.com minimum deal size for ${epic} is ${minSize} ${minRule?.unit ?? ''}. Legs ${undersized.map((u) => `${u.leg}=${u.size}`).join(', ')} are below the floor. Either upgrade the tier (raises total_risk_pct → larger sizes), widen the SL (smaller per-leg risk → larger sizes), or skip this instrument until account balance grows.`,
+              min_deal_size: minSize,
+              undersized_legs: undersized,
+            });
+          }
+        }
+        // If minDealSize is missing/non-numeric on the market details
+        // response, we deliberately allow the trade — Capital itself will
+        // reject below-min orders with a clear error, and the executor's
+        // existing compensation-rollback path handles it. The guardrail
+        // is best-effort signal, not load-bearing.
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // Don't fail-closed on getMarketDetails failure — that would gate
+        // every trade on a Capital read. Log and continue; if Capital is
+        // genuinely down, the placement will fail anyway and rollback.
+        console.warn(`[ICT Agent] min-size check skipped for ${epic} (getMarketDetails failed: ${msg}). Continuing — Capital will reject below-min orders.`);
+      }
+
       // === Step 4: code-enforced coordination lock
       // 2026-04-29 audit fix (P0-TA3): check BOTH the local DB AND the
       // live Capital state. Pre-fix the lock checked only the DB, so a
