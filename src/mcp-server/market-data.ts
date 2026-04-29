@@ -264,6 +264,17 @@ export async function fetchCandles(
   //    expires; callers decide whether to surface the error or skip the step.
   await twelveDataBucket.acquire(60_000);
 
+  // 2026-04-29 audit-3 fix (market-data audit P0-1): re-check breaker AFTER
+  // bucket acquire. Pre-fix: parallel callers (e.g. Researcher's correlation
+  // matrix Promise.all) could all pass the pre-acquire check, all acquire
+  // tokens, all fire HTTP requests, with only the FIRST result tripping the
+  // breaker — the other 7 in-flight calls bled credits past the cap. Now:
+  // any caller whose acquire was queued behind a tripped sibling
+  // short-circuits before hitting the network.
+  if (isDailyCapTripped()) {
+    throw new TwelveDataDailyCapError(new Date(twelveDataDailyCap!.resetsAt));
+  }
+
   let data: { status?: string; message?: string; values?: Array<Record<string, string>> };
   try {
     // `timezone: 'UTC'` is load-bearing. Without it, TD returns datetimes in
