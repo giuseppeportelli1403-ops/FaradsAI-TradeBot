@@ -134,13 +134,21 @@ export function classifyCloseReason(
 
   // Capital.com activity statuses include strings like 'PROFIT' or 'STOP'/'LIMIT'.
   // We match on substring for robustness against casing / field naming.
+  //
+  // 2026-04-29 audit-3 fix (scheduler-audit BUG-S2): check STOP/SL BEFORE
+  // PROFIT/LIMIT/TP. Pre-fix the order let `STOP_LIMIT_*` activity strings
+  // match LIMIT first and silently flip a real stop-out into a fake TP,
+  // cascading handleTp1Hit (move B/C SL to BE) on a losing trade and
+  // permanently corrupting status + P&L tracking. STOP-prefixed wording is
+  // the more dangerous misclassification (loss → fake win), so it wins
+  // priority on ambiguous strings.
   for (const a of relevant) {
     const blob = `${a.activity} ${a.status}`.toUpperCase();
-    if (blob.includes('PROFIT') || blob.includes('LIMIT') || blob.includes('TP')) {
-      return 'TP';
-    }
-    if (blob.includes('STOP') || blob.includes('SL')) {
+    if (blob.includes('STOP') || blob.includes('SL_')) {
       return 'SL';
+    }
+    if (blob.includes('PROFIT') || blob.includes('LIMIT') || blob.includes('TP_')) {
+      return 'TP';
     }
   }
   return 'OTHER';
@@ -170,12 +178,21 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
   if (activeOrders.length === 0) return;
 
   // Fetch open positions + activity history once per tick to avoid hammering the API.
+  // 2026-04-29 audit-3 fix (scheduler-audit BUG-S3): pass explicit `from`
+  // (24h ago) instead of relying on Capital's undocumented default lookback.
+  // Pre-fix: a leg closed > Capital's default window (sometimes a few hours)
+  // returned no activity → classifyCloseReason='OTHER' → Leg-A 'OTHER'
+  // branch only deactivates the row WITHOUT updating trade status, leaving
+  // the trade permanently stuck at 'open' in DB and distorting kill-switch
+  // exposure math. 24h is comfortably wider than any realistic monitor
+  // gap (cron is */5; even multi-hour outages stay inside this window).
   let openPositions: CapitalPosition[];
   let activities: Activity[];
+  const activityFrom = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
   try {
     [openPositions, activities] = await Promise.all([
       d.capital.getOpenPositions(),
-      d.capital.getActivityHistory(),
+      d.capital.getActivityHistory(activityFrom),
     ]);
   } catch (error) {
     // Don't pass the raw error as a second arg — util.inspect on an
@@ -199,6 +216,43 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
   const legAOrders = activeOrders.filter((o) => o.leg === 'A');
   const legBOrders = activeOrders.filter((o) => o.leg === 'B');
   const legCOrders = activeOrders.filter((o) => o.leg === 'C');
+
+  // 2026-04-29 audit-3 fix (P0-5/P0-6 + scheduler-audit BUG-S1): single
+  // reflection trigger gated on actual finalisation. Pre-fix gaps:
+  //   1. Pass 2 legacy 2-leg `handleTp2Hit` finalised the trade to 'complete'
+  //      but Reflection was NEVER queued — silent learning loss on every
+  //      legacy 2-leg trade.
+  //   2. Pass 1 / Pass 2 `handleSlOnLeg` finalising path (when other legs
+  //      were already deactivated and this leg's SL hit) also never queued
+  //      Reflection — silent loss on partial-leg trades that finalised on
+  //      Leg A or B rather than Leg C.
+  //   3. Pass 3 `handleSlOnLeg` queued Reflection UNCONDITIONALLY, even when
+  //      other legs were still active (e.g. out-of-order Leg C close while
+  //      A or B were still open). Reflection then ran on a still-open trade
+  //      with `closed_at = null`, polluting the lessons table.
+  //
+  // The new helper re-reads the trade's status from DB AFTER the handler
+  // has run; only queues Reflection when status is in a finalised state
+  // (`'complete'` | `'sl_hit'` | `'closed_early'`). Skips when `deps` is
+  // injected (test path) so test runs don't kick off real LLM calls.
+  const queueReflectionIfFinalised = (tradeId: string): void => {
+    if (deps) return; // test path — never fire real Reflection
+    const finalised = d.getTradeById(tradeId);
+    if (!finalised) return;
+    if (
+      finalised.status !== 'complete' &&
+      finalised.status !== 'sl_hit' &&
+      finalised.status !== 'closed_early'
+    ) {
+      return;
+    }
+    setTimeout(
+      () => runReflectionAgent(tradeId).catch(
+        (e) => console.error(`[Reflection] runReflectionAgent failed: ${summarizeError(e)}`),
+      ),
+      1000,
+    );
+  };
 
   // ---------- Pass 1: Leg A ----------
   for (const order of legAOrders) {
@@ -225,6 +279,7 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
         );
         d.deactivateSlTpOrder(order.trade_id, 'A');
       }
+      queueReflectionIfFinalised(order.trade_id);
     } catch (error) {
       // summarizeError — see error-summary.ts. Prevents credential leaks
       // when the error originates from a Capital.com axios call.
@@ -251,6 +306,7 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
         // SL or OTHER: B exited at its SL (entry after TP1, or original SL if A hit SL first).
         await handleSlOnLeg(trade, order.trade_id, 'B', d);
       }
+      queueReflectionIfFinalised(order.trade_id);
     } catch (error) {
       console.error(`[Monitor] Error processing Leg B for trade ${order.trade_id}: ${summarizeError(error)}`);
     }
@@ -271,28 +327,11 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
 
       if (reason === 'TP') {
         await handleTp3Hit(trade, order.trade_id, d);
-        // Full positive outcome — reflection fires once all 3 legs are closed
-        // (which they are after handleTp3Hit deactivates C).
-        if (!deps) {
-          setTimeout(
-            () => runReflectionAgent(order.trade_id).catch(
-              (e) => console.error(`[Reflection] runReflectionAgent failed: ${summarizeError(e)}`),
-            ),
-            1000,
-          );
-        }
       } else {
         // SL or OTHER on Leg C: trailing SL at TP1 triggered, or just a normal SL.
         await handleSlOnLeg(trade, order.trade_id, 'C', d);
-        if (!deps) {
-          setTimeout(
-            () => runReflectionAgent(order.trade_id).catch(
-              (e) => console.error(`[Reflection] runReflectionAgent failed: ${summarizeError(e)}`),
-            ),
-            1000,
-          );
-        }
       }
+      queueReflectionIfFinalised(order.trade_id);
     } catch (error) {
       console.error(`[Monitor] Error processing Leg C for trade ${order.trade_id}: ${summarizeError(error)}`);
     }

@@ -135,6 +135,32 @@ describe('classifyCloseReason', () => {
     ];
     expect(classifyCloseReason(activities, 'DEAL-A')).toBe('TP');
   });
+
+  // 2026-04-29 audit-3 BUG-S2 regression: pre-fix, the LIMIT-substring check
+  // ran BEFORE the STOP-substring check. An activity status like
+  // 'STOP_LIMIT_FILLED' matched LIMIT first → was classified as TP → cascaded
+  // handleTp1Hit (move B/C SL to BE) on a real STOP-OUT → permanent P&L
+  // corruption. Order of checks must be STOP first.
+  it("BUG-S2: returns 'SL' when activity contains both STOP and LIMIT (STOP wins)", () => {
+    const activities: Activity[] = [
+      makeActivity({ dealId: 'DEAL-A', activity: 'POSITION', status: 'STOP_LIMIT_FILLED' }),
+    ];
+    expect(classifyCloseReason(activities, 'DEAL-A')).toBe('SL');
+  });
+
+  it("BUG-S2: returns 'SL' on STOP_LIMIT_TRIGGERED variant", () => {
+    const activities: Activity[] = [
+      makeActivity({ dealId: 'DEAL-A', activity: 'STOP_LIMIT_TRIGGERED', status: 'EXECUTED' }),
+    ];
+    expect(classifyCloseReason(activities, 'DEAL-A')).toBe('SL');
+  });
+
+  it("BUG-S2: returns 'SL' on WORKING_STOP_LIMIT variant", () => {
+    const activities: Activity[] = [
+      makeActivity({ dealId: 'DEAL-A', activity: 'WORKING_STOP_LIMIT', status: 'AMENDED' }),
+    ];
+    expect(classifyCloseReason(activities, 'DEAL-A')).toBe('SL');
+  });
 });
 
 // ==================== monitorSplitPositions ====================

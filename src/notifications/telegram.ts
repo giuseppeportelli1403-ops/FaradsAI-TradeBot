@@ -29,12 +29,49 @@ export function initTelegram(): void {
   console.log('[Telegram] Bot initialised.');
 }
 
+// Telegram hard cap is 4096 chars per message. Anything longer returns 400
+// "MESSAGE_TOO_LONG" and the alert is silently dropped (audit-3 P1-7).
+const TELEGRAM_MAX_MESSAGE_BYTES = 4000;
+
+/**
+ * Escape user/LLM-supplied content for legacy Telegram Markdown.
+ * Pre-fix (audit-3 scanner+misc P1-6): instrument names like `OIL_CRUDE`
+ * contained underscores that the Markdown parser interpreted as italic
+ * delimiters, returning HTTP 400 "can't parse entities" and silently
+ * dropping the alert. Same risk on `setup_type`, `news_category`,
+ * `analyst_decision`, `closure_reason`, `reasoning`, free-text strings
+ * from the LLM. Now: every interpolated value flows through mdEsc().
+ *
+ * Escapes the 5 legacy-Markdown chars (`_`, `*`, `` ` ``, `[`, `]`).
+ * The static format scaffolding (e.g. `*NEW TRADE*`) is hand-written and
+ * does NOT need escaping.
+ */
+export function mdEsc(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  return String(value).replace(/[_*`\[\]]/g, '\\$&');
+}
+
+function truncateForTelegram(message: string): string {
+  if (message.length <= TELEGRAM_MAX_MESSAGE_BYTES) return message;
+  return message.substring(0, TELEGRAM_MAX_MESSAGE_BYTES) + '\n…(truncated)';
+}
+
 async function send(message: string): Promise<void> {
   if (!bot || !chatId) return;
   try {
-    await bot.telegram.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+    await bot.telegram.sendMessage(chatId, truncateForTelegram(message), {
+      parse_mode: 'Markdown',
+    });
   } catch (error) {
-    console.error('[Telegram] Failed to send:', error);
+    // 2026-04-29 audit-3: if Markdown parse fails (e.g. unbalanced backtick
+    // sneaks through escaping), retry once as PLAIN TEXT so the alert is
+    // not silently dropped. Better an ugly text message than no message.
+    console.error('[Telegram] Markdown send failed, retrying as plain text:', error);
+    try {
+      await bot.telegram.sendMessage(chatId.toString().trim(), truncateForTelegram(message));
+    } catch (plainErr) {
+      console.error('[Telegram] Plain-text retry also failed:', plainErr);
+    }
   }
 }
 

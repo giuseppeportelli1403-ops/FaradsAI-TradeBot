@@ -258,6 +258,8 @@ import { getRankedInstruments } from '../scanner/index.js';
 import {
   insertTrade, getTradeHistory, getLessons, getLessonWinRate,
   createSlTpOrder, updateSlPrice, getDailyPnl, upsertDailyPnl,
+  getActiveSlTpOrdersByTradeId, getTradeByDealId, markTradeClosedEarly,
+  deactivateSlTpOrder,
 } from '../database/index.js';
 import { CapitalClient } from '../mcp-server/capital-client.js';
 
@@ -376,6 +378,18 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const decision = await runAnalystAgent(proposal);
       if (decision.decision === 'APPROVE') {
         approvedProposals.set(hash, { approvedAt: Date.now(), proposal });
+      } else {
+        // 2026-04-29 audit-3 fix (P0-3): invalidate any prior APPROVE on a
+        // REJECT/MODIFY for the same proposal hash. Pre-fix scenario: the
+        // agent calls request_analyst_review twice in the same cycle (e.g.
+        // re-asking after a fresh news fetch); first call APPROVEs and
+        // stores the token, second call REJECTs but the OLD APPROVE token
+        // remains live in approvedProposals for the 10-min TTL. The agent
+        // could then call place_split_trade with the original token and
+        // the order would go through despite the most recent analyst
+        // verdict being REJECT. Fix: any non-APPROVE verdict on a hash
+        // explicitly invalidates any prior approval for that same hash.
+        approvedProposals.delete(hash);
       }
       return JSON.stringify({
         decision: decision.decision,
@@ -561,12 +575,18 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       }
 
       // === Step 5: calendar veto (fail-closed on fetch error)
+      // 2026-04-29 audit-3 fix (P0-4): drop the `.catch(() => [])` on
+      // fetchForexFactoryCalendar. Pre-fix, an FF outage silently swallowed
+      // the error and returned [] — the calendar veto then ran on Finnhub
+      // alone, leaving FX-calibrated tier-1 events that Finnhub doesn't
+      // carry (or carries late) invisible. The outer try/catch already
+      // fails closed on Promise.all rejection; let FF rejection propagate.
       const tradeCurrencies = instrumentToCurrencies(epic);
       if (tradeCurrencies.length > 0) {
         try {
           const [finnhubCalendar, ffCalendar] = await Promise.all([
             fetchEconomicCalendar(1),
-            fetchForexFactoryCalendar().catch(() => []),
+            fetchForexFactoryCalendar(),
           ]);
           const calendar = [...finnhubCalendar, ...ffCalendar];
           const veto = shouldVetoOrderForCalendar(tradeCurrencies, calendar, Date.now());
@@ -727,17 +747,113 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         tier,
       });
     }
-    case 'update_sl':
-      // Update all legs present. updateSlPrice matches on (trade_id, leg,
-      // is_active=1), so legs that don't exist (e.g. Leg C on a legacy
-      // 2-leg trade, or Leg A/B after they've been deactivated by TP close)
-      // are silent no-ops. Cheap to call all three defensively.
-      updateSlPrice(input.trade_id as string, 'A', Number(input.new_sl));
-      updateSlPrice(input.trade_id as string, 'B', Number(input.new_sl));
-      updateSlPrice(input.trade_id as string, 'C', Number(input.new_sl));
-      return JSON.stringify({ status: 'updated' });
-    case 'close_position':
-      return JSON.stringify(await capital.closePosition(input.dealId as string));
+    case 'update_sl': {
+      // 2026-04-29 audit-3 fix (Researcher P0-1): pre-fix this tool wrote
+      // ONLY to the local DB sl_tp_orders.sl_price and never reached
+      // Capital.com. The system prompt told the LLM "use update_sl to
+      // tighten SL on a structural change" and the response was
+      // {status:'updated'} — but the broker's stopLevel was unchanged.
+      // Every "tighten SL" action the LLM thought it executed was fake.
+      //
+      // Fix: discover all active legs for this trade_id, push the new
+      // stopLevel to Capital.com via updatePosition for each, AND update
+      // the DB to keep them in sync. Failures are reported per-leg so
+      // the agent sees which legs succeeded.
+      const tradeId = String(input.trade_id);
+      const newSl = Number(input.new_sl);
+      if (!Number.isFinite(newSl)) {
+        return JSON.stringify({ error: 'INVALID_SL', reason: `new_sl must be finite. Got ${input.new_sl}` });
+      }
+      const activeOrders = getActiveSlTpOrdersByTradeId(tradeId);
+      if (activeOrders.length === 0) {
+        return JSON.stringify({
+          error: 'NO_ACTIVE_LEGS',
+          reason: `No active sl_tp_orders rows for trade_id=${tradeId}. Either the trade is already closed or the trade_id is wrong.`,
+        });
+      }
+      const results: Array<{ leg: string; deal_id: string | null; ok: boolean; error?: string }> = [];
+      for (const order of activeOrders) {
+        if (!order.deal_id) {
+          results.push({ leg: order.leg, deal_id: null, ok: false, error: 'No deal_id on this leg row.' });
+          continue;
+        }
+        try {
+          await capital.updatePosition(order.deal_id, { stopLevel: newSl });
+          updateSlPrice(tradeId, order.leg, newSl);
+          results.push({ leg: order.leg, deal_id: order.deal_id, ok: true });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          console.error(`[ICT Agent] update_sl failed for trade=${tradeId} leg=${order.leg} deal=${order.deal_id}: ${msg}`);
+          results.push({ leg: order.leg, deal_id: order.deal_id, ok: false, error: msg });
+        }
+      }
+      const allOk = results.every((r) => r.ok);
+      return JSON.stringify({
+        status: allOk ? 'updated' : 'partial_failure',
+        new_sl: newSl,
+        per_leg: results,
+        guidance: allOk
+          ? `All ${results.length} active legs updated on Capital + DB.`
+          : 'One or more legs failed to update on Capital — broker truth is now divergent across legs. Review per_leg results and consider close_position on the failing legs.',
+      });
+    }
+    case 'close_position': {
+      // 2026-04-29 audit-3 fix (Researcher P0-2): pre-fix this tool only
+      // called Capital.closePosition; the local DB was untouched. The next
+      // monitorSplitPositions tick saw the closed position with no PROFIT/
+      // STOP activity match → classifyCloseReason returned 'OTHER' →
+      // handleSlOnLeg eventually finalised the trade as `sl_hit`. Every
+      // agent-initiated early close was misrecorded as a stop-out, polluting
+      // Weekly Review win-rate calc and the Reflection lesson.
+      //
+      // Fix: after Capital close succeeds, locate the trade record by
+      // deal_id, mark it `closed_early` with a closure_reason, deactivate
+      // the leg's sl_tp_orders row. The `closed_early` enum value was
+      // already in the schema, just dead code.
+      const dealId = String(input.dealId);
+      const reasonText = typeof input.reason === 'string' ? input.reason : 'agent-initiated early close';
+      let capitalResult: unknown;
+      try {
+        capitalResult = await capital.closePosition(dealId);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return JSON.stringify({ error: 'CAPITAL_CLOSE_FAILED', reason: msg, dealId });
+      }
+      // Locate the owning trade and update DB.
+      const trade = getTradeByDealId(dealId);
+      if (!trade) {
+        // Could happen if the deal_id is wrong, or for a position that
+        // was placed outside the bot. Don't fail — return success with
+        // a warning.
+        return JSON.stringify({
+          status: 'closed_on_capital',
+          warning: 'No DB trade record found for this deal_id — Capital position closed but no DB row updated. Verify the dealId.',
+          capital_result: capitalResult,
+        });
+      }
+      // Find which leg this deal_id belongs to and deactivate just that row
+      // (NOT the entire trade — other legs may still be running).
+      const allLegs = getActiveSlTpOrdersByTradeId(trade.id);
+      const matchedLeg = allLegs.find((l) => l.deal_id === dealId);
+      if (matchedLeg) {
+        deactivateSlTpOrder(trade.id, matchedLeg.leg);
+      }
+      // Mark trade closed_early ONLY if no other legs remain active
+      // (i.e. this close finishes off the trade). Otherwise the trade
+      // is still partially live.
+      const remainingActive = getActiveSlTpOrdersByTradeId(trade.id);
+      if (remainingActive.length === 0) {
+        markTradeClosedEarly(trade.id, `${reasonText} (deal=${dealId}, leg=${matchedLeg?.leg ?? '?'})`);
+      }
+      return JSON.stringify({
+        status: 'closed',
+        trade_id: trade.id,
+        leg_closed: matchedLeg?.leg ?? null,
+        remaining_legs: remainingActive.length,
+        trade_status: remainingActive.length === 0 ? 'closed_early' : trade.status,
+        capital_result: capitalResult,
+      });
+    }
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }

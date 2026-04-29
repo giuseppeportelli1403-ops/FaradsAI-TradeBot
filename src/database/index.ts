@@ -44,7 +44,9 @@ export async function initDatabaseAsync(): Promise<void> {
   console.log(`Database initialised at ${DB_PATH}`);
 }
 
-function saveToFile(): void {
+// Exported as of 2026-04-29 (audit-3 fix scanner+misc P0-1) so the entry
+// point can flush the in-memory sql.js database to disk on SIGTERM/SIGINT.
+export function saveToFile(): void {
   const data = db.export();
   const buffer = Buffer.from(data);
   const dir = dirname(DB_PATH);
@@ -740,7 +742,7 @@ export function createSlTpOrder(params: {
   saveToFile();
 }
 
-export function getActiveSlTpOrders(): Array<{
+export interface ActiveSlTpOrder {
   id: number;
   trade_id: string;
   leg: string;
@@ -751,9 +753,56 @@ export function getActiveSlTpOrders(): Array<{
   tp_price: number | null;
   trailing_stop_distance: number | null;
   deal_id: string | null;
-}> {
+}
+
+export function getActiveSlTpOrders(): ActiveSlTpOrder[] {
   const result = db.exec('SELECT * FROM sl_tp_orders WHERE is_active = 1');
   return resultToObjects(result);
+}
+
+/**
+ * Same as getActiveSlTpOrders but filtered to one trade. Used by
+ * `update_sl` and `close_position` MCP tools to discover the live deal_ids
+ * to push changes to on Capital.com.
+ */
+export function getActiveSlTpOrdersByTradeId(tradeId: string): ActiveSlTpOrder[] {
+  const result = db.exec(
+    'SELECT * FROM sl_tp_orders WHERE trade_id = ? AND is_active = 1',
+    [tradeId],
+  );
+  return resultToObjects(result);
+}
+
+/**
+ * Find which trade record (if any) owns this Capital deal_id by checking
+ * the position_a_id / position_b_id / position_c_id columns. Used by the
+ * `close_position` MCP tool so the LLM can pass the dealId and we can
+ * find the corresponding trade row to mark closed_early.
+ */
+export function getTradeByDealId(dealId: string): TradeRecord | null {
+  const result = db.exec(
+    'SELECT * FROM trades WHERE position_a_id = ? OR position_b_id = ? OR position_c_id = ?',
+    [dealId, dealId, dealId],
+  );
+  const rows = resultToObjects<TradeRecord>(result);
+  return rows[0] || null;
+}
+
+/**
+ * Mark a trade as `closed_early` (the existing schema enum value) and set
+ * closure_reason for audit. Used by the `close_position` MCP tool when the
+ * agent intentionally closes a position before any TP/SL trigger.
+ */
+export function markTradeClosedEarly(tradeId: string, reason: string): void {
+  db.run(
+    `UPDATE trades
+     SET status = 'closed_early',
+         closure_reason = ?,
+         closed_at = COALESCE(closed_at, datetime('now'))
+     WHERE id = ?`,
+    [reason, tradeId],
+  );
+  saveToFile();
 }
 
 export function updateSlPrice(tradeId: string, leg: string, newSl: number): void {

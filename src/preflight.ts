@@ -132,9 +132,25 @@ export async function runPreflight(): Promise<void> {
 
   console.log(`[Preflight] Env OK — ${result.warnings.length} warning(s), 0 errors.`);
 
+  // 2026-04-29 audit-3 fix (scanner+misc P0-2): the live-trading gate now
+  // ALWAYS runs, even with --skip-broker-check. Pre-fix, --skip-broker-check
+  // bypassed verifyCapitalConnectivity() AND, indirectly, the live-vs-demo
+  // URL check inside it. A CI script copy-pasted into a production pm2
+  // ecosystem file (or a typo in the deploy unit) would silently boot the
+  // bot against a live URL with zero guardrail. Live-trading verification
+  // is decoupled here and runs unconditionally before any skip.
+  const baseURL = process.env.CAPITAL_API_URL || DEFAULT_CAPITAL_URL;
+  try {
+    checkLiveTradingGate(baseURL, process.env.LIVE_TRADING_OK);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error(`[Preflight] FATAL: Live-trading gate refused start: ${msg}`);
+    process.exit(1);
+  }
+
   // Broker connectivity check — skippable via CLI flag for unit tests / CI.
   if (process.argv.includes('--skip-broker-check')) {
-    console.log('[Preflight] --skip-broker-check set; skipping Capital.com connectivity check.');
+    console.log('[Preflight] --skip-broker-check set; skipping Capital.com connectivity check (live-trading gate already passed).');
     return;
   }
 

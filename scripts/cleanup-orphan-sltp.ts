@@ -46,13 +46,30 @@ async function main(): Promise<void> {
   );
   const rows = result[0]?.values ?? [];
 
-  const orphans = rows.filter((row) => !validInstruments.has(row[3] as string));
+  // Codex M (2026-04-29): only deactivate rows with NULL deal_id. A row with
+  // a live deal_id on a removed-from-universe instrument indicates a real
+  // open position on Capital that needs MANUAL reconciliation, not silent
+  // deactivation. The original 2026-04-28 incident was specifically NULL-
+  // deal_id orphans (US100/US30/etc placeholder rows). Live-deal cleanup
+  // must remain a separate, explicit operator decision.
+  const allOrphans = rows.filter((row) => !validInstruments.has(row[3] as string));
+  const liveDealOrphans = allOrphans.filter((row) => row[4] != null && String(row[4]).length > 0);
+  const orphans = allOrphans.filter((row) => row[4] == null || String(row[4]).length === 0);
+
+  if (liveDealOrphans.length > 0) {
+    console.warn(`[cleanup-orphan-sltp] WARNING: ${liveDealOrphans.length} out-of-universe row(s) have live deal_id — NOT touching:`);
+    for (const row of liveDealOrphans) {
+      const [id, trade_id, leg, instrument, deal_id, sl, tp] = row;
+      console.warn(`  id=${id} trade_id=${trade_id} leg=${leg} instrument=${instrument} deal_id=${deal_id} sl=${sl ?? 'NULL'} tp=${tp ?? 'NULL'}  ← reconcile manually on Capital`);
+    }
+  }
+
   if (orphans.length === 0) {
-    console.log('[cleanup-orphan-sltp] No orphan rows. DB unchanged.');
+    console.log('[cleanup-orphan-sltp] No NULL-deal_id orphan rows to deactivate. DB unchanged.');
     return;
   }
 
-  console.log(`[cleanup-orphan-sltp] Found ${orphans.length} orphan row(s):`);
+  console.log(`[cleanup-orphan-sltp] Found ${orphans.length} NULL-deal_id orphan row(s):`);
   for (const row of orphans) {
     const [id, trade_id, leg, instrument, deal_id, sl, tp] = row;
     console.log(`  id=${id} trade_id=${trade_id} leg=${leg} instrument=${instrument} deal_id=${deal_id ?? 'NULL'} sl=${sl ?? 'NULL'} tp=${tp ?? 'NULL'}`);
@@ -64,12 +81,15 @@ async function main(): Promise<void> {
   }
 
   // Use parameterised IN clause so removed-instrument names can't break out.
+  // AND deal_id IS NULL guard added per Codex M 2026-04-29 review.
   const placeholders = [...validInstruments].map(() => '?').join(',');
   db.run(
     `UPDATE sl_tp_orders
      SET is_active = 0,
          triggered_at = COALESCE(triggered_at, datetime('now'))
-     WHERE is_active = 1 AND instrument NOT IN (${placeholders})`,
+     WHERE is_active = 1
+       AND deal_id IS NULL
+       AND instrument NOT IN (${placeholders})`,
     [...validInstruments],
   );
 

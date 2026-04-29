@@ -264,8 +264,17 @@ export class CapitalClient {
   /**
    * Core authenticated request. Handles:
    *  - lazy session creation via ensureSession()
-   *  - single automatic re-auth on 401 with 50ms backoff
+   *  - single automatic re-auth on 401 (idempotent methods only)
    *  - non-2xx → throws with server-provided error message
+   *
+   * 2026-04-29 audit-3 fix (broker-audit P0-CC1): the 401 retry path is
+   * now restricted to idempotent HTTP methods (GET / HEAD / OPTIONS /
+   * DELETE). Pre-fix, a transient 401 on POST /positions (e.g. token
+   * expired between Capital's gateway accepting the request and the
+   * response leaving) would silently REPLAY the order — placing a
+   * duplicate live position with no compensation tracking. For non-
+   * idempotent methods, surface the 401 to the caller; the caller must
+   * verify the order didn't actually land before deciding to retry.
    */
   private async request<T>(method: Method, path: string, body?: unknown): Promise<T> {
     await this.ensureSession();
@@ -283,13 +292,22 @@ export class CapitalClient {
     let res = await this.http.request(config);
 
     if (res.status === 401) {
-      // Tokens stale — re-auth once with tiny backoff.
+      const isIdempotent = method === 'GET' || method === 'DELETE';
+      if (!isIdempotent) {
+        // Non-idempotent (POST/PUT) — DO NOT auto-retry. The request
+        // body could have hit Capital's trading engine even if we got
+        // 401 back. Caller must reconcile via getOpenPositions/getConfirms
+        // before any retry decision.
+        throw new CapitalAuthError(
+          `Unauthorized on non-idempotent ${method} ${path}; not auto-retrying — caller must verify state on Capital before retry`,
+        );
+      }
+      // Idempotent — safe to re-auth + retry once.
       this.cst = null;
       this.securityToken = null;
       await this.sleep(AUTH_RETRY_BACKOFF_MS);
       await this.createSession();
 
-      // Refresh auth headers after re-auth and retry ONCE.
       config.headers = {
         ...this.authHeaders(),
         'Content-Type': 'application/json',
@@ -368,11 +386,63 @@ export class CapitalClient {
   }
 
   async closePosition(dealId: string): Promise<DealConfirmation> {
-    const ref = await this.request<{ dealReference: string }>(
-      'DELETE',
-      `/api/v1/positions/${dealId}`
-    );
-    return this.pollDealConfirmation(ref.dealReference);
+    // 2026-04-29 audit-3 fix (broker-audit P0-CC3): idempotent against the
+    // SL/TP-auto-fill race. If Capital filled the SL/TP microseconds before
+    // our DELETE arrived, the API returns 404 / 400 "position does not
+    // exist". Pre-fix, this propagated as a generic Error into compensation
+    // rollback at trading-agent.ts and produced a spurious "ROLLBACK
+    // INCOMPLETE — positions may still be open" Telegram alert — even though
+    // the position WAS closed (just by Capital's own SL/TP, not by us).
+    // Treat already-closed as a successful close and synthesise a minimal
+    // confirmation. The caller's view ("the position is gone") is correct.
+    try {
+      const ref = await this.request<{ dealReference: string }>(
+        'DELETE',
+        `/api/v1/positions/${dealId}`
+      );
+      return await this.pollDealConfirmation(ref.dealReference);
+    } catch (e) {
+      if (this.isAlreadyClosed(e)) {
+        const synthetic: DealConfirmation = {
+          dealId,
+          dealReference: `synthetic-already-closed-${dealId}`,
+          dealStatus: 'ACCEPTED',
+          reason: 'ALREADY_CLOSED_BY_BROKER',
+          status: 'FULLY_CLOSED',
+          direction: 'BUY',
+          epic: '',
+          size: 0,
+          level: 0,
+          stopLevel: null,
+          profitLevel: null,
+          affectedDeals: [{ dealId, status: 'DELETED' }],
+        };
+        return synthetic;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * True when the error indicates the position was already closed (404 / 400
+   * with "does not exist" / "position not found" / "closed" wording). Covers
+   * Capital.com's documented error vocabulary plus generic 404 fallback.
+   */
+  private isAlreadyClosed(e: unknown): boolean {
+    if (!(e instanceof Error)) return false;
+    const status = (e as Error & { status?: number }).status;
+    if (status === 404) return true;
+    const msg = e.message?.toLowerCase() ?? '';
+    if (status === 400 || status === 422) {
+      return (
+        msg.includes('not found') ||
+        msg.includes('does not exist') ||
+        msg.includes('already closed') ||
+        msg.includes('position not exists') ||
+        msg.includes('no position')
+      );
+    }
+    return false;
   }
 
   /**
