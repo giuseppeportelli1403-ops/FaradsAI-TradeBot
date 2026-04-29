@@ -186,9 +186,16 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
   // the trade permanently stuck at 'open' in DB and distorting kill-switch
   // exposure math. 24h is comfortably wider than any realistic monitor
   // gap (cron is */5; even multi-hour outages stay inside this window).
+  //
+  // 2026-04-29 hotfix (audit-3-r5): Capital.com's /history/activity rejects
+  // ISO with milliseconds or trailing Z (`error.invalid.from`). Required
+  // format is `YYYY-MM-DDTHH:mm:ss` — no ms, no zone suffix, treated by the
+  // API as broker-local time. Strip both off the toISOString output.
   let openPositions: CapitalPosition[];
   let activities: Activity[];
-  const activityFrom = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+  const activityFrom = new Date(Date.now() - 24 * 60 * 60_000)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, '');
   try {
     [openPositions, activities] = await Promise.all([
       d.capital.getOpenPositions(),
