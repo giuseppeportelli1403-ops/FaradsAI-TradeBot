@@ -472,12 +472,17 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const tier = Number(input.tier);
       const riskPct = Number(input.total_risk_pct);
       const setupType = String(input.setup_type ?? '');
-      // 2026-04-29 range-mode addition: setup_type starting with "Range_"
-      // (canonical: "Range_Sweep_Reversal") signals range-mode. Range-mode
-      // is Tier 3 only and uses HALF-size posture (0.25% total risk vs the
-      // standard 0.5% Tier 3). The validation cascade below adjusts the
-      // expected risk_pct accordingly.
-      const isRangeMode = /^Range_/i.test(setupType);
+      // 2026-04-29 range-mode addition: setup_type indicating range-mode
+      // signals 0.25% total risk (vs standard 0.5% Tier 3). The match is
+      // intentionally lenient — Haiku may emit "Range_Sweep_Reversal"
+      // (canonical), "Range Sweep Reversal" (with spaces), or
+      // "range_sweep_reversal" (lowercase). Codex review of 7b6db35
+      // flagged that the strict /^Range_/i regex would reject
+      // space-separated variants → correct 0.25% proposal gets a
+      // RISK_PCT_TIER_MISMATCH error. Match any setup_type whose first
+      // word (after trimming whitespace/underscores) is "range".
+      const setupTypeNorm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_');
+      const isRangeMode = /^range_/.test(setupTypeNorm);
       if (!Number.isFinite(score) || score < 45) {
         return JSON.stringify({
           error: 'SCORE_BELOW_TIER_MIN',

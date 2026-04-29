@@ -171,10 +171,11 @@ Tier assignment:
 - **Range Sweep Reversal:** ALL of the following must hold:
   - 1H bias is `neutral` (NOT bullish or bearish — if there's a clean trend, use triggers 1-4 instead)
   - Range defined by 1H last ≥ 8 candles, with range width ≥ 1.5 × current 15M ATR
-  - 15M wick exceeds the range extreme by ≥ 2 × current spread (stricter than trigger 3's 1× because reversal-from-range is lower-probability)
+  - 15M wick exceeds the range extreme by **≥ max(2 × current spread, 0.10 × 15M ATR)** — both conditions; on a tight-spread instrument with low ATR, 2× spread is the binding floor; on a high-ATR moment, the 0.10× ATR floor prevents counting a small wick that just exceeded the spread as a "real sweep". Codex flagged this on 2026-04-29.
   - Reversal candle within ≤ 2 candles of the sweep, body ≥ 0.6 × range, closes BACK INSIDE the range by ≥ 1 × spread
   - Direction is OPPOSITE to the swept extreme (sweep above range high → SHORT; sweep below range low → LONG)
-  - If Cat A news opposes the reversal direction → **invalidate** (news is more likely to drive a continuation breakout than the reversal pattern)
+  - If Cat A news opposes the reversal direction → **invalidate** (range-mode override of the global half-size rule — see Step K below)
+- **REQUIRED setup_type field:** when proposing a range-mode trade, the `setup_type` field in your `request_analyst_review` and `place_split_trade` calls MUST begin with `"Range_"` — canonical value is **`"Range_Sweep_Reversal"`** (with underscores, no spaces). The executor uses this prefix to apply the 0.25% risk profile; if you write `"Range Sweep Reversal"` with spaces or a different name, the executor falls back to the standard 0.5% Tier 3 rule and rejects your proposal with `RISK_PCT_TIER_MISMATCH`. Use the canonical underscore form.
 
 **J. Calculate trade parameters**
 - Entry: current 15M close (Capital is market — entry will fill at current bid/ask, not at a planned level)
@@ -193,11 +194,13 @@ Tier assignment:
 - **Half-size posture:** risk per leg: `(Account_balance × 0.0025 / 3) / (entry − SL in price terms)` — total risk is 0.25% (half of Tier 3's 0.5%) because range reversals are higher-variance than trend-following entries.
 - Tier MUST be 3 in the proposal (range-mode never qualifies for Tier 1 or 2)
 
-**K. Opposing Cat-A news — half-size posture (post-2026-04-23)**
+**K. Opposing Cat-A news — half-size posture (trend-mode) / invalidate (range-mode)**
 
-If opposing Cat-A news is present AND every other criterion passes: take the trade at **50% of the tier's normal size**. Multiply your computed size_per_leg by `0.5`. Cat B opposing news → full size. The `getNewsRiskFactor` helper in `src/news/index.ts` is the single source of truth.
+**Trend-mode (triggers 1-4):** if opposing Cat-A news is present AND every other criterion passes: take the trade at **50% of the tier's normal size**. Multiply your computed size_per_leg by `0.5`. Cat B opposing news → full size. The `getNewsRiskFactor` helper in `src/news/index.ts` is the single source of truth.
 
-If the news is STALE and bearish (the news_context summary contains `[stale … bearish-dampened]`), prefer to SKIP rather than half-size — the stale-bearish dampening rule already softened the score and stacking another mitigation on top is overcompensating.
+**Range-mode (trigger 5):** if opposing Cat-A news is present, **invalidate the setup entirely** — DO NOT apply the trend-mode half-size rule. The reversal premise of trigger 5 depends on the range holding. Cat A news is the kind of catalyst that breaks ranges (continuation breakout) rather than respects them. Half-size is appropriate when the trend remains intact but momentum has weakened; in range-mode there's no trend to soften, only a structural pattern that the news invalidates.
+
+**Both modes:** if the news is STALE and bearish (the news_context summary contains `[stale … bearish-dampened]`), prefer to SKIP rather than half-size — the stale-bearish dampening rule already softened the score and stacking another mitigation on top is overcompensating.
 
 **L. Final checklist**
 - [ ] 1H bias clear and in your favour

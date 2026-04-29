@@ -342,13 +342,28 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           // killZone.inKillZone === true is enforced as a hard gate
           // earlier in this function (line 272 `if (!killZone.inKillZone) return []`).
 
-          // Range-mode score cap: never let a neutral-bias instrument
-          // exceed Tier 3 (max 59). Without this cap a clear range with
-          // aligned Cat-A news could reach 25 + 25 + 10 + 5 = 65 = Tier 2,
-          // which would mis-route the agent into a trend-mode 2:1 R:R
-          // proposal on what is structurally a range play.
+          // Range-mode handling (codex review of 7b6db35):
+          //
+          // Pre-fix: range-mode max scanner output was 25 (base) + 0 (no
+          // bias clarity, neutral always) + 0 (no ICT array — that's the
+          // agent's job in trigger 5) + 10 (news) + 5 (spread) = 40.
+          // Below the 45 floor. Bot would never propose a range trade.
+          //
+          // Post-fix: range-mode gets a +20 "range candidate" baseline
+          // representing "this instrument is range-eligible — pre-screen
+          // pass". The AGENT validates the actual range quality in Step
+          // 3I (trigger 5 criteria) and rejects if the range / sweep /
+          // reversal conditions aren't met. The +20 represents the
+          // "structural payment" the agent would have earned via the
+          // ICT array score in trend-mode; range-mode equivalent is the
+          // range itself being a valid setup framework.
+          //
+          // Net range-mode max: 25 + 20 + 10 + 5 = 60 → capped at 59.
+          // Net range-mode floor (no news, no spread bonus): 25 + 20 = 45.
+          // Just above the executor floor — qualifies for Tier 3.
           if (isRangeMode) {
-            score = Math.min(score, 59);
+            score += 20;                                                          // range-candidate baseline
+            score = Math.min(score, 59);                                          // Tier 3 cap
           }
 
           const tier: 1 | 2 | 3 | null =
