@@ -17,8 +17,13 @@ let bot: Telegraf | null = null;
 let chatId: string = '';
 
 export function initTelegram(): void {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  chatId = process.env.TELEGRAM_CHAT_ID || '';
+  const token = (process.env.TELEGRAM_BOT_TOKEN ?? '').trim();
+  // 2026-04-29 audit-3 r3 fix (scanner+misc P1-5): trim the chat ID. Pre-fix,
+  // a copy-pasted env value with trailing whitespace, newlines, or surrounding
+  // quotes would silently fail with Telegram 400 "chat not found" on every
+  // send — alerts were lost forever, and the only signal was a console.error
+  // per send. Trim once at init.
+  chatId = (process.env.TELEGRAM_CHAT_ID ?? '').trim();
 
   if (!token || !chatId) {
     console.warn('[Telegram] Bot token or chat ID not set. Alerts disabled.');

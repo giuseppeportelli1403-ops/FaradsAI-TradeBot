@@ -67,6 +67,33 @@ export async function withFallback<T>(fetcher: () => Promise<T>, fallback: T): P
   }
 }
 
+/**
+ * Race a promise against a wall-clock timeout. Used to bound third-party
+ * libraries that lack their own timeout config (yahoo-finance2, axios in
+ * specific paths) — see audit-3 r3 fix for market-data P1-10 / P1-4.
+ *
+ * Cleans the timer on resolve/reject so timers don't leak into the cron
+ * cadence.
+ */
+export async function withWallClockTimeout<T>(
+  fetcher: () => Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([fetcher(), timeoutPromise]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
 // ==================== TWELVE DATA ====================
 // Covers: OHLC candles and raw data for correlation computation
 
@@ -554,7 +581,15 @@ export async function fetchSectorStrength(): Promise<SectorStrength[]> {
 
     // Single batched quote call — 1 HTTP request for all 11 ETFs. `validateResult:
     // false` lets us tolerate occasional schema drift from Yahoo without crashing.
-    const raw = (await yahooFinance.quote(tickers, {}, { validateResult: false })) as unknown;
+    // 2026-04-29 audit-3 r3 fix (market-data P1-10): wrap in withWallClockTimeout.
+    // yahoo-finance2 has no per-call timeout config; if Yahoo throttles or blocks
+    // the IP, the call hangs indefinitely until Node's default socket timeout
+    // (~120s on Linux). Researcher's Promise.all would stall the whole cron.
+    const raw = (await withWallClockTimeout(
+      () => yahooFinance.quote(tickers, {}, { validateResult: false }),
+      10_000,
+      'yahoo-finance.quote',
+    )) as unknown;
     const quoteArray: MinimalYahooQuote[] = Array.isArray(raw)
       ? (raw as MinimalYahooQuote[])
       : [raw as MinimalYahooQuote];
@@ -824,8 +859,13 @@ async function fetchMarketAuxBatch(
   mappedTicker: string,
   instrumentForLog: string,
 ): Promise<NewsItem[]> {
-  bumpMarketAuxCallCounter();
-
+  // 2026-04-29 audit-3 r3 fix (market-data P1-9): only bump the daily counter
+  // AFTER axios resolves successfully. Pre-fix, an unconditional bump
+  // counted network failures (DNS, TCP RST, MarketAux 5xx) toward the soft
+  // cap, tripping the "MarketAux quota near limit" alert prematurely while
+  // the real successful-call quota was untouched. Also adds a 15s wall-clock
+  // timeout to the axios call — MarketAux has been slow during outages and
+  // the hang would block the news-fetch path of every ICT cycle.
   const { data } = await axios.get(MARKETAUX_BASE, {
     params: {
       api_token: apiKey,
@@ -834,7 +874,10 @@ async function fetchMarketAuxBatch(
       filter_entities: true,
       limit: 10,
     },
+    timeout: 15_000,
   });
+
+  bumpMarketAuxCallCounter();
 
   if (!Array.isArray(data?.data)) {
     console.log(
@@ -985,51 +1028,68 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
       return serveStaleOrEmpty(instrument);
     }
 
-    let items = await fetchMarketAuxBatch(apiKey, mappedTicker, instrument);
-
     // ===== Dual-source for commodities (P1 #7, 2026-04-28) =====
     // The bot trades spot CFDs (XAU/USD, XAG/USD, WTI/USD) but normalizeForMarketAux
     // returns the US-equity ETF proxy (GLD/SLV/USO) — that's MarketAux's strongest
     // entity coverage for these names. Querying ALSO with the spot symbol picks up
-    // any additional spot-coverage MarketAux has, deduped by title against the
-    // ETF results. If spot returns nothing (likely on the free tier), the result
-    // is unchanged — no harm, modest cost (1 extra API call per cache miss).
+    // any additional spot-coverage MarketAux has, deduped by canonical URL
+    // against the ETF results. If spot returns nothing (likely on the free
+    // tier), the result is unchanged — no harm, modest cost (1 extra API call
+    // per cache miss).
+    //
+    // 2026-04-29 audit-3 r3 fix (market-data P1-4): the two MarketAux fetches
+    // now run in parallel via Promise.allSettled instead of sequential awaits.
+    // Pre-fix: a hung spot fetch (MarketAux outage on a single endpoint) held
+    // the whole news-fetch hostage even though the ETF result had already
+    // arrived. allSettled lets the slow one fail/timeout independently while
+    // the primary result still flows through. axios per-call timeout (15s) on
+    // each batch caps the worst case.
     const spotTicker = commoditySpotSymbol(instrument);
+    let items: NewsItem[];
     if (spotTicker && spotTicker !== mappedTicker) {
-      try {
-        const spotItems = await fetchMarketAuxBatch(apiKey, spotTicker, instrument);
-        // CR-4 (2026-04-28): dedup primarily by article URL when present —
-        // exact same wire story re-broadcast through different MarketAux
-        // entity hits has a stable URL even when title text drifts. Falls
-        // back to (lowercased title | source | published_at) for items
-        // missing a URL. Empty-title items are kept (untitled tickers
-        // sometimes produce empty title strings, dropping them lost legit
-        // signal in the prior version).
-        const seen = new Set<string>();
-        const merged: NewsItem[] = [];
-        // Primary (ETF) first to preserve existing rank ordering on conflict;
-        // unique spot items are appended after.
-        for (const item of [...items, ...spotItems]) {
-          // CR-8 (2026-04-28): canonicalize URLs before keying so http/https
-          // case, trailing slash, fragments, and utm_* tracking params don't
-          // produce different keys for the same wire story.
-          const canonicalUrl = item.url ? canonicalizeUrl(item.url) : '';
-          const key = canonicalUrl.length > 0
-            ? `url:${canonicalUrl}`
-            : `tsd:${(item.title ?? '').toLowerCase().trim()}|${item.source ?? ''}|${item.published_at ?? ''}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          merged.push(item);
-        }
-        items = merged;
-      } catch (err) {
-        // Spot fetch is opportunistic — failures must not poison the primary
-        // ETF result. Logged loudly so ops can see if spot endpoint is broken.
-        const msg = err instanceof Error ? err.message : String(err);
+      const [primaryRes, spotRes] = await Promise.allSettled([
+        fetchMarketAuxBatch(apiKey, mappedTicker, instrument),
+        fetchMarketAuxBatch(apiKey, spotTicker, instrument),
+      ]);
+      // Primary failure must propagate to outer try/catch so 402 routing
+      // and stale-cache fallback still work.
+      if (primaryRes.status === 'rejected') {
+        throw primaryRes.reason;
+      }
+      const primaryItems = primaryRes.value;
+      const spotItems = spotRes.status === 'fulfilled' ? spotRes.value : [];
+      if (spotRes.status === 'rejected') {
+        const msg = spotRes.reason instanceof Error ? spotRes.reason.message : String(spotRes.reason);
         console.warn(
           `[Market Data] Commodity spot fetch failed for ${instrument} (${spotTicker}): ${msg}. Falling back to ETF-only result.`,
         );
       }
+      // CR-4 (2026-04-28): dedup primarily by article URL when present —
+      // exact same wire story re-broadcast through different MarketAux
+      // entity hits has a stable URL even when title text drifts. Falls
+      // back to (lowercased title | source | published_at) for items
+      // missing a URL. Empty-title items are kept (untitled tickers
+      // sometimes produce empty title strings, dropping them lost legit
+      // signal in the prior version).
+      const seen = new Set<string>();
+      const merged: NewsItem[] = [];
+      // Primary (ETF) first to preserve existing rank ordering on conflict;
+      // unique spot items are appended after.
+      for (const item of [...primaryItems, ...spotItems]) {
+        // CR-8 (2026-04-28): canonicalize URLs before keying so http/https
+        // case, trailing slash, fragments, and utm_* tracking params don't
+        // produce different keys for the same wire story.
+        const canonicalUrl = item.url ? canonicalizeUrl(item.url) : '';
+        const key = canonicalUrl.length > 0
+          ? `url:${canonicalUrl}`
+          : `tsd:${(item.title ?? '').toLowerCase().trim()}|${item.source ?? ''}|${item.published_at ?? ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(item);
+      }
+      items = merged;
+    } else {
+      items = await fetchMarketAuxBatch(apiKey, mappedTicker, instrument);
     }
 
     if (items.length === 0) {

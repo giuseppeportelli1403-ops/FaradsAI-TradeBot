@@ -187,9 +187,18 @@ export function getCurrentKillZone(): { inKillZone: boolean; zone: string } {
   const utcMinute = now.getUTCMinutes();
   const timeDecimal = utcHour + utcMinute / 60;
 
+  // 2026-04-29 audit-3 r3 fix (scanner+misc P1-3): eliminated the
+  // 15:00-16:00 UTC overlap between NY Open (13:00-16:00) and London
+  // Close (was 15:00-17:00). Pre-fix, first-match-wins put every
+  // 15:00-16:00 trade under "NY Open" even though the London Close
+  // session was active too, persistently mis-attributing kill_zone on
+  // every lesson row from that hour and corrupting Reflection /
+  // Weekly-Review session-attribution training data. Fix: London Close
+  // window starts at 16:00 (the moment NY Open's window ends) so the
+  // boundary is clean and exactly one zone is active at any UTC minute.
   if (timeDecimal >= 7 && timeDecimal < 10) return { inKillZone: true, zone: 'London Open' };
   if (timeDecimal >= 13 && timeDecimal < 16) return { inKillZone: true, zone: 'NY Open' };
-  if (timeDecimal >= 15 && timeDecimal < 17) return { inKillZone: true, zone: 'London Close' };
+  if (timeDecimal >= 16 && timeDecimal < 17) return { inKillZone: true, zone: 'London Close' };
 
   return { inKillZone: false, zone: 'outside' };
 }

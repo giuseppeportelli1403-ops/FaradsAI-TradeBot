@@ -696,8 +696,56 @@ export class CapitalClient {
       }
     }
 
+    // 2026-04-29 audit-3 r3 fix (broker-audit P0-CC2): before throwing on
+    // timeout, reconcile against live state. Capital's /confirms/ can be
+    // slow during high-volatility moments (NFP / FOMC / flash events) —
+    // exactly when the bot is most likely to be placing orders. If the
+    // position is already live on Capital but /confirms/ hasn't flipped
+    // ACCEPTED yet, throwing here would propagate as a leg-failure to the
+    // caller (trading-agent.ts), which then runs compensation rollback on
+    // an empty placedDeals[] — and Capital is left holding a real position
+    // the bot has zero awareness of. Worst-case: silent live exposure with
+    // no SL/TP linkage in sl_tp_orders, no monitor coverage, no Telegram.
+    //
+    // Reconcile path: query getOpenPositions() and search for a position
+    // whose `dealReference` matches. If found, synthesise an ACCEPTED
+    // confirmation from the live position state. If not found, the deal
+    // genuinely failed — throw as before.
+    try {
+      const positions = await this.getOpenPositions();
+      const match = positions.find((p) => p.position?.dealReference === dealReference);
+      if (match) {
+        console.warn(
+          `[Capital] /confirms/${dealReference} timed out but position is LIVE on Capital (dealId=${match.position.dealId}). Synthesising confirmation from live state.`,
+        );
+        const reconciled: DealConfirmation = {
+          dealId: match.position.dealId,
+          dealReference,
+          dealStatus: 'ACCEPTED',
+          reason: 'RECONCILED_FROM_LIVE_POSITIONS',
+          status: 'OPEN',
+          direction: match.position.direction as 'BUY' | 'SELL',
+          epic: match.market?.epic ?? '',
+          size: match.position.size,
+          level: match.position.openLevel,
+          stopLevel: match.position.stopLevel ?? null,
+          profitLevel: match.position.profitLevel ?? null,
+          affectedDeals: [{ dealId: match.position.dealId, status: 'OPENED' }],
+        };
+        return reconciled;
+      }
+    } catch (reconcileErr) {
+      // If reconcile fails, fall through to the original timeout throw.
+      // We don't want to mask the real "deal failed" case behind a
+      // network blip on the reconcile path.
+      console.error(
+        `[Capital] Reconcile via getOpenPositions failed during /confirms/${dealReference} timeout:`,
+        reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
+      );
+    }
+
     throw new CapitalDealError(
-      `Deal confirmation timed out after ${DEAL_CONFIRM_MAX_ATTEMPTS} attempts`,
+      `Deal confirmation timed out after ${DEAL_CONFIRM_MAX_ATTEMPTS} attempts (live-positions reconcile found no match)`,
       dealReference
     );
   }
@@ -714,6 +762,18 @@ export class CapitalClient {
   private normaliseDealId(confirmation: DealConfirmation): DealConfirmation {
     const affected = confirmation.affectedDeals;
     if (Array.isArray(affected) && affected.length > 0) {
+      // 2026-04-29 audit-3 r3 (broker-audit P1-CC4): warn on
+      // affectedDeals.length > 1 so we have telemetry if Capital ever
+      // returns multi-leg /confirms/ shapes (partial close + reopen,
+      // hedge flip, AMENDED status). Picking [0] without validating
+      // status could pick a DELETED entry over an OPEN one. Logged so
+      // ops can investigate before the bot acts on a stale dealId.
+      if (affected.length > 1) {
+        const summary = affected.map((d) => `${d.dealId}:${d.status}`).join(',');
+        console.warn(
+          `[Capital] /confirms/${confirmation.dealReference} returned ${affected.length} affectedDeals — picking [0]. Full list: ${summary}`,
+        );
+      }
       const positionDealId = affected[0]?.dealId;
       if (typeof positionDealId === 'string' && positionDealId.length > 0) {
         return { ...confirmation, dealId: positionDealId };

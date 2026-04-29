@@ -584,7 +584,15 @@ export function startScheduler(): void {
         return;
       }
       if (ictRunning) {
-        console.warn('[Scheduler] Skipping ICT cycle — previous cycle still in flight (likely an 8-iteration tool churn). Will retry next 5-min tick.');
+        // 2026-04-29 audit-3 r3 fix (scheduler-audit BUG-S6): an in-flight
+        // overlap means the new candle close is silently DROPPED — the bot
+        // misses the next quarter-hour's setup detection entirely. This is a
+        // missed trading opportunity, not a benign skip. Escalate to error
+        // and surface via Telegram so ops sees patterns of overlap (likely
+        // signals a hot-loop in the agent or upstream API slowness).
+        console.error('[Scheduler] DROPPED ICT cycle — previous cycle still in flight. Next setup-detection chance is the next 15m candle close.');
+        // Best-effort alert; don't block the cron callback on it.
+        realAlertSystemWarning('ICT cycle dropped — previous cycle overlapped a candle-close trigger.').catch(() => {});
         return;
       }
       ictRunning = true;
