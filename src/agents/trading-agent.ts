@@ -436,14 +436,28 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         reasoning: String(input.reasoning ?? ''),
       };
       const hash = proposalHash(proposalForVerify);
-      const approval = approvedProposals.get(String(input.analyst_token ?? ''));
+      const tokenStr = String(input.analyst_token ?? '');
+      // 2026-04-29 codex-review fix (Finding 3): atomic verify-and-consume.
+      // Pre-fix the token was verified at Step 1 but only consumed at
+      // Step 5.5 (after balance / min-size / live-position / calendar
+      // awaits). Two concurrent place_split_trade calls with the same
+      // approved token could BOTH pass verification across those awaits
+      // and both attempt placement — duplicate trade. JS is single-threaded
+      // within a synchronous block, so doing get + delete with NO await
+      // between them is atomic across concurrent callers (the second one
+      // sees `undefined` from .get() because the first one's .delete()
+      // already ran). Move consume here, before any await in the validation
+      // cascade. If a later step fails, the token is gone and the agent
+      // re-requests review on the next cycle — small extra Sonnet call,
+      // eliminates the race.
+      const approval = approvedProposals.get(tokenStr);
       if (!approval) {
         return JSON.stringify({
           error: 'ANALYST_NOT_APPROVED',
           reason: 'No analyst approval found for the supplied analyst_token. Call request_analyst_review first.',
         });
       }
-      if (String(input.analyst_token) !== hash) {
+      if (tokenStr !== hash) {
         return JSON.stringify({
           error: 'PROPOSAL_HASH_MISMATCH',
           reason: 'analyst_token was issued for a different proposal. The trade params must match exactly what was approved (size, SL, TP, score, tier). Re-request analyst_review with the current proposal.',
@@ -451,6 +465,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           provided_token: input.analyst_token,
         });
       }
+      approvedProposals.delete(tokenStr);
 
       // === Step 2: composite_score / tier / risk-pct internal consistency
       const score = Number(input.composite_score);
@@ -566,7 +581,13 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           if (undersized.length > 0) {
             return JSON.stringify({
               error: 'BELOW_MIN_SIZE',
-              reason: `Capital.com minimum deal size for ${epic} is ${minSize} ${minRule?.unit ?? ''}. Legs ${undersized.map((u) => `${u.leg}=${u.size}`).join(', ')} are below the floor. Either upgrade the tier (raises total_risk_pct → larger sizes), widen the SL (smaller per-leg risk → larger sizes), or skip this instrument until account balance grows.`,
+              // 2026-04-29 codex-review fix: corrected the guidance — sizing
+              // formula is `size = (risk / 3) / (entry - SL)` so a WIDER SL
+              // produces SMALLER sizes (larger denominator), not larger.
+              // Real ways to lift size above the floor: upgrade the tier
+              // (raises total_risk_pct → numerator), TIGHTEN the SL (shrinks
+              // denominator), or skip until account balance grows.
+              reason: `Capital.com minimum deal size for ${epic} is ${minSize} ${minRule?.unit ?? ''}. Legs ${undersized.map((u) => `${u.leg}=${u.size}`).join(', ')} are below the floor. Either upgrade the tier (raises total_risk_pct → larger sizes), tighten the SL (smaller (entry−SL) → larger sizes), or skip this instrument until account balance grows.`,
               min_deal_size: minSize,
               undersized_legs: undersized,
             });
@@ -651,15 +672,10 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         }
       }
 
-      // === Step 5.5: consume the approval BEFORE placement begins
-      // 2026-04-29 audit fix (P1-TA4): pre-fix the approval was deleted
-      // AFTER the DB write succeeded. If DB write failed (rare but
-      // possible), the approval token stayed alive in the Map for the
-      // 10-min TTL — a duplicate place_split_trade call with the same
-      // token could attempt a duplicate trade. Now we delete BEFORE we
-      // touch Capital — once placement starts, the token is gone whether
-      // the placement succeeds or fails.
-      approvedProposals.delete(hash);
+      // (Step 5.5 — token consumption — has moved to immediately after
+      // verification at Step 1 to eliminate the cross-await race condition
+      // codex flagged on 2026-04-29. The token was already consumed before
+      // any of Steps 3.5/3.7/4/5 ran.)
 
       // === Step 6: place legs sequentially with compensation
       const tsCompact = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);

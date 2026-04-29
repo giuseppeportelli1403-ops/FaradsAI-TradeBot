@@ -294,20 +294,42 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           }
 
           // Get news score (quick check)
-          const newsScore = await getNewsScore(inst.ticker);
+          const rawNewsScore = await getNewsScore(inst.ticker);
 
-          // Preliminary composite score
+          // 2026-04-29 structural-overhaul rebalance (item 3 from
+          // strategy.md Section 5):
+          //   - base 30 → 25
+          //   - bias clarity scale lifted 0/10/15/20 → 0/15/20/25
+          //   - kill zone REMOVED as score component (now hard gate only)
+          //   - news capped at +10 / -15 (was +20 / -15) to prevent
+          //     news-pump on no-structure setups
+          //   - spread bonus unchanged at +5 tight / 0 medium
+          //   - history adjustment is applied LATER inside the agent
+          //     prompt (not in scanner) and is unchanged here
           let score = 0;
-          score += biasResult.clarity;                                           // 0/10/20
-          score += killZone.inKillZone ? KILL_ZONE_BONUS_IN : KILL_ZONE_BONUS_OUT; // 15 in-zone, 0 outside
-          score += newsScore;                                                    // -15 to +20
-          score += inst.spread_quality === 'tight' ? 5 : 0;                    // Bonus for tight spreads
-
-          // Base score lifted 25 → 30 (2026-04-22) as part of Approach 2 loosening.
-          // Combined with the Tier 3 threshold drop to 45, any instrument that had
-          // clarity>=10 in a kill zone now clears Tier 3 (base 30 + clarity 10 +
-          // kz 15 + spread 5 = 60, a clean Tier 2).
-          score += 30;
+          // Lift the legacy clarity scale 0/10/15/20 to the new
+          // 0/15/20/25 by remapping. detectBias.clarity returns the
+          // legacy scale; we convert deterministically here so the
+          // bias-detector code stays unchanged.
+          const remappedClarity =
+            biasResult.clarity >= 20 ? 25 :
+            biasResult.clarity >= 15 ? 20 :
+            biasResult.clarity >= 10 ? 15 :
+            0;
+          score += remappedClarity;                                              // 0/15/20/25
+          // Cap news contribution: bullish A 20→10, bullish B 10→5,
+          // negatives unchanged (-5 / -15) to keep risk asymmetric.
+          const cappedNewsScore =
+            rawNewsScore > 10 ? 10 :
+            rawNewsScore > 5 && rawNewsScore <= 10 ? 5 :
+            rawNewsScore < -15 ? -15 :
+            rawNewsScore;
+          score += cappedNewsScore;                                              // -15 to +10
+          score += inst.spread_quality === 'tight' ? 5 : 0;                      // 0 / +5
+          score += 25;                                                            // base (was 30)
+          // NOTE: kill_zone score component intentionally removed.
+          // killZone.inKillZone === true is enforced as a hard gate
+          // earlier in this function (line 272 `if (!killZone.inKillZone) return []`).
 
           const tier: 1 | 2 | 3 | null =
             score >= TIER_1_THRESHOLD ? 1 :

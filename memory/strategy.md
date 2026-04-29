@@ -127,12 +127,18 @@ Size per leg  = (Total risk / 3) / (entry − SL in price terms)
 **Why TP1 is 1:1 (changed 2026-04-29):** TP1 is the *grab-something-and-de-risk* level, not a trend-continuation target. With TP1 = 1:1, the typical 15M reversal move (which extends 1:1 to 1.5:1 in your favor before chopping back) locks in partial profit and triggers the BE-move on legs B+C. Pre-fix, TP1 was set at 2:1 — meaning even when the analysis was correct, price had to deliver a *trend continuation* to hit TP1, not just a *normal mean-reverting move*. In choppy intraday action this rarely happened, all three legs rode the reversal back through entry to SL together, and the trade took a full -1R loss instead of locking in +0.33R.
 
 **Math after fix (TP1=1R, TP2=2R, TP3=3R, sizes 34%/33%/33%):**
-- All three TPs hit: +0.34R + 0.66R + 0.99R = **+1.99R**
-- TP1 + TP2 hit, C stopped at TP1 trail: +0.34R + 0.66R + 0.33R = **+1.33R**
-- TP1 only, B+C ride to BE-stop: +0.34R + 0R + 0R = **+0.34R**
-- All SL: **−1R** (unchanged)
 
-Positive expectancy is achievable at ~50% TP1 hit rate with no further targets. Pre-fix, you needed both TP1 (which is hard at 2:1) AND TP2 to hit just to break even.
+Per-trade outcome P&L in R:
+- All three TPs hit: +0.34R + 0.66R + 0.99R = **+1.99R**
+- TP1 + TP2 hit, C stopped at TP1 trail: +0.34R + 0.66R + ~0R = **~+1.0R**
+- TP1 only, B+C ride to BE-stop: +0.34R + 0R + 0R = **+0.34R**
+- Nothing hits, full SL: **−1R**
+
+**Honest expectancy math** (corrected after 2026-04-29 codex review): if every winning trade only hits TP1 (B+C BE-stop) and every losing trade is full -1R, breakeven win rate is `1 / (1 + 0.34) = `**74.6% TP1 hit rate**, not the 50% I claimed in an earlier draft. The realism layer in `src/backtest/realism.ts` shows typical execution costs (spread + slippage) of ~0.42-0.94R per trade on this universe, so the *effective* breakeven moves up further.
+
+**The reason this still beats TP1=2:1:** at TP1=2R the breakeven hit rate is `1 / (1 + 0.66) = `60.2%, but the *probability* of TP1 hitting drops sharply because TP1 now requires a trend-continuation move rather than a typical mean-reverting move. Lots of empirical evidence (and our own intraday FX experience) puts the TP1=1R hit rate roughly 1.5-2× the TP1=2R hit rate — so even if 1:1 needs 75% to break even and 2:1 only needs 60%, the empirical hit rates are roughly 60-70% (1:1) vs 30-40% (2:1). The 1:1 setup is the better expectancy when both are evaluated honestly.
+
+**This is still a tight strategy** — it requires legitimate setup quality and the BE-trail to actually fire correctly when TP1 hits. Spread costs eat into every trade. Positive expectancy is *achievable* but not *automatic*.
 
 If all three are stopped out simultaneously, total loss = exactly the tier risk %. Never size each leg at the full risk %.
 

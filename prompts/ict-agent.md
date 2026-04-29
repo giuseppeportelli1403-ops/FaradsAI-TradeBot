@@ -128,11 +128,13 @@ For each promising instrument, in score order:
 **D. Check kill zone** (UTC):
 - London Open: 07:00–10:00
 - New York Open: 13:00–16:00
-- London Close: 15:00–17:00
+- London Close: 16:00–17:00
+
+(Kill zones above match the runtime gate in `src/scanner/index.ts`. London Close starts at 16:00 not 15:00 — the 15:00-16:00 window is NY-Open-only to avoid first-match-wins overlap that mis-attributed kill_zone on every Reflection / Weekly-Review row in that hour. Synced 2026-04-29.)
 
 If NOT in a kill zone: STOP. Do not analyse further. Wait for the next zone.
 
-**E. Get news context** — `get_news_context(instrument)`. Cat A (major catalyst, sentiment-aligned) → +20/−15. Cat B (moderate) → +10/−5. Cat C / none → 0.
+**E. Get news context** — `get_news_context(instrument)`. Per the rebalanced rubric (see Step H): aligned Cat A → +10, aligned Cat B → +5, neutral / Cat C / none → 0, opposing Cat B → −5, opposing Cat A → −15.
 
 **F. Get economic calendar** — `get_economic_calendar(1)`. The veto windows match the code:
 - Generic high-impact event: skip if within **−5/+30 min** of trade time
