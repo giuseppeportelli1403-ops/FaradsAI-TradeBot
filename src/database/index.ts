@@ -152,11 +152,22 @@ function rebuildTradesTable(): void {
         closed_at TEXT
       )
     `);
-    // Copy existing rows, leaving tp3/position_c_id/size_c/pnl_c NULL AND
-    // closure_reason NULL (pre-2026-04-23 trades never populated it).
+    // Copy existing rows, leaving tp3/position_c_id/size_c/pnl_c NULL.
+    // 2026-04-29 audit-3 r4 fix (scanner+misc P1-8 / P0-3): preserve
+    // closure_reason from the OLD table when present. Pre-fix the SELECT
+    // omitted closure_reason entirely; if a partially-migrated DB had
+    // closure_reason added via the ALTER block but later landed on the
+    // rebuild path (e.g. older CHECK constraint missing 'closed_early'),
+    // every historical closure_reason value would be silently dropped.
+    // Detect the column on the OLD table; copy it through if present,
+    // default NULL otherwise.
+    const oldColsResult = db.exec("PRAGMA table_info(trades_old)");
+    const oldCols: string[] = oldColsResult[0]?.values.map((row) => String(row[1])) ?? [];
+    const oldHasClosureReason = oldCols.includes('closure_reason');
+    const closureReasonSelect = oldHasClosureReason ? 'closure_reason' : 'NULL AS closure_reason';
     db.run(`
-      INSERT INTO trades (id, strategy_tag, instrument, instrument_category, direction, setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status, pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at, closed_at)
-      SELECT id, strategy_tag, instrument, instrument_category, direction, setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status, pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category, analyst_decision, reasoning, opened_at, closed_at FROM trades_old
+      INSERT INTO trades (id, strategy_tag, instrument, instrument_category, direction, setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status, pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category, analyst_decision, reasoning, closure_reason, opened_at, closed_at)
+      SELECT id, strategy_tag, instrument, instrument_category, direction, setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status, pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category, analyst_decision, reasoning, ${closureReasonSelect}, opened_at, closed_at FROM trades_old
     `);
     db.run('DROP TABLE trades_old');
     db.run('CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)');

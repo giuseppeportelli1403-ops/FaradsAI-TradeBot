@@ -65,6 +65,18 @@ export function parseForexFactoryXml(xml: string): EconomicEvent[] {
   // Match each <event>…</event> block. Non-greedy across newlines.
   const eventBlocks = xml.match(/<event>[\s\S]*?<\/event>/g) ?? [];
 
+  // 2026-04-29 audit-3 r4 fix (market-data audit P0-3): telemetry for
+  // silent format-change failure. If FF ever changes its tag name,
+  // CDATA wrapping, or block structure, this regex returns []  silently
+  // and the FF half of the calendar veto fails open with no signal.
+  // Warn-log when we got non-trivial XML but zero blocks — operations
+  // can grep for this string and investigate before more cycles run.
+  if (eventBlocks.length === 0 && xml.length > 200) {
+    console.warn(
+      `[Forex Factory] Parsed 0 event blocks from XML of length ${xml.length}. Format change suspected — calendar-veto FF half is failing open. Investigate parser.`,
+    );
+  }
+
   for (const block of eventBlocks) {
     const get = (tag: string): string | null => {
       const m = block.match(new RegExp(`<${tag}>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/${tag}>`));

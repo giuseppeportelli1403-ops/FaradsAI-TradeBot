@@ -377,12 +377,43 @@ export class CapitalClient {
     dealId: string,
     params: UpdatePositionParams
   ): Promise<DealConfirmation> {
-    const ref = await this.request<{ dealReference: string }>(
-      'PUT',
-      `/api/v1/positions/${dealId}`,
-      params
-    );
-    return this.pollDealConfirmation(ref.dealReference);
+    // 2026-04-29 audit-3 r4 fix (broker-audit P1-CC5): same idempotency
+    // pattern as closePosition — if the position auto-closed (e.g.
+    // monitor wrote tp1_hit and queued an SL→BE update, but B's SL
+    // already triggered between the flag write and the API call),
+    // surface a synthetic ALREADY_CLOSED confirmation rather than a
+    // generic Error. Lets schedulers/handlers distinguish "transient
+    // infra problem" from "race-against-fill" without log spam.
+    try {
+      const ref = await this.request<{ dealReference: string }>(
+        'PUT',
+        `/api/v1/positions/${dealId}`,
+        params
+      );
+      return await this.pollDealConfirmation(ref.dealReference);
+    } catch (e) {
+      if (this.isAlreadyClosed(e)) {
+        console.warn(
+          `[Capital] updatePosition ${dealId} skipped — position already closed by broker (race against SL/TP fill).`,
+        );
+        const synthetic: DealConfirmation = {
+          dealId,
+          dealReference: `synthetic-update-skipped-${dealId}`,
+          dealStatus: 'ACCEPTED',
+          reason: 'POSITION_ALREADY_CLOSED_BY_BROKER',
+          status: 'FULLY_CLOSED',
+          direction: 'BUY',
+          epic: '',
+          size: 0,
+          level: 0,
+          stopLevel: null,
+          profitLevel: null,
+          affectedDeals: [{ dealId, status: 'DELETED' }],
+        };
+        return synthetic;
+      }
+      throw e;
+    }
   }
 
   async closePosition(dealId: string): Promise<DealConfirmation> {
