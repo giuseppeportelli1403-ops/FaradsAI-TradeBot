@@ -123,8 +123,8 @@ export async function runEodJournalAgent(now: Date = new Date()): Promise<string
       anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 2000,
-        thinking: { type: 'adaptive' },
-        output_config: { effort: 'medium' },
+        // 2026-04-29: thinking + output_config removed for Haiku 4.5
+        // compatibility (silently failing every cycle prior).
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: [{
           role: 'user',

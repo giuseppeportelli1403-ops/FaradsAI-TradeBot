@@ -941,12 +941,12 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
       // earlier — saves worst-case output cost without affecting the
       // 95th percentile.
       max_tokens: 12000,
-      thinking: { type: 'adaptive' },
-      // effort: 'medium' trades a small amount of thinking trace depth
-      // for ~25% output-token savings. ICT decisions don't need max-depth
-      // reasoning once the scoring + kill-zone rules have already
-      // filtered the universe.
-      output_config: { effort: 'medium' },
+      // 2026-04-29: removed `thinking: { type: 'adaptive' }` and
+      // `output_config: { effort }` when the model was downgraded to
+      // Haiku 4.5. Both params are Sonnet/Opus-only — Haiku 4.5 returns
+      // HTTP 400 "adaptive thinking is not supported on this model".
+      // Caught live in production at the first cycle after downgrade
+      // (08:30 UTC). If we re-upgrade to Sonnet, restore both lines.
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       tools: MCP_TOOLS,
       messages,

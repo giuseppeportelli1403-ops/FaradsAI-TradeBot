@@ -37,8 +37,8 @@ export async function runReflectionAgent(tradeId: string): Promise<void> {
       // upgrade to Sonnet if quality drops. Revert via 'claude-sonnet-4-6'.
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 4000,
-      thinking: { type: 'adaptive' },
-      output_config: { effort: 'high' },
+      // 2026-04-29: thinking + output_config removed for Haiku 4.5
+      // compatibility (Sonnet-only API params; Haiku 4.5 HTTP 400s).
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [{
       role: 'user',

@@ -83,8 +83,10 @@ async function extractThemes(
       anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 1000,
-        thinking: { type: 'adaptive' },
-        output_config: { effort: 'medium' },
+        // 2026-04-29: thinking + output_config removed for Haiku 4.5
+        // compatibility (Sonnet-only API params). This was silently
+        // failing on every Researcher cron since the bot moved to
+        // Haiku — explains the "122h-old research brief" warning.
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: [{
           role: 'user',

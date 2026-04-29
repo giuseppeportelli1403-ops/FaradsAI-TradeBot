@@ -65,8 +65,8 @@ export async function runWeeklyReviewAgent(): Promise<string> {
     // max_tokens 16000 → 12000 (2026-04-21) — weekly review output is
     // structured + concise, rarely needs more than 8k tokens.
     max_tokens: 12000,
-    thinking: { type: 'adaptive' },
-    output_config: { effort: 'max' },
+    // 2026-04-29: thinking + output_config removed for Haiku 4.5
+    // compatibility (Sonnet-only API params).
     system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
     messages: [{
       role: 'user',
