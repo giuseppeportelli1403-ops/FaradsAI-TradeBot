@@ -11,7 +11,15 @@ import { startScheduler } from './scheduler/index.js';
 // in-flight Capital API calls aborted, sql.js DB held in-memory could lose
 // the last write batch since the previous saveToFile, and Capital sessions
 // stayed alive on the broker side. Now: install SIGTERM/SIGINT handlers
-// that flush the DB to disk and notify ops via Telegram before exiting.
+// that flush the DB to disk before exiting.
+//
+// 2026-04-29 r7: removed Telegram alert from this path. The original
+// alertSystemWarning fired on every signal, which meant a development
+// burst of 5 pm2 restarts in 39 minutes flooded Telegram with 5
+// identical "Shutting down" messages. The DB flush is the load-bearing
+// fix; the alert was just noise. If genuine crash detection is wanted
+// later, layer it as a separate heartbeat/uptime watchdog rather than
+// on the shutdown path.
 let shuttingDown = false;
 function installShutdownHandlers(): void {
   const shutdown = (signal: string) => {
@@ -24,10 +32,7 @@ function installShutdownHandlers(): void {
     } catch (e) {
       console.error('[Shutdown] DB flush failed:', e);
     }
-    // Best-effort heads-up to Telegram. Don't block exit on it.
-    alertSystemWarning(`Trading bot received ${signal}. Shutting down. DB flushed.`)
-      .catch(() => { /* swallow — process exiting anyway */ });
-    setTimeout(() => process.exit(0), 1500);
+    setTimeout(() => process.exit(0), 500);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
