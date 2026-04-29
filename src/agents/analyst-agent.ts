@@ -175,12 +175,18 @@ ${bannedPatternsSection}
 
 Run your 6-check sequence and respond with your decision JSON.`;
 
-  // 2026-04-29 audit: 30s hard timeout via Promise.race. Sonnet 4.6 typically
-  // returns in 5-15s; 30s is the safety budget. On timeout we fail-closed
-  // (REJECT, confidence 0) rather than letting a hung call wedge the ICT
-  // cycle. Important: the SDK's default timeout is 10 minutes — far too long
-  // for a per-trade gate that must respond in seconds.
-  const timeoutMs = 30_000;
+  // 2026-04-29 audit: hard timeout via Promise.race. On timeout we
+  // fail-closed (REJECT, confidence 0) rather than letting a hung call
+  // wedge the ICT cycle. SDK default timeout is 10 minutes — far too long
+  // for a per-trade gate.
+  //
+  // r8 (2026-04-29): bumped 30s → 60s after live timeout in production.
+  // First real Haiku→Sonnet pipeline test produced an Analyst call at
+  // 08:46:11 UTC that 30s'd → REJECT. Sonnet 4.6 with adaptive thinking
+  // + cold prompt cache + variable Anthropic backend latency genuinely
+  // can take 30-45s on the first call. 60s gives headroom while still
+  // capping the worst case so the cycle isn't held forever.
+  const timeoutMs = 60_000;
   let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
   try {
     response = await withTimeout(
