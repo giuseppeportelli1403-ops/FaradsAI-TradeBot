@@ -118,12 +118,12 @@ For each promising instrument, in score order:
 
 **A. Get price data** — `get_prices(instrument, '1h', 50)` and `get_prices(instrument, '15m', 50)`.
 
-**B. Establish 1-hour bias**
-- Higher highs + higher lows → Bullish
-- Lower highs + lower lows → Bearish
-- Neither → Neutral. Move on.
+**B. Establish 1-hour bias and pick MODE**
+- Higher highs + higher lows → Bullish → **trend-mode** (use triggers 1-4)
+- Lower highs + lower lows → Bearish → **trend-mode** (use triggers 1-4)
+- Neither → Neutral → **range-mode** (use trigger 5: Range Sweep Reversal). Do NOT skip neutrals — the range-mode path was added 2026-04-29 to capture pre-FOMC / consolidation regimes when most of the universe is neutral.
 
-**C. Map ICT arrays on 1H** — most recent order block in bias direction; open fair value gaps; equal highs/lows (liquidity); 50% premium/discount level.
+**C. Map ICT arrays on 1H (trend-mode only)** — most recent order block in bias direction; open fair value gaps; equal highs/lows (liquidity); 50% premium/discount level. **In range-mode, skip ICT array mapping** — instead, identify the active 1H range: high and low of the last ≥ 8 candles, range width must be ≥ 1.5 × 15M ATR for the setup to qualify.
 
 **D. Check kill zone** (UTC):
 - London Open: 07:00–10:00
@@ -161,18 +161,37 @@ Tier assignment:
 
 **I. Look for entry trigger on 15M** — apply the QUANTITATIVE definitions from `strategy.md` Section 3. No subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; log "watching, no trigger" and move on.
 
+**Trend-mode triggers (1H bias bullish or bearish, triggers 1-4):**
 - **OB Retest:** rejection candle with body ≥ 0.5×range, close in bias direction, opposing wick ≥ 1.0×body, tap depth ≤ 50% inside the OB.
 - **FVG Fill:** ≥ 50% fill of the FVG range, then next candle closes in bias direction with body ≥ 0.5×range. Partial fills < 50% with reversal do NOT qualify.
 - **Liquidity Sweep:** wick exceeds prior swing by ≥ 1×spread (real sweep, not spread-tag), reversal candle within ≤ 2 candles, body ≥ 0.6×range, closes back through swept level by ≥ 1×spread in bias direction.
 - **Breakout Retest:** level broken on a 1H or 15M close, retest within ≤ 6×15M candles, hold confirmed by 2 consecutive 15M closes on the bias side.
 
+**Range-mode trigger (1H bias = neutral only, trigger 5):**
+- **Range Sweep Reversal:** ALL of the following must hold:
+  - 1H bias is `neutral` (NOT bullish or bearish — if there's a clean trend, use triggers 1-4 instead)
+  - Range defined by 1H last ≥ 8 candles, with range width ≥ 1.5 × current 15M ATR
+  - 15M wick exceeds the range extreme by ≥ 2 × current spread (stricter than trigger 3's 1× because reversal-from-range is lower-probability)
+  - Reversal candle within ≤ 2 candles of the sweep, body ≥ 0.6 × range, closes BACK INSIDE the range by ≥ 1 × spread
+  - Direction is OPPOSITE to the swept extreme (sweep above range high → SHORT; sweep below range low → LONG)
+  - If Cat A news opposes the reversal direction → **invalidate** (news is more likely to drive a continuation breakout than the reversal pattern)
+
 **J. Calculate trade parameters**
 - Entry: current 15M close (Capital is market — entry will fill at current bid/ask, not at a planned level)
-- SL: 2–5 points beyond structure
+- SL: 2–5 points beyond structure (or just beyond the swept range extreme in range-mode)
+
+**Trend-mode targets (triggers 1-4):**
 - **TP1: 1:1 R:R** (the de-risk leg) — NOT 2:1
 - **TP2: ≥ 2:1 R:R** for Tier 1 & 2, or ≥ 1.5:1 for Tier 3 on tight-spread symbols only
 - **TP3: ≥ 3:1 R:R**
-- Compute size per leg: `(Account_balance × tier_risk_pct / 3) / (entry − SL in price terms)`
+- Risk per leg: `(Account_balance × tier_risk_pct / 3) / (entry − SL in price terms)` where tier_risk_pct = 1.5% T1 / 1.0% T2 / 0.5% T3
+
+**Range-mode targets (trigger 5):**
+- **TP1: mid-range** (50% level of the 1H range) — must be ≥ 1:1 R:R
+- **TP2: opposite range extreme** — must be ≥ 1.5:1 R:R
+- **TP3: measured-move projection** beyond opposite extreme equal to one range width — must be ≥ 2:1 R:R
+- **Half-size posture:** risk per leg: `(Account_balance × 0.0025 / 3) / (entry − SL in price terms)` — total risk is 0.25% (half of Tier 3's 0.5%) because range reversals are higher-variance than trend-following entries.
+- Tier MUST be 3 in the proposal (range-mode never qualifies for Tier 1 or 2)
 
 **K. Opposing Cat-A news — half-size posture (post-2026-04-23)**
 
@@ -258,7 +277,8 @@ If trade placed:
 ## RULES YOU NEVER BREAK
 
 - Score ≥ 45 to trade. T3 (45–59) = 0.5% risk. T2 (60–79) = 1% risk. T1 (80+) = 1.5% risk.
-- **TP1 R:R = 1:1** (the de-risk leg). TP2 R:R ≥ 2:1 (T1 & T2) or ≥ 1.5:1 (T3 tight-spread). TP3 R:R ≥ 3:1.
+- **Trend-mode** (1H bullish/bearish): triggers 1-4. TP1 = 1:1, TP2 ≥ 2:1 (T1 & T2) or ≥ 1.5:1 (T3 tight-spread), TP3 ≥ 3:1.
+- **Range-mode** (1H neutral only): trigger 5 (Range Sweep Reversal). Tier 3 ONLY. Half-size posture (0.25% total risk). TP1 = mid-range ≥ 1:1, TP2 = opposite extreme ≥ 1.5:1, TP3 = measured move ≥ 2:1. Cat A opposing news INVALIDATES the setup.
 - Every trade = 3 legs placed atomically via `place_split_trade`. Size per leg = (total_risk / 3) / (entry − SL in price terms).
 - Coordination lock: no new ICT trade on an instrument already held.
 - All trades pass Trade Analyst Agent approval first via `request_analyst_review`. The `analyst_token` it returns is required for `place_split_trade`.

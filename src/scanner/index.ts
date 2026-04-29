@@ -288,10 +288,21 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           const candles = await fetchCandles(inst.ticker, '1h', 30);
           const biasResult = detectBias(candles);
 
-          // Skip neutral instruments
-          if (biasResult.bias === 'neutral') {
-            return null;
-          }
+          // 2026-04-29 range-mode (5th trigger) addition:
+          // Neutral-bias instruments are NO LONGER filtered out at
+          // scanner stage. Pre-fix this dropped 5/7 of the universe on
+          // pre-FOMC days, leaving the bot trading the same 1-2
+          // instruments cycle after cycle. Post-fix neutrals are passed
+          // through with a Tier-3-capped score so the agent can apply
+          // the Range Sweep Reversal trigger (strategy.md Section 3
+          // trigger 5) when 1H is genuinely sideways.
+          //
+          // Score cap rationale: range-mode setups are higher-variance
+          // than trend-following, so they're capped at Tier 3 (45-59
+          // band, score ≤ 65 — leaves headroom for the agent's added
+          // ICT array score). The agent prompt enforces the half-size
+          // posture (0.25% total risk) and the trigger-5 requirements.
+          const isRangeMode = biasResult.bias === 'neutral';
 
           // Get news score (quick check)
           const rawNewsScore = await getNewsScore(inst.ticker);
@@ -330,6 +341,15 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           // NOTE: kill_zone score component intentionally removed.
           // killZone.inKillZone === true is enforced as a hard gate
           // earlier in this function (line 272 `if (!killZone.inKillZone) return []`).
+
+          // Range-mode score cap: never let a neutral-bias instrument
+          // exceed Tier 3 (max 59). Without this cap a clear range with
+          // aligned Cat-A news could reach 25 + 25 + 10 + 5 = 65 = Tier 2,
+          // which would mis-route the agent into a trend-mode 2:1 R:R
+          // proposal on what is structurally a range play.
+          if (isRangeMode) {
+            score = Math.min(score, 59);
+          }
 
           const tier: 1 | 2 | 3 | null =
             score >= TIER_1_THRESHOLD ? 1 :

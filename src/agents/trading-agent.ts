@@ -471,6 +471,13 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const score = Number(input.composite_score);
       const tier = Number(input.tier);
       const riskPct = Number(input.total_risk_pct);
+      const setupType = String(input.setup_type ?? '');
+      // 2026-04-29 range-mode addition: setup_type starting with "Range_"
+      // (canonical: "Range_Sweep_Reversal") signals range-mode. Range-mode
+      // is Tier 3 only and uses HALF-size posture (0.25% total risk vs the
+      // standard 0.5% Tier 3). The validation cascade below adjusts the
+      // expected risk_pct accordingly.
+      const isRangeMode = /^Range_/i.test(setupType);
       if (!Number.isFinite(score) || score < 45) {
         return JSON.stringify({
           error: 'SCORE_BELOW_TIER_MIN',
@@ -484,11 +491,22 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           reason: `composite_score ${score} maps to Tier ${expectedTier}, but proposal claims Tier ${tier}.`,
         });
       }
-      const expectedRiskPct = expectedTier === 1 ? 1.5 : expectedTier === 2 ? 1.0 : 0.5;
+      // Range-mode is structurally Tier 3 only — reject T1/T2 proposals
+      // that try to use a Range_* setup_type.
+      if (isRangeMode && tier !== 3) {
+        return JSON.stringify({
+          error: 'RANGE_MODE_TIER_MISMATCH',
+          reason: `setup_type "${setupType}" is range-mode and Tier 3 only. Proposal has Tier ${tier}.`,
+        });
+      }
+      const expectedRiskPct = isRangeMode ? 0.25
+        : expectedTier === 1 ? 1.5
+        : expectedTier === 2 ? 1.0
+        : 0.5;
       if (Math.abs(riskPct - expectedRiskPct) > 0.05) {
         return JSON.stringify({
           error: 'RISK_PCT_TIER_MISMATCH',
-          reason: `Tier ${expectedTier} requires risk ${expectedRiskPct}% (±0.05). Proposal has ${riskPct}%.`,
+          reason: `${isRangeMode ? 'Range-mode' : `Tier ${expectedTier}`} requires risk ${expectedRiskPct}% (±0.05). Proposal has ${riskPct}%.`,
         });
       }
 

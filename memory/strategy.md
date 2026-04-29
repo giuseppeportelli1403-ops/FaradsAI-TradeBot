@@ -1,6 +1,6 @@
 # ICT Intraday Trading Strategy — BetterOpsAI Trading Bot
 > Last Updated: 2026-04-29
-> Updated By: 2026-04-29 structural overhaul — TP1 R:R, trigger quantification, score rebalance, history-WR threshold, calendar window sync
+> Updated By: 2026-04-29 range-mode addition — 5th trigger (Range Sweep Reversal) for neutral-bias instruments, half-size posture, Tier-3-only cap
 > Strategy Tag: ICT_INTRADAY
 
 ---
@@ -30,6 +30,10 @@ Trading outside kill zones: scanner applies a kill-zone bonus that pushes the co
 
 Every trigger requires a quantitative match — no subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; the agent must log "watching, no trigger" and move on.
 
+Triggers 1-4 are **trend-following** — they require the 1H bias to be `bullish` or `bearish` and align the entry with that bias. Trigger 5 is **range-mode** — it activates ONLY when 1H bias is `neutral` and looks for reversal at a range extreme.
+
+### Trend-following triggers (1H bias bullish or bearish)
+
 1. **OB Retest**
    - Price taps an order block from the bias-aligned side and prints a *rejection candle* with ALL of:
      - body ≥ 0.5 × candle range (`|close - open| / (high - low) ≥ 0.5`)
@@ -50,7 +54,21 @@ Every trigger requires a quantitative match — no subjective "looks like a reje
    - Retest within ≤ 6 × 15M candles of the break.
    - Hold confirmed by 2 × 15M closes on the bias side of the broken level after retest.
 
-In all four cases, "spread" = current bid/ask spread on the instrument at trigger evaluation time; "candle" = 15M candle unless otherwise specified.
+### Range-mode trigger (1H bias = neutral only)
+
+5. **Range Sweep Reversal** *(added 2026-04-29 to handle pre-FOMC / consolidation regimes when most of the universe is neutral)*
+   - **Pre-condition:** 1H bias MUST be `neutral` (not bullish or bearish). If the instrument has a clean trend, use triggers 1-4 instead.
+   - **Range definition:** the 1H last-N-candles high and low form an active range. N ≥ 8 candles, range width ≥ 1.5 × current 15M ATR.
+   - **Sweep:** on the 15M, a wick exceeds the range extreme (high or low) by ≥ 2 × current spread. (Stricter than trigger 3's 1× spread because reversal-from-range is lower-probability than reversal-with-trend, so we demand a clearer sweep signal.)
+   - **Reversal candle:** within ≤ 2 candles of the sweep, with body ≥ 0.6 × range, closing back inside the range by ≥ 1 × spread.
+   - **Direction:** the reversal direction is OPPOSITE to the swept extreme (sweep above range high → short setup; sweep below range low → long setup).
+   - **Targets:** TP1 = mid-range (the 50% level of the range). TP2 = opposite range extreme. TP3 = a measured-move projection beyond the opposite extreme equal to one range width.
+   - **Sizing:** **half size** of the Tier 3 baseline (i.e. 0.25% total risk, not 0.5%) — range-reversals are higher-variance than trend-following triggers; smaller bet for the same setup quality. Per-leg size = `(account_balance × 0.0025 / 3) / (entry − SL in price terms)`.
+   - **R:R minimums:** TP1 ≥ 1:1, TP2 ≥ 1.5:1, TP3 ≥ 2:1 (tighter than trend-mode TP3 ≥ 3:1 because the range bounds the realistic target distance).
+   - **News interaction:** if Cat A news aligned with the reversal direction (e.g. hawkish-USD news + sweep-of-range-high on EURUSD = short), this is a strong confluence — full Tier-3 score. If Cat A news opposes the reversal direction, **invalidate** — the news is more likely to drive a continuation breakout than the reversal pattern, so abort the setup.
+   - **Tier:** Tier 3 only. Range setups never qualify for Tier 1 or 2 regardless of score (they're capped at score 65 by the scanner — see Section 5 note).
+
+In all five cases, "spread" = current bid/ask spread on the instrument at trigger evaluation time; "candle" = 15M candle unless otherwise specified; "range" = the current 1H high-low envelope of the last ≥ 8 candles for trigger 5.
 
 ---
 
@@ -91,9 +109,10 @@ Maximum theoretical score: 25 (base) + 25 (bias) + 35 (ICT array) + 10 (news) + 
 
 Maximum no-structure score: 25 (base) + 0 + 0 + 10 (news) + 10 (history) + 5 (spread) = **50**. Below the 45 floor only when there is also no aligned news and no history bonus, which is correct — a chart that shows no bias clarity and no ICT array is not a setup, regardless of news context.
 
-**Tier 1 (score 80–100):** Risk **1.5%** of account. Trailing-stop option on Leg C.
-**Tier 2 (score 60–79):** Risk **1.0%** of account. Fixed TP3.
-**Tier 3 (score 45–59):** Risk **0.5%** of account. Fixed TP3. Minimum R:R to TP2: 1.5:1 on tight-spread instruments only.
+**Tier 1 (score 80–100):** Risk **1.5%** of account. Trailing-stop option on Leg C. *Trend-mode only* (1H bias must be bullish or bearish).
+**Tier 2 (score 60–79):** Risk **1.0%** of account. Fixed TP3. *Trend-mode only.*
+**Tier 3 (score 45–59):** Risk **0.5%** of account. Fixed TP3. Minimum R:R to TP2: 1.5:1 on tight-spread instruments only. *Trend-mode only.*
+**Range-mode (1H neutral, trigger 5 only):** Risk **0.25%** of account (half of Tier 3 baseline). Score capped at 65 by the scanner — range-mode is structurally Tier 3 only, never Tier 1 or 2 regardless of score. R:R min: TP1 ≥ 1:1, TP2 ≥ 1.5:1, TP3 ≥ 2:1.
 **Below 45:** No trade. Skip instrument.
 
 **On the historical win-rate adjustment:** the previous 5-trades-per-bucket threshold was effectively dead code — at the bot's typical ~0.5 trades/day, hitting 5 trades per (setup × kill zone × instrument) bucket would take ~2 years. Lowering the activation threshold to 2 trades opens the feedback loop within the demo window. The signal is noisier (a 0/2 vs 1/2 swing matters), but a noisy active feedback loop is better than a clean dead one.
@@ -116,7 +135,8 @@ Maximum no-structure score: 25 (base) + 0 + 0 + 10 (news) + 10 (history) + 5 (sp
 Every trade is opened as **THREE positions** of split size at the same market price, all sharing the same SL. Capital.com supports only one TP per position; this is the only way to get multi-TP exits on a single-TP broker.
 
 ```
-Total risk    = Account_balance × tier_risk_pct  (1.5% T1 / 1.0% T2 / 0.5% T3)
+Total risk    = Account_balance × tier_risk_pct
+                where tier_risk_pct = 1.5% T1 / 1.0% T2 / 0.5% T3 / 0.25% range-mode
 Size per leg  = (Total risk / 3) / (entry − SL in price terms)
 ```
 
@@ -155,11 +175,17 @@ When triggered:
 
 ### Section 7.3: R:R Minimums
 
+**Trend-mode (triggers 1-4):**
 - **TP1 (Leg A):** ≥ **1:1** (de-risk threshold; can be 1.2:1 for breathing room)
 - **TP2 (Leg B):** ≥ **2:1** for Tier 1 & Tier 2; ≥ **1.5:1** for Tier 3 on tight-spread instruments only (EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD)
 - **TP3 (Leg C):** ≥ **3:1**
 
-The TP1 ≥ 1:1 is mandatory — Leg A's job is to lock in something on every winning move, not to wait for trend continuation.
+**Range-mode (trigger 5 only):**
+- **TP1:** ≥ **1:1** at mid-range
+- **TP2:** ≥ **1.5:1** at opposite range extreme
+- **TP3:** ≥ **2:1** at measured-move projection (one range width beyond opposite extreme)
+
+The TP1 ≥ 1:1 is mandatory in both modes — Leg A's job is to lock in something on every winning move, not to wait for trend continuation.
 
 ### Section 7.4: Pre-Trade Approval (CODE-ENFORCED, 2026-04-28)
 
@@ -202,3 +228,4 @@ If the calendar fetch fails, the veto fails CLOSED — orders are refused until 
 | 2026-04-23 | Manual | Swing Agent retired (cost > profit contribution) | Empirical |
 | 2026-04-28 | Manual (audit) | **AUDIT REWRITE.** Drift between this file and code identified by 2026-04-28 codex review pass: 2-leg → 3-leg, /2 → /3 sizing, Tier 3 50→45, removed VIX-based sizing (VIX feed retired 2026-04-24), populated empty Section 4 universe, removed Swing references, added Section 7.4 code-enforced analyst gate, Section 7.5 code-enforced coordination lock, Section 7.6 calendar veto, Section 7.7 news layer doc | Manual audit |
 | 2026-04-29 | Manual (structural overhaul) | **TP1 R:R 2:1 → 1:1** (de-risk leg, partial-profit target — was structurally negative-expectancy at 2:1). **TP2 floor 2:1 unchanged**, TP3 floor 4:1 → 3:1. **Quantified all 4 trigger definitions** in Section 3 (body/range ratios, fill thresholds, sweep size, retest count). **Rebalanced score rubric**: structure dominates (bias 0–25, ICT 0–35), kill-zone removed as score component (now hard gate only), news capped at +10 / -15. **History-WR threshold lowered** 5+ → 2+ trades to activate the feedback loop within the demo window. **Calendar veto window** doc synced to code: generic -5/+30, tier-1 -60/+30. | Structural fix to documented strategy; addresses negative-expectancy math + trigger ambiguity flagged in 2026-04-29 internal review |
+| 2026-04-29 | Manual (range-mode addition) | **5th trigger: Range Sweep Reversal.** Activates only on neutral-bias instruments (the 5/7 universe filtered as neutral during pre-FOMC chop). Range definition (≥ 8 1H candles, width ≥ 1.5 × ATR), sweep ≥ 2× spread, reversal candle within 2 candles, body ≥ 0.6× range, closes back inside range by ≥ 1× spread. TP1 = mid-range, TP2 = opposite extreme, TP3 = measured-move projection. **Half-size posture: 0.25% total risk** (0.5% Tier 3 / 2). Tier 3 only (capped — score 65 max). Tighter R:R: TP1 1:1, TP2 1.5:1, TP3 2:1. Cat-A news must align with reversal direction or invalidate the setup. | Captures range-bound regimes where current 4 triggers find nothing — observed 5/7 universe filtered as neutral during pre-FOMC 2026-04-29 |
