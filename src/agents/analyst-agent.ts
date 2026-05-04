@@ -12,7 +12,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
-import { extractText, parseLastJsonObject, withTimeout } from './llm-output.js';
+import { parseLastJsonObject, withTimeout } from './llm-output.js';
 import { getLatestBrief, getOpenTrades, getLessons, logAnalystDecision } from '../database/index.js';
 import type { AnalystDecision, StrategyTag } from '../types.js';
 
@@ -68,6 +68,71 @@ export function parseAnalystResponse(text: string): AnalystDecision {
     modifications,
     confidence,
   };
+}
+
+/**
+ * Read the analyst's decision from a forced `submit_decision` tool_use
+ * block. Replaces parseAnalystResponse for live calls — the SDK enforces
+ * input_schema shape, but we still defensively validate semantics
+ * (decision enum, finite confidence) here. Fail-closed (REJECT, conf 0)
+ * on any shape or value problem.
+ *
+ * Why this exists (2026-05-05): the prior path had the analyst emit
+ * free-form prose ending in JSON, which lost the JSON to max_tokens
+ * truncation when adaptive thinking + verbose markdown analysis exceeded
+ * 8k tokens. 0/6 analyst calls produced parseable output between
+ * 2026-04-29 and 2026-05-04. Tool calling decouples the structured
+ * decision from the prose entirely.
+ */
+export function extractAnalystDecisionFromTool(content: unknown[]): AnalystDecision {
+  const failClosed = (reason: string): AnalystDecision => ({
+    decision: 'REJECT',
+    reason,
+    modifications: {},
+    confidence: 0,
+  });
+
+  if (!Array.isArray(content) || content.length === 0) {
+    return failClosed('Analyst response had no content blocks.');
+  }
+
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'tool_use' &&
+      (block as { name?: unknown }).name === 'submit_decision'
+    ) {
+      const rawInput = (block as { input?: unknown }).input;
+      if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) {
+        return failClosed('submit_decision tool_use had no object input.');
+      }
+      const raw = rawInput as Record<string, unknown>;
+
+      const decisionRaw = String(raw.decision ?? '').toUpperCase();
+      if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT' && decisionRaw !== 'MODIFY') {
+        return failClosed(`Invalid decision in tool input: '${raw.decision}'.`);
+      }
+
+      const confRaw = Number(raw.confidence);
+      const confidence = Number.isFinite(confRaw) ? Math.max(0, Math.min(1, confRaw)) : 0;
+
+      const modifications =
+        raw.modifications && typeof raw.modifications === 'object' && !Array.isArray(raw.modifications)
+          ? (raw.modifications as Record<string, unknown>)
+          : {};
+
+      const reason = typeof raw.reason === 'string' ? raw.reason : '';
+
+      return {
+        decision: decisionRaw as 'APPROVE' | 'REJECT' | 'MODIFY',
+        reason,
+        modifications,
+        confidence,
+      };
+    }
+  }
+  return failClosed('Analyst response had no submit_decision tool call.');
 }
 
 export interface TradeProposal {
@@ -175,38 +240,67 @@ ${bannedPatternsSection}
 
 Run your 6-check sequence and respond with your decision JSON.`;
 
-  // 2026-04-29 audit: hard timeout via Promise.race. On timeout we
-  // fail-closed (REJECT, confidence 0) rather than letting a hung call
-  // wedge the ICT cycle. SDK default timeout is 10 minutes — far too long
-  // for a per-trade gate.
-  //
-  // r8 (2026-04-29): bumped 30s → 60s after live timeout in production.
-  // First real Haiku→Sonnet pipeline test produced an Analyst call at
-  // 08:46:11 UTC that 30s'd → REJECT. Sonnet 4.6 with adaptive thinking
-  // + cold prompt cache + variable Anthropic backend latency genuinely
-  // can take 30-45s on the first call. 60s gives headroom while still
-  // capping the worst case so the cycle isn't held forever.
+  // 2026-05-05: forced submit_decision tool call. Replaces prior shape
+  // (free-form prose ending in JSON) which was losing the JSON to
+  // max_tokens truncation — between 2026-04-29 and 2026-05-04 0/6 analyst
+  // calls produced parseable output. Tool calling forces a schema-validated
+  // input object regardless of how much prose precedes it; the analyst's
+  // analysis goes in the `reason` field where length doesn't compete with
+  // a separate JSON block at the end of the response.
+  const submitDecisionTool = {
+    name: 'submit_decision',
+    description:
+      'Submit your final approval decision for the proposed trade after running the 6-check sequence. ' +
+      'Call this tool exactly once. Your full prose analysis goes in the `reason` field — do not write a ' +
+      'separate text block; everything you want logged for the trade record should be in `reason`.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        decision: {
+          type: 'string',
+          enum: ['APPROVE', 'REJECT', 'MODIFY'],
+          description: 'The verdict on the proposal.',
+        },
+        reason: {
+          type: 'string',
+          description:
+            'Full analysis text. Cite specific check numbers (1-6) and quote relevant evidence (price levels, news headlines, lessons).',
+        },
+        confidence: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description:
+            'How confident you are in this decision, 0-1. Use 0 only on fail-closed; reserve >0.9 for unambiguous cases.',
+        },
+        modifications: {
+          type: 'object',
+          description:
+            'Required only when decision=MODIFY. Keys: sl, tp1, tp2, tp3, total_risk_pct (numeric overrides). Empty object {} otherwise.',
+          additionalProperties: true,
+        },
+      },
+      required: ['decision', 'reason', 'confidence', 'modifications'],
+    },
+  };
+
+  // Hard timeout via Promise.race. SDK default is 10 minutes — far too long
+  // for a per-trade gate. 60s headroom for Sonnet 4.6 + adaptive thinking +
+  // cold cache + variable Anthropic backend latency.
   const timeoutMs = 60_000;
   let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
   try {
     response = await withTimeout(
       anthropic.messages.create({
         model: 'claude-sonnet-4-6',
-        // r9 (2026-05-04): 2000 → 8000 after diagnosing 5-day window where
-        // ~37% of analyst calls fail-closed REJECTed because adaptive
-        // thinking consumed the full budget, leaving zero text blocks for
-        // the JSON decision. With Sonnet 4.6 + medium effort + the heavy
-        // 6-check sequence + full proposal/lessons/brief context, thinking
-        // alone needs ~4-7k tokens; the JSON answer is ~500-1000 more.
-        // 8000 fits both with headroom. Output tokens are billed only when
-        // emitted, so the budget bump is essentially free unless thinking
-        // truly needs more — in which case we want it to have it.
         max_tokens: 8000,
         thinking: { type: 'adaptive' },
         output_config: { effort: 'medium' },
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: contextMessage }],
-      }),
+        tools: [submitDecisionTool],
+        tool_choice: { type: 'tool', name: 'submit_decision' },
+      } as Parameters<typeof anthropic.messages.create>[0]),
       timeoutMs,
       'Analyst',
     );
@@ -223,21 +317,26 @@ Run your 6-check sequence and respond with your decision JSON.`;
     return failClosed;
   }
 
-  // 2026-04-29 audit fix (P0-A1): use extractText to iterate ALL content
-  // blocks. The prior `response.content[0].type === 'text' ? ...` pattern
-  // returned '' whenever adaptive thinking placed a ThinkingBlock at index 0
-  // — which Sonnet does on virtually every call. The Analyst was rejecting
-  // 100% of trades by default because of this bug.
-  const text = extractText(response.content);
-  console.log('[Analyst Agent]', text.length > 500 ? text.slice(0, 500) + '...[truncated]' : text);
+  // Surface stop_reason so we can diagnose mid-tool-call truncation if it
+  // ever happens (would manifest as `extractAnalystDecisionFromTool`
+  // returning REJECT with reason "no submit_decision tool call"). Narrow
+  // off the Stream branch of messages.create's overload — we never request
+  // streaming for the analyst.
+  const msg = response as Anthropic.Messages.Message;
+  console.log(`[Analyst] stop_reason=${msg.stop_reason} content_blocks=${msg.content.length}`);
 
-  // Parse the decision JSON (validated, fail-closed REJECT on any shape error)
-  const decision = parseAnalystResponse(text);
+  const decision = extractAnalystDecisionFromTool(msg.content as unknown[]);
 
-  // Log the decision (always — even on parse failure, the REJECT row is
-  // important audit data)
+  // Log the decision (always — even on extractor failure, the REJECT row is
+  // important audit data).
   logAnalystDecision(proposal.trade_id, proposal.strategy_tag, decision);
 
-  console.log(`[Analyst] Decision: ${decision.decision} (confidence ${decision.confidence}) — ${decision.reason}`);
+  const reasonPreview =
+    decision.reason.length > 500
+      ? decision.reason.slice(0, 500) + '…[truncated]'
+      : decision.reason;
+  console.log(
+    `[Analyst] Decision: ${decision.decision} (confidence ${decision.confidence}) — ${reasonPreview}`,
+  );
   return decision;
 }
