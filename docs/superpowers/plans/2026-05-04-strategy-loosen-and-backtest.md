@@ -8,41 +8,44 @@
 
 A doc-vs-code audit on 2026-05-04 surfaced **17 findings, 7 of them P0 silent bugs**. The original loosening plan (Tasks 1-11 below, now relabelled **Phase E**) cannot proceed until these are fixed because (a) the backtest engine doesn't implement the current strategy and would measure a fictional baseline, and (b) several P0 bugs (R:R validation absent, weekly kill switch unenforced, news rubric +20 vs +10) compound any further changes.
 
-**New sequence (sequential, per user direction):**
+**Sequence (sequential, per user direction):**
 
 ```
-PHASE A — Critical-bug fixes  ────────────  ~3-4 hours  ─── DOING NOW
-  A1. R:R validation in place_split_trade  (Finding #2)
-  A2. News rubric sync +20 → +10            (Finding #5)
-  A3. Weekly 10% kill switch enforcement    (Finding #6)
-  A4. Calendar veto preMs/postMs swap        (Finding #1)
-  A5. get_economic_calendar tool description (Finding #7)
+PHASE A — Critical-bug fixes               ✅ DONE 2026-05-04
+  A1. R:R validation in place_split_trade        commit d13e847
+  A2. News rubric sync +20 → +10                 commit 47a8112
+  A3. Weekly 10% kill switch enforcement         commit a3c4a15
+  A4. Calendar veto preMs/postMs swap            commit 208646c
+  A5. get_economic_calendar tool description     commit d9c2c07
 
-PHASE B — Backtest engine rebuild  ─────  ~3-5 hours
-  B1. Sync engine.ts to 2026-04-29 strategy (Finding #3)
-  B2. Fix backtest getKillZone overlap       (Finding #9)
-  B3. Update header comment + JSDoc          (Finding #15)
+PHASE B — Backtest engine rebuild           ✅ DONE 2026-05-04
+  B1. Sync engine.ts to 2026-04-29 strategy      commit 1b694d5
+  B2. Fix backtest getKillZone overlap           (in B1)
+  B3. Update header comment + JSDoc              (in B1)
 
-PHASE C — Doc / cosmetic cleanup  ──────  ~1 hour
-  C1. RankedInstrument.tier JSDoc            (Finding #4)
-  C2. Strategy.md London Close 16:00-17:00   (Finding #8)
-  C3. DEMO_RELAXED_GATES_CONTEXT 3-leg       (Finding #10)
-  C4. Demo bullet 3 kill-zone hard gate      (Finding #11)
-  C5. news/index.ts header comment           (Finding #14)
-  C6. ict-agent.md size_a/b/c example        (Finding #17)
+PHASE C — Doc / cosmetic cleanup            ✅ DONE 2026-05-04
+  C1. RankedInstrument.tier JSDoc                commit 19f2640
+  C2. Strategy.md London Close 16:00-17:00       (in C1)
+  C3. DEMO_RELAXED_GATES_CONTEXT 3-leg           (in C1)
+  C4. Demo bullet 3 kill-zone hard gate          (in C1)
+  C5. news/index.ts header comment               (folded into A2)
+  C6. ict-agent.md size_a/b/c example            (in C1)
 
-PHASE D — Analyst prompt fixes  ────────  ~30 min
-  D1. Range-mode 0.25% awareness             (Finding #12)
-  D2. Opposing-Cat-A range-mode carve-out    (Finding #13)
+PHASE D — Analyst prompt fixes              ✅ DONE 2026-05-04
+  D1. Range-mode 0.25% awareness                 commit c73d37d
+  D2. Opposing-Cat-A range-mode carve-out        (in D1)
 
-PHASE E — STRATEGY LOOSENING                ~6-8 hours
-  Detailed below as Tasks 1-11. After Phase A-D land, this becomes
-  meaningful: backtest measures real strategy, all gates work, no
-  compounded uncertainty. Re-validate Tasks 1-11 against
-  post-Phase-A-D codebase before executing.
+PHASE E — STRATEGY LOOSENING                ⬜ DEFERRED
+  Detailed below as Tasks 1-11. Now meaningful: backtest measures real
+  strategy, all gates work, no compounded uncertainty. Re-validate
+  Tasks 1-11 against post-Phase-A-D codebase before executing.
+  Estimated 6-8 hours including backtest comparisons.
 
-Status: Bot halted on VPS (pm2 stopped, saved). Resume monitoring
-after Phase A lands. Demo account, no real money at stake.
+Status (2026-05-04 evening): All 17 audit findings addressed across
+phases A-D. Bot still halted on VPS (pm2 stopped, saved). Test count
+540 → 595 (+55). Ready to redeploy with the Phase-A-D fixes when
+approved. Phase E (loosening) is the next planned milestone but is
+distinct from "fix the bugs" and was deferred per user direction.
 ```
 
 Each Phase A-D task uses TDD: read code → write failing test → confirm fail → implement → confirm pass → commit (atomic, one bug per commit). Codex 2nd-pass review at end of each phase.
