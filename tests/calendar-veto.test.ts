@@ -113,18 +113,18 @@ describe('shouldVetoOrderForCalendar', () => {
     expect(result.veto).toBe(false);
   });
 
-  it('DOES veto events within the default 30-min post-event window', () => {
-    // Phase A4 (2026-05-04): post-event window widened from 5 → 30 min for
+  it('DOES veto events within the default 15-min post-event window', () => {
+    // Phase E (2026-05-04): post-event window narrowed 30 → 15 min for
     // generic high-impact events. An event that fired 10 min ago is still
-    // within the 30-min post-window and must veto.
+    // within the 15-min post-window and must veto.
     const events = [event({ date: '2026-04-28', time: '11:50:00', country: 'US' })]; // 10 min ago
     const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
     expect(result.veto).toBe(true);
   });
 
-  it('does NOT veto events that fired more than 30 min ago (default post-window)', () => {
-    // Same scenario but 35 min ago — outside the default postMs=30 window.
-    const events = [event({ date: '2026-04-28', time: '11:25:00', country: 'US' })]; // 35 min ago
+  it('does NOT veto events that fired more than 15 min ago (default post-window)', () => {
+    // Phase E: 20 min ago is outside the new 15-min postMs window.
+    const events = [event({ date: '2026-04-28', time: '11:40:00', country: 'US' })]; // 20 min ago
     const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
     expect(result.veto).toBe(false);
   });
@@ -203,19 +203,20 @@ describe('vetoWindowForEvent — per-event window widening (CR-1)', () => {
     expect(vetoWindowForEvent({ event: 'Federal Reserve rate decision' } as EconomicEvent).preMs).toBe(60 * 60_000);
   });
 
-  it('returns the default window (5 pre / 30 post) for generic events', () => {
-    // Phase A4 (2026-05-04, audit Finding #1): swapped to match strategy.md
-    // Section 7.6 "-5/+30" and ict-agent.md:140. Pre-fix the code returned
-    // the opposite values (preMs=30, postMs=5).
+  it('returns the default window (5 pre / 15 post) for generic events', () => {
+    // Phase E (2026-05-04, strategy loosening): post-event window narrowed
+    // from 30 → 15 min for non-Tier-1 events. Tier-1 still uses 60/30.
+    // Phase A4 (2026-05-04 same day) also fixed the preMs/postMs convention
+    // — pre-Phase-A4 the code did 30/5 (opposite of doc).
     const result = vetoWindowForEvent({ event: 'German Manufacturing PMI' } as EconomicEvent);
     expect(result.preMs).toBe(5 * 60_000);
-    expect(result.postMs).toBe(30 * 60_000);
+    expect(result.postMs).toBe(15 * 60_000);
   });
 
   it('returns the default window for unknown / empty event names', () => {
     expect(vetoWindowForEvent({ event: '' } as EconomicEvent).preMs).toBe(5 * 60_000);
     expect(vetoWindowForEvent({} as EconomicEvent).preMs).toBe(5 * 60_000);
-    expect(vetoWindowForEvent({ event: '' } as EconomicEvent).postMs).toBe(30 * 60_000);
+    expect(vetoWindowForEvent({ event: '' } as EconomicEvent).postMs).toBe(15 * 60_000);
   });
 
   it('is case-insensitive on event title matching', () => {
@@ -281,18 +282,74 @@ describe('shouldVetoOrderForCalendar — per-event window integration (CR-1)', (
     expect(result.veto).toBe(true);
   });
 
-  it('does NOT veto a generic high-impact event 35 min after now (outside default 30-min post)', () => {
-    // Phase A4 (2026-05-04, audit Finding #1): default post-event window is
-    // now 30 min (was 5 min, contradicting strategy.md). An event 35 min ago
-    // is outside the 30-min veto tail and trading resumes.
+  it('does NOT veto a generic high-impact event 20 min after now (outside default 15-min post)', () => {
+    // Phase E (2026-05-04): default post-event window narrowed 30 → 15 min.
+    // An event 20 min ago is outside the 15-min veto tail and trading resumes.
     const events = [
       {
-        date: '2026-04-28', time: '11:25:00',
+        date: '2026-04-28', time: '11:40:00',
         event: 'German Industrial Orders', country: 'DE', impact: 'high' as const,
         actual: null, estimate: null, previous: null, affected_instruments: [],
       },
     ];
     const result = shouldVetoOrderForCalendar(['EUR'], events, nowMs);
     expect(result.veto).toBe(false);
+  });
+
+  describe('NO_VETO_PATTERNS — regional Fed/ECB/BoE speakers (Phase E)', () => {
+    it('does NOT veto Fed regional president speeches', () => {
+      const names = ['Williams', 'Bullard', 'Daly', 'Kashkari', 'Bostic', 'Mester', 'Goolsbee', 'Logan'];
+      for (const name of names) {
+        const events = [
+          {
+            date: '2026-04-28', time: '12:15:00',
+            event: `Fed ${name} Speaks`, country: 'US', impact: 'high' as const,
+            actual: null, estimate: null, previous: null, affected_instruments: [],
+          },
+        ];
+        const result = shouldVetoOrderForCalendar(['EUR', 'USD'], events, nowMs);
+        expect(result.veto).toBe(false);
+      }
+    });
+
+    it('does NOT veto ECB non-Lagarde speakers', () => {
+      const names = ['Lane', 'Schnabel', 'de Guindos', 'Knot', 'Villeroy'];
+      for (const name of names) {
+        const events = [
+          {
+            date: '2026-04-28', time: '12:15:00',
+            event: `ECB ${name} Speech`, country: 'EU', impact: 'high' as const,
+            actual: null, estimate: null, previous: null, affected_instruments: [],
+          },
+        ];
+        const result = shouldVetoOrderForCalendar(['EUR'], events, nowMs);
+        expect(result.veto).toBe(false);
+      }
+    });
+
+    it('STILL vetoes Powell (Fed Chair) — matches EXTRA_WIDE_PATTERNS', () => {
+      const events = [
+        {
+          date: '2026-04-28', time: '12:15:00',
+          event: 'Fed Chair Powell Speaks', country: 'US', impact: 'high' as const,
+          actual: null, estimate: null, previous: null, affected_instruments: [],
+        },
+      ];
+      const result = shouldVetoOrderForCalendar(['EUR', 'USD'], events, nowMs);
+      // Powell matches "Fed chair" in EXTRA_WIDE_PATTERNS so the wide veto applies.
+      expect(result.veto).toBe(true);
+    });
+
+    it('STILL vetoes generic FOMC press conference (Tier-1 path overrides NO_VETO check)', () => {
+      const events = [
+        {
+          date: '2026-04-28', time: '12:15:00',
+          event: 'FOMC Press Conference', country: 'US', impact: 'high' as const,
+          actual: null, estimate: null, previous: null, affected_instruments: [],
+        },
+      ];
+      const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+      expect(result.veto).toBe(true);
+    });
   });
 });
