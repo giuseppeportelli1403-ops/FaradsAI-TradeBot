@@ -112,13 +112,12 @@ function pruneStaleApprovals(): void {
 //   EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD
 // Medium-spread (no T3 tight-spread carve-out):
 //   SILVER, OIL_CRUDE
-
-const TIGHT_SPREAD_TICKERS = new Set(['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'GOLD']);
-
-/** True if the ticker has tight-spread carve-out for Tier 3 R:R floor. */
-export function isTightSpreadTicker(ticker: string): boolean {
-  return TIGHT_SPREAD_TICKERS.has(ticker.toUpperCase());
-}
+//
+// The classifier itself lives in ./spread to break a cycle with the
+// scanner (which also needs it for the Tier 3 score floor). Re-exported
+// here so existing tests/imports keep working.
+import { isTightSpreadTicker, tier3FloorFor } from './spread.js';
+export { isTightSpreadTicker, tier3FloorFor };
 
 export interface RRValidationInput {
   direction: 'long' | 'short';
@@ -713,10 +712,11 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // word (after trimming whitespace/underscores) is "range".
       const setupTypeNorm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_');
       const isRangeMode = /^range_/.test(setupTypeNorm);
-      if (!Number.isFinite(score) || score < 40) {
+      const tier3Floor = tier3FloorFor(proposalForVerify.instrument);
+      if (!Number.isFinite(score) || score < tier3Floor) {
         return JSON.stringify({
           error: 'SCORE_BELOW_TIER_MIN',
-          reason: `composite_score ${score} is below Tier 3 minimum 40. No trade.`,
+          reason: `composite_score ${score} is below Tier 3 floor ${tier3Floor} for ${proposalForVerify.instrument}. No trade.`,
         });
       }
       const expectedTier = score >= 80 ? 1 : score >= 60 ? 2 : 3;

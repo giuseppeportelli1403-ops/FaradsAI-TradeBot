@@ -39,6 +39,7 @@
 
 import { detectBias } from '../scanner/index.js';
 import { computeExecutionCost } from './realism.js';
+import { tier3FloorFor } from '../agents/spread.js';
 import type { Candle } from '../types.js';
 
 export interface BacktestTrade {
@@ -130,14 +131,17 @@ export function computeScore(input: ComputeScoreInput): number {
 }
 
 /**
- * Tier assignment per strategy.md Section 5. T1 80+, T2 60-79, T3 40-59.
- * Below 40 returns null (no trade). History: 50 → 45 (2026-04-22) → 40
- * (Phase E 2026-05-04 strategy loosening).
+ * Tier assignment per strategy.md Section 5. T1 80+, T2 60-79.
+ * Tier 3 floor is spread-class dependent post-2026-05-04 carve-out:
+ * tight-spread (EUR/GBP/USDJPY/AUDUSD/GOLD) accepts 40+; medium-spread
+ * (OIL_CRUDE, SILVER) keeps the pre-Phase-E 45 floor. History: 50 →
+ * 45 (2026-04-22) → 40 (Phase E 2026-05-04) → spread-aware (carve-out
+ * 2026-05-04 after backtest showed OIL_CRUDE drove all the regression).
  */
-export function assignTier(score: number): 1 | 2 | 3 | null {
+export function assignTier(score: number, ticker: string): 1 | 2 | 3 | null {
   if (score >= 80) return 1;
   if (score >= 60) return 2;
-  if (score >= 40) return 3;
+  if (score >= tier3FloorFor(ticker)) return 3;
   return null;
 }
 
@@ -243,7 +247,7 @@ export function runBacktest(
     if (bias.bias === 'neutral') continue;
 
     const score = computeScore({ rawClarity: bias.clarity, spreadTight });
-    const tier = assignTier(score);
+    const tier = assignTier(score, ticker);
     if (!tier) continue;
 
     // Entry at next candle's open

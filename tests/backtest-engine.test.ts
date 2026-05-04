@@ -60,40 +60,70 @@ describe('computeScore — post-2026-04-29 rebalanced rubric', () => {
   });
 });
 
-describe('assignTier — post-2026-04-22 floor', () => {
-  it('score 80+ → Tier 1', () => {
-    expect(assignTier(80)).toBe(1);
-    expect(assignTier(95)).toBe(1);
-    expect(assignTier(100)).toBe(1);
+describe('assignTier — post-2026-05-04 spread-class carve-out', () => {
+  // T1/T2 are spread-agnostic; ticker arg is irrelevant for them.
+  it('score 80+ → Tier 1 (any ticker)', () => {
+    expect(assignTier(80, 'EURUSD')).toBe(1);
+    expect(assignTier(95, 'OIL_CRUDE')).toBe(1);
+    expect(assignTier(100, 'SILVER')).toBe(1);
   });
 
-  it('score 60-79 → Tier 2', () => {
-    expect(assignTier(60)).toBe(2);
-    expect(assignTier(70)).toBe(2);
-    expect(assignTier(79)).toBe(2);
+  it('score 60-79 → Tier 2 (any ticker)', () => {
+    expect(assignTier(60, 'EURUSD')).toBe(2);
+    expect(assignTier(70, 'OIL_CRUDE')).toBe(2);
+    expect(assignTier(79, 'SILVER')).toBe(2);
   });
 
-  it('score 40-59 → Tier 3', () => {
-    expect(assignTier(40)).toBe(3);
-    expect(assignTier(45)).toBe(3);
-    expect(assignTier(50)).toBe(3);
-    expect(assignTier(59)).toBe(3);
+  // Tight-spread carve-out — Phase E floor of 40 stays in force.
+  it('tight-spread score 40-59 → Tier 3', () => {
+    expect(assignTier(40, 'EURUSD')).toBe(3);
+    expect(assignTier(40, 'GBPUSD')).toBe(3);
+    expect(assignTier(40, 'USDJPY')).toBe(3);
+    expect(assignTier(40, 'AUDUSD')).toBe(3);
+    expect(assignTier(40, 'GOLD')).toBe(3);
+    expect(assignTier(45, 'EURUSD')).toBe(3);
+    expect(assignTier(59, 'EURUSD')).toBe(3);
   });
 
-  it('score 39 → null (below floor)', () => {
-    expect(assignTier(39)).toBeNull();
+  it('tight-spread score 39 → null', () => {
+    expect(assignTier(39, 'EURUSD')).toBeNull();
   });
 
-  it('score 0 → null', () => {
-    expect(assignTier(0)).toBeNull();
+  // Medium-spread carve-out — floor reverts to 45 (pre-Phase-E behavior).
+  // This is the whole point of the 2026-05-04 carve-out: OIL_CRUDE 40-44
+  // dominated the failed Phase E backtest.
+  it('medium-spread score 40-44 → null (carve-out, was Tier 3 in Phase E)', () => {
+    expect(assignTier(40, 'OIL_CRUDE')).toBeNull();
+    expect(assignTier(42, 'OIL_CRUDE')).toBeNull();
+    expect(assignTier(44, 'OIL_CRUDE')).toBeNull();
+    expect(assignTier(40, 'SILVER')).toBeNull();
+    expect(assignTier(44, 'SILVER')).toBeNull();
   });
 
-  it('uses the Phase-E 40 floor (history: 50 → 45 → 40)', () => {
-    // Pre-2026-04-22 Tier 3 was 50-59; pre-Phase-E it was 45-59;
-    // post-Phase-E (2026-05-04) it is 40-59.
-    expect(assignTier(40)).toBe(3);
-    expect(assignTier(41)).toBe(3);
-    expect(assignTier(44)).toBe(3);
+  it('medium-spread score 45-59 → Tier 3', () => {
+    expect(assignTier(45, 'OIL_CRUDE')).toBe(3);
+    expect(assignTier(50, 'OIL_CRUDE')).toBe(3);
+    expect(assignTier(59, 'SILVER')).toBe(3);
+  });
+
+  it('medium-spread score 39 → null', () => {
+    expect(assignTier(39, 'OIL_CRUDE')).toBeNull();
+  });
+
+  it('score 0 → null (any ticker)', () => {
+    expect(assignTier(0, 'EURUSD')).toBeNull();
+    expect(assignTier(0, 'OIL_CRUDE')).toBeNull();
+  });
+
+  it('case-insensitive ticker classification', () => {
+    expect(assignTier(40, 'eurusd')).toBe(3);
+    expect(assignTier(40, 'oil_crude')).toBeNull();
+  });
+
+  it('unknown ticker is treated as medium-spread (conservative)', () => {
+    // Defensive default: anything not in the tight-spread set keeps the 45 floor.
+    expect(assignTier(40, 'BTCUSD')).toBeNull();
+    expect(assignTier(45, 'BTCUSD')).toBe(3);
   });
 });
 
