@@ -659,6 +659,32 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         });
       }
 
+      // Phase B (2026-05-05 audit): order-side pre-check. Catches inverted
+      // SL/TPs (e.g. SHORT with SL below entry — observed live 2026-05-04
+      // 08:31 on GOLD) before the analyst LLM call. Without this gate the
+      // analyst's verbose markdown rejection of malformed proposals was the
+      // dominant truncation trigger (0/6 parseable decisions over 6 days).
+      const orderSidePreCheck = validateOrderSide({
+        direction: proposal.direction,
+        entry: proposal.entry,
+        sl: proposal.sl,
+        tp1: proposal.tp1,
+        tp2: proposal.tp2,
+        tp3: proposal.tp3,
+      });
+      if (!orderSidePreCheck.ok) {
+        console.log(`[Analyst Pre-Check] ${proposal.instrument} ${proposal.direction}: ${orderSidePreCheck.reason} — skipping analyst call.`);
+        return JSON.stringify({
+          decision: 'REJECT',
+          reason: `Pre-analyst order-side violation: ${orderSidePreCheck.reason}`,
+          analyst_token: '',
+          proposal_hash: hash,
+          trade_id: proposal.trade_id,
+          confidence: 0,
+          modifications: {},
+        });
+      }
+
       const decision = await runAnalystAgent(proposal);
       if (decision.decision === 'APPROVE') {
         approvedProposals.set(hash, { approvedAt: Date.now(), proposal });
