@@ -22,8 +22,9 @@
 //         strategies share this limitation so comparison is still valid.
 //       News 0 in backtest — historical news not available via free APIs.
 //       Spread 0 / +5 (tight)
-//   - Tier assignment: T1 80+ (1.5% risk), T2 60-79 (1.0%), T3 45-59 (0.5%),
-//     below 45 = skip (no trade).
+//   - Tier assignment: T1 80+ (1.5% risk), T2 60-79 (1.0%), T3 40-59 (0.5%),
+//     below 40 = skip (no trade). T3 floor lowered 45 → 40 in Phase E
+//     (2026-05-04) strategy loosening.
 //   - TPs: TP1 = entry + 1R (de-risk leg), TP2 = entry + 2R (primary),
 //     TP3 = entry + 3R (runner). Matches strategy.md Section 7.3.
 //   - 3-leg sizing: ~34/33/33% per leg. P&L outcomes per strategy.md:
@@ -38,6 +39,7 @@
 
 import { detectBias } from '../scanner/index.js';
 import { computeExecutionCost } from './realism.js';
+import { tier3FloorFor } from '../agents/spread.js';
 import type { Candle } from '../types.js';
 
 export interface BacktestTrade {
@@ -129,13 +131,17 @@ export function computeScore(input: ComputeScoreInput): number {
 }
 
 /**
- * Tier assignment per strategy.md Section 5. T1 80+, T2 60-79, T3 45-59.
- * Below 45 returns null (no trade). Lowered from 50 → 45 on 2026-04-22.
+ * Tier assignment per strategy.md Section 5. T1 80+, T2 60-79.
+ * Tier 3 floor is spread-class dependent post-2026-05-04 carve-out:
+ * tight-spread (EUR/GBP/USDJPY/AUDUSD/GOLD) accepts 40+; medium-spread
+ * (OIL_CRUDE, SILVER) keeps the pre-Phase-E 45 floor. History: 50 →
+ * 45 (2026-04-22) → 40 (Phase E 2026-05-04) → spread-aware (carve-out
+ * 2026-05-04 after backtest showed OIL_CRUDE drove all the regression).
  */
-export function assignTier(score: number): 1 | 2 | 3 | null {
+export function assignTier(score: number, ticker: string): 1 | 2 | 3 | null {
   if (score >= 80) return 1;
   if (score >= 60) return 2;
-  if (score >= 45) return 3;
+  if (score >= tier3FloorFor(ticker)) return 3;
   return null;
 }
 
@@ -241,7 +247,7 @@ export function runBacktest(
     if (bias.bias === 'neutral') continue;
 
     const score = computeScore({ rawClarity: bias.clarity, spreadTight });
-    const tier = assignTier(score);
+    const tier = assignTier(score, ticker);
     if (!tier) continue;
 
     // Entry at next candle's open

@@ -125,6 +125,8 @@ For each promising instrument, in score order:
 - Lower highs + lower lows → Bearish → **trend-mode** (use triggers 1-4)
 - Neither → Neutral → **range-mode** (use trigger 5: Range Sweep Reversal). Do NOT skip neutrals — the range-mode path was added 2026-04-29 to capture pre-FOMC / consolidation regimes when most of the universe is neutral.
 
+**On bias as a filter (Phase E 2026-05-04 loosening):** the bias clarity contribution to the composite score (0/15/20/25 in Section 5 of strategy.md) is the SOLE bias-quality filter. Do NOT also apply a second "bias must be clean" hard gate that overrides the score. If bias is weak, the score component already penalised it — let the resulting score (and tier assignment) decide whether the trade qualifies. A "moderate" bias (20 points) on an otherwise A-grade setup is a legitimate Tier 2/3 entry, not a skip. **Bias DIRECTION still matters** (don't long in a downtrend; don't short in an uptrend) — only bias CLARITY is now a score-only filter, not a binary gate.
+
 **C. Map ICT arrays on 1H (trend-mode only)** — most recent order block in bias direction; open fair value gaps; equal highs/lows (liquidity); 50% premium/discount level. **In range-mode, skip ICT array mapping** — instead, identify the active 1H range: high and low of the last ≥ 8 candles, range width must be ≥ 1.5 × 15M ATR for the setup to qualify.
 
 **D. Check kill zone** (UTC):
@@ -158,14 +160,14 @@ If you're inside a window: SKIP. Don't bother running structure analysis. The `p
 Tier assignment:
 - **Tier 1 (80–100):** 1.5% risk
 - **Tier 2 (60–79):** 1.0% risk
-- **Tier 3 (45–59):** 0.5% risk
-- **Below 45:** Skip
+- **Tier 3 (40–59):** 0.5% risk
+- **Below 40:** Skip
 
 **I. Look for entry trigger on 15M** — apply the QUANTITATIVE definitions from `strategy.md` Section 3. No subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; log "watching, no trigger" and move on.
 
 **Trend-mode triggers (1H bias bullish or bearish, triggers 1-4):**
-- **OB Retest:** rejection candle with body ≥ 0.5×range, close in bias direction, opposing wick ≥ 1.0×body, tap depth ≤ 50% inside the OB.
-- **FVG Fill:** ≥ 50% fill of the FVG range, then next candle closes in bias direction with body ≥ 0.5×range. Partial fills < 50% with reversal do NOT qualify.
+- **OB Retest:** rejection candle with body ≥ 0.4×range (lowered 0.5→0.4 in Phase E 2026-05-04), close in bias direction, opposing wick ≥ 1.0×body, tap depth ≤ 50% inside the OB.
+- **FVG Fill:** ≥ 50% fill of the FVG range, then next candle closes in bias direction with body ≥ 0.4×range (lowered 0.5→0.4 in Phase E). Partial fills < 50% with reversal do NOT qualify.
 - **Liquidity Sweep:** wick exceeds prior swing by ≥ 1×spread (real sweep, not spread-tag), reversal candle within ≤ 2 candles, body ≥ 0.6×range, closes back through swept level by ≥ 1×spread in bias direction.
 - **Breakout Retest:** level broken on a 1H or 15M close, retest within ≤ 6×15M candles, hold confirmed by 2 consecutive 15M closes on the bias side.
 
@@ -205,14 +207,33 @@ Tier assignment:
 **Both modes:** if the news is STALE and bearish (the news_context summary contains `[stale … bearish-dampened]`), prefer to SKIP rather than half-size — the stale-bearish dampening rule already softened the score and stacking another mitigation on top is overcompensating.
 
 **L. Final checklist**
-- [ ] 1H bias clear and in your favour
+- [ ] 1H bias direction matches trade direction (clarity is in the score; bias is no longer a binary "clean enough" gate — Phase E 2026-05-04)
 - [ ] Valid ICT trigger printed on 15M
-- [ ] Score ≥ 45 (T3) / ≥ 60 (T2) / ≥ 80 (T1)
+- [ ] Score ≥ 40 (T3) / ≥ 60 (T2) / ≥ 80 (T1)
 - [ ] R:R to TP2 ≥ 1.5:1 (T3) or 2:1 (T1 & T2)
 - [ ] Calendar veto not triggered
 - [ ] Daily 6% kill switch not hit
 - [ ] No existing position on this instrument (coordination lock)
 - [ ] Submit to Trade Analyst Agent for approval
+
+**M. Force-Propose Rule (Phase E 2026-05-04 strategy loosening)**
+
+If ANY ranked candidate this cycle has composite score ≥ 55, you MUST submit at least one proposal to `request_analyst_review` this cycle, **even if no trigger fires cleanly on the top candidate**. Per the Phase E design (Q1=A): the analyst's 6-check sequence is the load-bearing quality gate for borderline proposals — better an audit-trail-logged REJECT from the analyst than a silent ICT skip with no record.
+
+How to apply:
+1. Pick the highest-scoring ranked candidate that is in a kill zone and has bias DIRECTION aligned with a feasible trade direction.
+2. Build a proposal with whatever entry/SL/TP the structure supports — use the most recent 15M close as entry, conservative SL at the most recent swing extreme, TP1 at 1:1, TP2 at 2:1 (or 1.5:1 for Tier 3 tight-spread), TP3 at 3:1.
+3. Submit to `request_analyst_review`. If REJECT comes back, log it and move on. Do NOT retry the same proposal in a subsequent cycle without a material change (price, structure, news).
+
+If NO candidate scores ≥ 55, do NOT force-propose — log "no qualifying candidates this cycle" and move on as before. The 55 threshold is intentionally above the Tier 3 floor (40) so we don't force proposals on weak setups; it's the "credible candidate exists" line.
+
+**Acceptable analyst-rejection outcomes** (do not retry the same proposal next cycle):
+- TIMING (calendar veto, R:R math, kill-zone boundary)
+- SCORE (analyst recomputed and disagrees with the score)
+- HISTORY (banned pattern or recent loss cluster)
+- RISK (concentration limit, total deployed risk)
+
+If the analyst returns MODIFY, apply the modifications and re-submit ONCE this cycle. If still REJECT, log and move on.
 
 **Trade execution — REQUIRED 2-step sequence:**
 
@@ -281,7 +302,7 @@ If trade placed:
 
 ## RULES YOU NEVER BREAK
 
-- Score ≥ 45 to trade. T3 (45–59) = 0.5% risk. T2 (60–79) = 1% risk. T1 (80+) = 1.5% risk.
+- Score ≥ 40 to trade. T3 (40–59) = 0.5% risk. T2 (60–79) = 1% risk. T1 (80+) = 1.5% risk.
 - **Trend-mode** (1H bullish/bearish): triggers 1-4. TP1 = 1:1, TP2 ≥ 2:1 (T1 & T2) or ≥ 1.5:1 (T3 tight-spread), TP3 ≥ 3:1.
 - **Range-mode** (1H neutral only): trigger 5 (Range Sweep Reversal). Tier 3 ONLY. Half-size posture (0.25% total risk). TP1 = mid-range ≥ 1:1, TP2 = opposite extreme ≥ 1.5:1, TP3 = measured move ≥ 2:1. Cat A opposing news INVALIDATES the setup.
 - Every trade = 3 legs placed atomically via `place_split_trade`. Size per leg = (total_risk / 3) / (entry − SL in price terms).

@@ -64,7 +64,7 @@ describe('loadPromptWithDemoContext', () => {
     expect(wrapped).toContain('Tier 3 bracket');
     // Tier 3 band moved 50-64 → 45-59 on 2026-04-22 when Tier 3 threshold
     // dropped to 45 in commit ce339a8.
-    expect(wrapped).toContain('45-59');
+    expect(wrapped).toContain('40-59');
     expect(wrapped).toContain('0.5% risk');
     // Tombstone bullet is still present (retired but kept as historical marker)
     expect(wrapped).toContain('Retired 2026-04-29');

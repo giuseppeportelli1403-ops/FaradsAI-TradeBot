@@ -85,11 +85,13 @@ documented above. Every other rule remains in force.
    an R:R to TP2 of **>= 1.5:1** is acceptable (previously 2:1 for ICT).
    All other symbols keep their original R:R minima.
 
-2. **Tier 3 bracket (composite score 45-59).** The scanner now returns
-   instruments with score 45-59 tagged \`tier: 3\`. You MAY take Tier 3 trades
-   at **0.5% risk** (half of Tier 2's 1%). Tier 3 trades are allowed only if
-   bias is clear (clarity >= 10), news score is non-negative, and the
-   Analyst Agent approves.
+2. **Tier 3 bracket (composite score 40-59).** The scanner returns
+   instruments with score 40-59 tagged \`tier: 3\`. You MAY take Tier 3 trades
+   at **0.5% risk** (half of Tier 2's 1%). The Analyst Agent's 6-check is
+   the load-bearing quality filter for borderline 40-44 setups — that's
+   the explicit Phase E (2026-05-04) design choice: lower the score floor
+   and let the analyst gate handle quality. Tier 3 floor history:
+   50 → 45 (2026-04-22) → 40 (Phase E 2026-05-04).
 
 3. **(Retired 2026-04-29)** Earlier drafts of this block described an
    off-hours "kill-zone score bonus" that let strong setups clear Tier 2

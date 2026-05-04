@@ -20,6 +20,7 @@
 
 import { fetchCandles, TwelveDataDailyCapError } from '../mcp-server/market-data.js';
 import { getNewsScore } from '../news/index.js';
+import { tier3FloorFor } from '../agents/spread.js';
 import type { Candle, RankedInstrument } from '../types.js';
 
 // ==================== INSTRUMENT UNIVERSE ====================
@@ -223,15 +224,12 @@ const KILL_ZONE_BONUS_OUT = 0;
 const TIER_1_THRESHOLD = 80;
 // Tier 2 lowered from 65 → 60 to capture more high-quality setups.
 const TIER_2_THRESHOLD = 60;
-// Tier 3 is now permanent (was demo-only). 0.5% risk, requires score 50-59.
-// Tier 3 lowered from 50 → 45 (2026-04-22) as part of Approach 2 loosening
-// to unblock observable trade cycles during the demo window. Both demo and
-// non-demo paths now use the same value — the demo-flag split no longer
-// serves a purpose since the production bar should match the demo bar.
-const TIER_3_THRESHOLD = 45;
-function tier3Threshold(): number {
-  return TIER_3_THRESHOLD;
-}
+// Tier 3 floor is now spread-class dependent (see ../agents/spread.ts).
+// History: 50 (original) → 45 (2026-04-22) → 40 (Phase E 2026-05-04 for
+// tight-spread only after the 2026-05-04 backtest showed OIL_CRUDE at
+// score 40-44 dominated the loosened-run drawdown). Tight-spread tickers
+// (EUR/GBP/USDJPY/AUDUSD/GOLD): floor 40. Medium-spread (OIL_CRUDE,
+// SILVER): floor stays 45. Resolved per ticker via tier3FloorFor().
 
 // Hourly ranking cache. During the free-tier demo window, the scanner's full
 // fan-out (20 × fetchCandles('1h', 30) = 20 Twelve Data credits per call) ran
@@ -367,7 +365,7 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           const tier: 1 | 2 | 3 | null =
             score >= TIER_1_THRESHOLD ? 1 :
             score >= TIER_2_THRESHOLD ? 2 :
-            score >= tier3Threshold() ? 3 :
+            score >= tier3FloorFor(inst.ticker) ? 3 :
             null;
 
           return {

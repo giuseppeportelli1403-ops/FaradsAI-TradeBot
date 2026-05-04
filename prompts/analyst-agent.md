@@ -30,7 +30,7 @@ Run these 6 checks in order. Every check must pass or be flagged.
 ### CHECK 4 — RISK CONCENTRATION
 - What is the total risk deployed across all currently open trades?
 - Would this trade push correlated risk beyond 3% of equity?
-- There is NO hard cap on number of open positions — each ICT trade stands on its own composite score (≥ 45). What you ARE checking is correlation: e.g. opening a 4th USD-short trade when EURUSD long, GBPUSD long, AUDUSD long are already open is concentrated USD-short risk regardless of count.
+- There is NO hard cap on number of open positions — each ICT trade stands on its own composite score (≥ 40 floor as of Phase E 2026-05-04). What you ARE checking is correlation: e.g. opening a 4th USD-short trade when EURUSD long, GBPUSD long, AUDUSD long are already open is concentrated USD-short risk regardless of count.
 
 ### CHECK 5 — TIMING
 - Has the entry candle actually closed? (no trading on still-forming candles)

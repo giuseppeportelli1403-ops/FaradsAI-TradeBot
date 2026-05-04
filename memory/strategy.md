@@ -38,13 +38,13 @@ Triggers 1-4 are **trend-following** — they require the 1H bias to be `bullish
 
 1. **OB Retest**
    - Price taps an order block from the bias-aligned side and prints a *rejection candle* with ALL of:
-     - body ≥ 0.5 × candle range (`|close - open| / (high - low) ≥ 0.5`)
+     - body ≥ 0.4 × candle range (`|close - open| / (high - low) ≥ 0.4`) — *lowered 0.5 → 0.4 in Phase E (2026-05-04) loosening; many borderline rejection candles in observed kill zones were 41–49% body and were rejected by the prior 0.5 floor.*
      - close in the bias direction (close > open for bullish, < for bearish)
      - opposing wick ≥ 1.0 × body (the rejection wick is at least as long as the body)
      - tap depth ≤ 50% inside the OB (close deeper than 50% invalidates the retest)
 
 2. **FVG Fill**
-   - Price closes back inside (≥ 50% fill of the FVG range) AND the next candle closes in the bias direction with body ≥ 0.5 × range.
+   - Price closes back inside (≥ 50% fill of the FVG range) AND the next candle closes in the bias direction with body ≥ 0.4 × range. *Lowered 0.5 → 0.4 in Phase E (2026-05-04) loosening — same rationale as trigger 1.*
    - Partial fills (< 50%) followed by reversal do NOT qualify — wait for a real fill or pass.
 
 3. **Liquidity Sweep**
@@ -113,11 +113,13 @@ Maximum no-structure score: 25 (base) + 0 + 0 + 10 (news) + 10 (history) + 5 (sp
 
 **Tier 1 (score 80–100):** Risk **1.5%** of account. Trailing-stop option on Leg C. *Trend-mode only* (1H bias must be bullish or bearish).
 **Tier 2 (score 60–79):** Risk **1.0%** of account. Fixed TP3. *Trend-mode only.*
-**Tier 3 (score 45–59):** Risk **0.5%** of account. Fixed TP3. Minimum R:R to TP2: 1.5:1 on tight-spread instruments only. *Trend-mode only.*
+**Tier 3 (score 40–59):** Risk **0.5%** of account. Fixed TP3. Minimum R:R to TP2: 1.5:1 on tight-spread instruments only. *Trend-mode only.* (Floor lowered 45 → 40 in Phase E 2026-05-04 strategy loosening — analyst gate is now the load-bearing quality filter for borderline 40-44 setups.)
 **Range-mode (1H neutral, trigger 5 only):** Risk **0.25%** of account (half of Tier 3 baseline). Score capped at **59** by the scanner (a +20 "range candidate" baseline replaces the trend-mode bias-clarity + ICT-array structural points; the cap then ensures range-mode never qualifies for Tier 1 or 2 regardless of news/spread bonuses). R:R min: TP1 ≥ 1:1, TP2 ≥ 1.5:1, TP3 ≥ 2:1.
-**Below 45:** No trade. Skip instrument.
+**Below 40:** No trade. Skip instrument.
 
 **On the historical win-rate adjustment:** the previous 5-trades-per-bucket threshold was effectively dead code — at the bot's typical ~0.5 trades/day, hitting 5 trades per (setup × kill zone × instrument) bucket would take ~2 years. Lowering the activation threshold to 2 trades opens the feedback loop within the demo window. The signal is noisier (a 0/2 vs 1/2 swing matters), but a noisy active feedback loop is better than a clean dead one.
+
+**Bias as a single-filter (Phase E 2026-05-04):** the 1H bias clarity score (0/15/20/25) is the ONLY bias-quality filter. Earlier prompt drafts had ICT applying a second "bias must be clean" hard gate, double-counting the same signal and forcing skips on otherwise-valid Tier 2/3 setups (observed 2026-05-04 with EURUSD score 65 skipped because bias was "moderately bearish (not clean)"). Removed Phase E. If a chart shows weak bias, the bias-clarity score will naturally be 0 or 15; combined with weak ICT array, that drops the total below 40 and the composite-score floor takes care of the skip without a separate gate. Direction still matters — long in a downtrend is still wrong. But CLARITY is now a score-only filter.
 
 ---
 

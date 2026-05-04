@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   // Log demo-phase flag status so ops can see at-a-glance whether the
   // relaxed gates are active (expected during the 2-week demo window only).
   const demoRelaxed = process.env.DEMO_RELAXED_GATES === 'true';
-  console.log(`[Config] DEMO_RELAXED_GATES: ${demoRelaxed ? 'ACTIVE (kill-zone bonus 15/10, Tier 3 at 45-64, R:R 1.5:1 for tight-spread symbols)' : 'inactive (default strict gates)'}`);
+  console.log(`[Config] DEMO_RELAXED_GATES: ${demoRelaxed ? 'ACTIVE (Tier 3 at 40-59 [Phase E 2026-05-04], R:R 1.5:1 for tight-spread symbols)' : 'inactive (default strict gates)'}`);
 
   // Step 3: Start scheduler (candle detection, position monitoring, agent triggers)
   try {

@@ -33,20 +33,23 @@ const COMMODITY_TICKERS: ReadonlyArray<string> = [
   'GOLD', 'SILVER', 'OIL_CRUDE', 'XAUUSD', 'XAGUSD', 'WTIUSD', 'USOIL',
 ];
 
-// 2026-05-04 (Phase A4, audit Finding #1): preMs/postMs convention aligned
-// with strategy.md Section 7.6 and ict-agent.md:140 which both specify
-// "-5/+30 min" for generic high-impact events (5 min before / 30 min after).
-// Pre-fix the code did the opposite (30 min before / 5 min after) — the
-// variable naming suggested intentional behavior but contradicted the doc.
-// Per Giuseppe's "docs are intentional" rule, code follows the doc.
+// Veto windows for high-impact events.
 //
-// Behavior change: the bot now stops trading 5 min before a generic high-
-// impact event (was 30 min) and stays out 30 min afterward (was 5 min). The
-// post-event window is the more important guard — that's when the immediate
-// price shock hits. Tier-1 events (FOMC/NFP/CPI/etc) keep the wider 60/30
-// window via EXTRA_WIDE_PRE_MS / EXTRA_WIDE_POST_MS below.
+// Phase A4 (2026-05-04, audit Finding #1): preMs/postMs convention aligned
+// with strategy.md Section 7.6 and ict-agent.md:140 which both specified
+// "-5/+30 min" for generic high-impact events. Pre-fix the code did the
+// opposite (30 before / 5 after).
+//
+// Phase E (2026-05-04, strategy loosening): post-event window narrowed
+// from 30 min → 15 min for generic high-impact events. Rationale:
+// post-event shock typically dies down in 10-15 minutes; 30-min veto was
+// over-cautious for non-Tier-1 events. 5/15 default = 20-min total veto
+// window for generic high-impact, vs 90-min total (60/30) for Tier-1.
+//
+// Tier-1 events (FOMC/NFP/CPI/etc) keep the wider 60/30 via
+// EXTRA_WIDE_PRE_MS / EXTRA_WIDE_POST_MS below.
 const PRE_EVENT_DEFAULT_MS = 5 * 60_000;     // 5 min before generic high-impact
-const POST_EVENT_DEFAULT_MS = 30 * 60_000;   // 30 min after
+const POST_EVENT_DEFAULT_MS = 15 * 60_000;   // 15 min after (was 30; narrowed Phase E 2026-05-04)
 
 // Per-event window widening (CR-1, 2026-04-28). FOMC / NFP / CPI / major
 // rate decisions move markets violently for far longer than a generic
@@ -107,6 +110,27 @@ const EXTRA_WIDE_PATTERNS: ReadonlyArray<RegExp> = [
   /\bretail sales\b/i,
   /\bISM (manufacturing|services|composite|non[- ]?manufacturing)?( ?PMI)?\b/i,
   /\b(ECB|BoE|BoJ|RBA|RBNZ|BoC|SNB|Fed) press conference\b/i,
+];
+
+// NO_VETO_PATTERNS — events that should NOT trigger any veto regardless of
+// impact tag. Added 2026-05-04 (Phase E) because regional Fed presidents
+// speak constantly and rarely move USD the way FOMC press conferences or
+// NFP do. The current calendar feed sometimes tags these as 'high' impact
+// (per the upstream classifier), which previously caused the bot to skip
+// otherwise valid setups for 15-30 minutes around each speech. Powell
+// (Fed Chair), Lagarde (ECB President), Bailey (BoE Governor), and Ueda
+// (BoJ Governor) are EXPLICITLY excluded from this bypass — they match
+// EXTRA_WIDE_PATTERNS via the FOMC / Fed chair / press conference patterns
+// above and continue to receive the wide veto.
+const NO_VETO_PATTERNS: ReadonlyArray<RegExp> = [
+  // Regional Fed presidents (non-Chair voting and non-voting members).
+  // Names enumerated explicitly so a future "Powell speaks" feed entry
+  // doesn't accidentally bypass via a generic "Fed speaker" match.
+  /\bFed (Williams|Bullard|Daly|Kashkari|Bostic|Mester|Goolsbee|Logan|Harker|Barkin|Cook|Jefferson|Schmid|Musalem)\b/i,
+  // ECB governing council non-President speakers (Lagarde stays vetoed).
+  /\bECB (Lane|Schnabel|de Guindos|Cipollone|Knot|Villeroy|Visco|Holzmann|Kazaks|Vasle|Vujcic|Wunsch)\b/i,
+  // BoE MPC non-Governor speakers (Bailey stays vetoed).
+  /\bBoE (Pill|Mann|Ramsden|Dhingra|Greene|Lombardelli|Taylor)\b/i,
 ];
 
 /**
@@ -196,6 +220,14 @@ export function shouldVetoOrderForCalendar(
 
   for (const ev of events) {
     if (ev.impact !== 'high') continue;
+
+    // Phase E (2026-05-04): NO_VETO_PATTERNS bypass for regional speakers.
+    // These events are sometimes tagged 'high' by the calendar feed but
+    // rarely move markets enough to justify a trading freeze. Powell /
+    // Lagarde / Bailey / Ueda still match EXTRA_WIDE_PATTERNS above and
+    // continue to receive the wide veto.
+    const eventName = ev?.event ?? '';
+    if (NO_VETO_PATTERNS.some((p) => p.test(eventName))) continue;
 
     const evCcys = eventCurrencies(ev);
     if (!evCcys.some((c) => tradeCurrencies.includes(c))) continue;
