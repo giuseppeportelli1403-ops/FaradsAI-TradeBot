@@ -25,7 +25,7 @@ export function buildSystemTimeBlock(now: Date = new Date()): string {
     `\n\n---\n\n` +
     `## CURRENT TIME\n\n` +
     `UTC: ${utcIso} (${dayOfWeek}). Decide based on this exact time — do not rely on training-data baseline assumptions about what session it is.\n` +
-    `Kill zones (UTC): London Open 07:00–10:00, NY Open 13:00–16:00, London Close 15:00–17:00.\n`
+    `Kill zones (UTC): London Open 07:00–10:00, NY Open 13:00–16:00, London Close 16:00–17:00.\n`
   );
 }
 
