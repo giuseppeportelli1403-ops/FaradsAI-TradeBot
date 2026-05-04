@@ -222,7 +222,9 @@ describe('getNewsContext — Layer 4 stale-bearish dampening', () => {
     const result = await getNewsContext('AUDUSD');
     expect(result.stale_minutes).toBeGreaterThanOrEqual(STALE_BEARISH_DAMPEN_MINUTES);
     expect(result.stale_dampened).toBe(false);       // bullish not dampened
-    expect(result.overall_score).toBe(20);           // full Cat A bullish bonus
+    // Phase A2 (2026-05-04, audit Finding #5): Cat A bullish dropped from
+    // +20 to +10 to match strategy.md Section 5 post-rebalance rubric.
+    expect(result.overall_score).toBe(10);           // post-rebalance Cat A bullish bonus
     expect(result.summary).toContain('stale');
     expect(result.summary).not.toContain('bearish-dampened');
 

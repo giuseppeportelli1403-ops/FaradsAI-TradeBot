@@ -1,18 +1,30 @@
 // News Context System — Fetcher, Scorer, and Categoriser
 // Provides scored news items for trading agents and the scanner
 //
-// Data source: MarketAux News API (per-entity sentiment)
+// Data source: MarketAux News API (per-entity sentiment) + RSS aggregator
 // Categories:
-//   Cat A (score 4-5): Major catalyst — strong directional impact (e.g. FOMC, earnings beat/miss)
-//   Cat B (score 2-3): Moderate supporting context (e.g. analyst upgrades, sector rotation)
-//   Cat C (score 0-1): Noise — ignore
+//   Cat A: Major macro catalyst — keyword whitelist (FOMC, NFP, CPI, ECB, BoE,
+//          BoJ, RBA, BoC, SNB, RBNZ, Core PCE, AHE, Unemployment Rate, Retail
+//          Sales, ISM PMI, OPEC, oil inventories, etc). Banker surnames
+//          (Powell, Lagarde, Bailey, Ueda, Macklem, Jordan, Orr) require
+//          central-bank context to count. Sentiment magnitude alone does NOT
+//          qualify.
+//   Cat B: Moderate supporting context (e.g. analyst upgrades, sector rotation)
+//   Cat C: Noise — ignored downstream
 //
-// Rules:
-//   - News opposing technical direction → skip instrument entirely
-//   - Cat A aligned with direction → +20 score bonus
-//   - Cat B aligned → +10 bonus
-//   - Cat A opposing → -15 penalty (should skip)
-//   - No relevant news → 0 (neutral)
+// Rebalanced rubric (strategy.md Section 5, post-2026-04-29):
+//   Cat A aligned → +10 (was +20 pre-rebalance; capped to +10 by scanner
+//                        until 2026-05-04, when this function was synced
+//                        directly per audit Finding #5)
+//   Cat A opposing → -15
+//   Cat B aligned → +5 (was +10 pre-rebalance; same sync)
+//   Cat B opposing → -5
+//   Cat C / neutral / none → 0
+//
+// Opposing-news posture: Cat A opposing softens size to 50% (post-2026-04-23
+// P2). Cat B opposing is neutral on size (just the score penalty). Range-mode
+// Cat A opposing INVALIDATES the setup entirely (does not soften — see
+// strategy.md §K, ict-agent.md:201).
 
 import { fetchNewsContext } from '../mcp-server/market-data.js';
 import type { NewsItem } from '../types.js';
@@ -24,7 +36,7 @@ import { canonicalizeUrl } from './url-canonical.js';
 
 export interface ScoredNews {
   items: NewsItem[];
-  overall_score: number;          // -15 to +20 for composite scoring
+  overall_score: number;          // -15 to +10 for composite scoring (post-2026-04-29 rebalance)
   dominant_category: 'A' | 'B' | 'C' | 'none';
   dominant_sentiment: 'bullish' | 'bearish' | 'neutral';
   summary: string;
@@ -131,12 +143,18 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
   else if (avgSentiment < -0.1) dominantSentiment = 'bearish';
   else dominantSentiment = 'neutral';
 
-  // Calculate composite score adjustment (-15 to +20)
+  // Calculate composite score adjustment per the post-2026-04-29 rebalanced
+  // rubric (strategy.md Section 5). Phase A2 (2026-05-04, audit Finding #5):
+  // pre-fix this function emitted +20 / +10 for Cat A / Cat B bullish, and
+  // src/scanner/index.ts:333-337 capped them to +10 / +5 before composite
+  // scoring. The cap was a workaround. Now the source emits the correct
+  // post-rebalance values directly; the scanner cap becomes a no-op and is
+  // removed in the same commit.
   let overallScore = 0;
   if (dominantCategory === 'A') {
-    overallScore = avgSentiment > 0 ? 20 : avgSentiment < 0 ? -15 : 5;
+    overallScore = avgSentiment > 0 ? 10 : avgSentiment < 0 ? -15 : 0;
   } else if (dominantCategory === 'B') {
-    overallScore = avgSentiment > 0 ? 10 : avgSentiment < 0 ? -5 : 0;
+    overallScore = avgSentiment > 0 ? 5 : avgSentiment < 0 ? -5 : 0;
   }
 
   // ===== Layer 4 — stale-bearish dampening =====

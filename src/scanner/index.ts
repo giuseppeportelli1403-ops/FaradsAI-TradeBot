@@ -328,14 +328,12 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
             biasResult.clarity >= 10 ? 15 :
             0;
           score += remappedClarity;                                              // 0/15/20/25
-          // Cap news contribution: bullish A 20→10, bullish B 10→5,
-          // negatives unchanged (-5 / -15) to keep risk asymmetric.
-          const cappedNewsScore =
-            rawNewsScore > 10 ? 10 :
-            rawNewsScore > 5 && rawNewsScore <= 10 ? 5 :
-            rawNewsScore < -15 ? -15 :
-            rawNewsScore;
-          score += cappedNewsScore;                                              // -15 to +10
+          // News contribution is now emitted directly at -15/+10 (Cat A) and
+          // -5/+5 (Cat B) by src/news/index.ts. Phase A2 (2026-05-04, audit
+          // Finding #5): pre-fix the function emitted +20/+10 and the
+          // scanner capped here. Now redundant — source-side fix in
+          // news/index.ts:135-141 means rawNewsScore is already bounded.
+          score += rawNewsScore;                                                  // -15 to +10
           score += inst.spread_quality === 'tight' ? 5 : 0;                      // 0 / +5
           score += 25;                                                            // base (was 30)
           // NOTE: kill_zone score component intentionally removed.
