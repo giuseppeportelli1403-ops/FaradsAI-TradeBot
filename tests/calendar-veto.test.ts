@@ -102,14 +102,29 @@ describe('shouldVetoOrderForCalendar', () => {
     expect(result.veto).toBe(false);
   });
 
-  it('does NOT veto events outside the default 30-min window', () => {
+  it('does NOT veto events outside the default 5-min pre-event window', () => {
+    // Phase A4 (2026-05-04, audit Finding #1): default veto window is now
+    // -5 (pre) / +30 (post) min, matching strategy.md Section 7.6 and
+    // ict-agent.md:140. Pre-fix the code did the opposite (-30/+5).
+    // This test: event 60 min ahead, generic high-impact → no veto since
+    // 60 > preMs (5).
     const events = [event({ date: '2026-04-28', time: '13:00:00', country: 'US' })]; // 60 min ahead
     const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
     expect(result.veto).toBe(false);
   });
 
-  it('does NOT veto events that fired more than 5 min ago', () => {
+  it('DOES veto events within the default 30-min post-event window', () => {
+    // Phase A4 (2026-05-04): post-event window widened from 5 → 30 min for
+    // generic high-impact events. An event that fired 10 min ago is still
+    // within the 30-min post-window and must veto.
     const events = [event({ date: '2026-04-28', time: '11:50:00', country: 'US' })]; // 10 min ago
+    const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
+    expect(result.veto).toBe(true);
+  });
+
+  it('does NOT veto events that fired more than 30 min ago (default post-window)', () => {
+    // Same scenario but 35 min ago — outside the default postMs=30 window.
+    const events = [event({ date: '2026-04-28', time: '11:25:00', country: 'US' })]; // 35 min ago
     const result = shouldVetoOrderForCalendar(['USD'], events, nowMs);
     expect(result.veto).toBe(false);
   });
@@ -188,15 +203,19 @@ describe('vetoWindowForEvent — per-event window widening (CR-1)', () => {
     expect(vetoWindowForEvent({ event: 'Federal Reserve rate decision' } as EconomicEvent).preMs).toBe(60 * 60_000);
   });
 
-  it('returns the default window (30 pre / 5 post) for generic events', () => {
+  it('returns the default window (5 pre / 30 post) for generic events', () => {
+    // Phase A4 (2026-05-04, audit Finding #1): swapped to match strategy.md
+    // Section 7.6 "-5/+30" and ict-agent.md:140. Pre-fix the code returned
+    // the opposite values (preMs=30, postMs=5).
     const result = vetoWindowForEvent({ event: 'German Manufacturing PMI' } as EconomicEvent);
-    expect(result.preMs).toBe(30 * 60_000);
-    expect(result.postMs).toBe(5 * 60_000);
+    expect(result.preMs).toBe(5 * 60_000);
+    expect(result.postMs).toBe(30 * 60_000);
   });
 
   it('returns the default window for unknown / empty event names', () => {
-    expect(vetoWindowForEvent({ event: '' } as EconomicEvent).preMs).toBe(30 * 60_000);
-    expect(vetoWindowForEvent({} as EconomicEvent).preMs).toBe(30 * 60_000);
+    expect(vetoWindowForEvent({ event: '' } as EconomicEvent).preMs).toBe(5 * 60_000);
+    expect(vetoWindowForEvent({} as EconomicEvent).preMs).toBe(5 * 60_000);
+    expect(vetoWindowForEvent({ event: '' } as EconomicEvent).postMs).toBe(30 * 60_000);
   });
 
   it('is case-insensitive on event title matching', () => {
@@ -262,10 +281,13 @@ describe('shouldVetoOrderForCalendar — per-event window integration (CR-1)', (
     expect(result.veto).toBe(true);
   });
 
-  it('does NOT veto a generic high-impact event 10 min after now (outside default 5-min post)', () => {
+  it('does NOT veto a generic high-impact event 35 min after now (outside default 30-min post)', () => {
+    // Phase A4 (2026-05-04, audit Finding #1): default post-event window is
+    // now 30 min (was 5 min, contradicting strategy.md). An event 35 min ago
+    // is outside the 30-min veto tail and trading resumes.
     const events = [
       {
-        date: '2026-04-28', time: '11:50:00',
+        date: '2026-04-28', time: '11:25:00',
         event: 'German Industrial Orders', country: 'DE', impact: 'high' as const,
         actual: null, estimate: null, previous: null, affected_instruments: [],
       },

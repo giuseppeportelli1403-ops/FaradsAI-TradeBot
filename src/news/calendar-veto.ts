@@ -33,12 +33,20 @@ const COMMODITY_TICKERS: ReadonlyArray<string> = [
   'GOLD', 'SILVER', 'OIL_CRUDE', 'XAUUSD', 'XAGUSD', 'WTIUSD', 'USOIL',
 ];
 
-const DEFAULT_VETO_WINDOW_MS = 30 * 60_000;
-// Allow a 5-minute "shock" tail past the print where we still veto — the
-// market often moves violently for several minutes after high-impact data,
-// and an order placed 2 min after NFP is just as exposed as one placed
-// 2 min before.
-const POST_EVENT_SHOCK_MS = 5 * 60_000;
+// 2026-05-04 (Phase A4, audit Finding #1): preMs/postMs convention aligned
+// with strategy.md Section 7.6 and ict-agent.md:140 which both specify
+// "-5/+30 min" for generic high-impact events (5 min before / 30 min after).
+// Pre-fix the code did the opposite (30 min before / 5 min after) — the
+// variable naming suggested intentional behavior but contradicted the doc.
+// Per Giuseppe's "docs are intentional" rule, code follows the doc.
+//
+// Behavior change: the bot now stops trading 5 min before a generic high-
+// impact event (was 30 min) and stays out 30 min afterward (was 5 min). The
+// post-event window is the more important guard — that's when the immediate
+// price shock hits. Tier-1 events (FOMC/NFP/CPI/etc) keep the wider 60/30
+// window via EXTRA_WIDE_PRE_MS / EXTRA_WIDE_POST_MS below.
+const PRE_EVENT_DEFAULT_MS = 5 * 60_000;     // 5 min before generic high-impact
+const POST_EVENT_DEFAULT_MS = 30 * 60_000;   // 30 min after
 
 // Per-event window widening (CR-1, 2026-04-28). FOMC / NFP / CPI / major
 // rate decisions move markets violently for far longer than a generic
@@ -113,13 +121,13 @@ const EXTRA_WIDE_PATTERNS: ReadonlyArray<RegExp> = [
  */
 export function vetoWindowForEvent(ev: EconomicEvent): { preMs: number; postMs: number } {
   const eventName = ev?.event ?? '';
-  if (!eventName) return { preMs: DEFAULT_VETO_WINDOW_MS, postMs: POST_EVENT_SHOCK_MS };
+  if (!eventName) return { preMs: PRE_EVENT_DEFAULT_MS, postMs: POST_EVENT_DEFAULT_MS };
   for (const pattern of EXTRA_WIDE_PATTERNS) {
     if (pattern.test(eventName)) {
       return { preMs: EXTRA_WIDE_PRE_MS, postMs: EXTRA_WIDE_POST_MS };
     }
   }
-  return { preMs: DEFAULT_VETO_WINDOW_MS, postMs: POST_EVENT_SHOCK_MS };
+  return { preMs: PRE_EVENT_DEFAULT_MS, postMs: POST_EVENT_DEFAULT_MS };
 }
 
 /**
