@@ -164,8 +164,8 @@ Tier assignment:
 **I. Look for entry trigger on 15M** — apply the QUANTITATIVE definitions from `strategy.md` Section 3. No subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; log "watching, no trigger" and move on.
 
 **Trend-mode triggers (1H bias bullish or bearish, triggers 1-4):**
-- **OB Retest:** rejection candle with body ≥ 0.5×range, close in bias direction, opposing wick ≥ 1.0×body, tap depth ≤ 50% inside the OB.
-- **FVG Fill:** ≥ 50% fill of the FVG range, then next candle closes in bias direction with body ≥ 0.5×range. Partial fills < 50% with reversal do NOT qualify.
+- **OB Retest:** rejection candle with body ≥ 0.4×range (lowered 0.5→0.4 in Phase E 2026-05-04), close in bias direction, opposing wick ≥ 1.0×body, tap depth ≤ 50% inside the OB.
+- **FVG Fill:** ≥ 50% fill of the FVG range, then next candle closes in bias direction with body ≥ 0.4×range (lowered 0.5→0.4 in Phase E). Partial fills < 50% with reversal do NOT qualify.
 - **Liquidity Sweep:** wick exceeds prior swing by ≥ 1×spread (real sweep, not spread-tag), reversal candle within ≤ 2 candles, body ≥ 0.6×range, closes back through swept level by ≥ 1×spread in bias direction.
 - **Breakout Retest:** level broken on a 1H or 15M close, retest within ≤ 6×15M candles, hold confirmed by 2 consecutive 15M closes on the bias side.
 

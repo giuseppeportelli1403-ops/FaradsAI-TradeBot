@@ -38,13 +38,13 @@ Triggers 1-4 are **trend-following** — they require the 1H bias to be `bullish
 
 1. **OB Retest**
    - Price taps an order block from the bias-aligned side and prints a *rejection candle* with ALL of:
-     - body ≥ 0.5 × candle range (`|close - open| / (high - low) ≥ 0.5`)
+     - body ≥ 0.4 × candle range (`|close - open| / (high - low) ≥ 0.4`) — *lowered 0.5 → 0.4 in Phase E (2026-05-04) loosening; many borderline rejection candles in observed kill zones were 41–49% body and were rejected by the prior 0.5 floor.*
      - close in the bias direction (close > open for bullish, < for bearish)
      - opposing wick ≥ 1.0 × body (the rejection wick is at least as long as the body)
      - tap depth ≤ 50% inside the OB (close deeper than 50% invalidates the retest)
 
 2. **FVG Fill**
-   - Price closes back inside (≥ 50% fill of the FVG range) AND the next candle closes in the bias direction with body ≥ 0.5 × range.
+   - Price closes back inside (≥ 50% fill of the FVG range) AND the next candle closes in the bias direction with body ≥ 0.4 × range. *Lowered 0.5 → 0.4 in Phase E (2026-05-04) loosening — same rationale as trigger 1.*
    - Partial fills (< 50%) followed by reversal do NOT qualify — wait for a real fill or pass.
 
 3. **Liquidity Sweep**
