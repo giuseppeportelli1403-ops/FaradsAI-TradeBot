@@ -192,7 +192,16 @@ Run your 6-check sequence and respond with your decision JSON.`;
     response = await withTimeout(
       anthropic.messages.create({
         model: 'claude-sonnet-4-6',
-        max_tokens: 2000,
+        // r9 (2026-05-04): 2000 → 8000 after diagnosing 5-day window where
+        // ~37% of analyst calls fail-closed REJECTed because adaptive
+        // thinking consumed the full budget, leaving zero text blocks for
+        // the JSON decision. With Sonnet 4.6 + medium effort + the heavy
+        // 6-check sequence + full proposal/lessons/brief context, thinking
+        // alone needs ~4-7k tokens; the JSON answer is ~500-1000 more.
+        // 8000 fits both with headroom. Output tokens are billed only when
+        // emitted, so the budget bump is essentially free unless thinking
+        // truly needs more — in which case we want it to have it.
+        max_tokens: 8000,
         thinking: { type: 'adaptive' },
         output_config: { effort: 'medium' },
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
