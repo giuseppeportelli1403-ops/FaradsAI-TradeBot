@@ -567,6 +567,44 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const tradeId = `trade-${hash}-${randomUUID().slice(0, 8)}`;
       const proposal: TradeProposal = { ...proposalDraft, trade_id: tradeId };
 
+      // Phase A6 (2026-05-04, codex 2nd-pass review of Phase A-D): R:R floor
+      // pre-check BEFORE the analyst LLM call. Pre-fix the R:R check only
+      // ran inside place_split_trade Step 3.3 AFTER the analyst token had
+      // been consumed — wasting a Sonnet 4.6 + adaptive-thinking analyst
+      // call (~30-45s, $0.10-0.50) on proposals destined to be rejected on
+      // geometry alone. The check is duplicated in place_split_trade as
+      // defense-in-depth (in case future call paths bypass this handler).
+      // Limited to R:R for now per "one change at a time"; other proposal-
+      // internal checks (score/tier/risk consistency, finite numerics,
+      // order-side) follow the same pattern and are candidates for the
+      // same pre-check refactor in a future commit.
+      const isRangeModeProposal = /^range_/.test(
+        proposal.setup_type.trim().toLowerCase().replace(/[\s_]+/g, '_'),
+      );
+      const rrPreCheck = validateRRFloor({
+        direction: proposal.direction,
+        entry: proposal.entry,
+        sl: proposal.sl,
+        tp1: proposal.tp1,
+        tp2: proposal.tp2,
+        tp3: proposal.tp3,
+        tier: proposal.tier,
+        ticker: proposal.instrument,
+        isRangeMode: isRangeModeProposal,
+      });
+      if (!rrPreCheck.ok) {
+        console.log(`[Analyst Pre-Check] ${proposal.instrument} ${proposal.direction}: ${rrPreCheck.error} — skipping analyst call.`);
+        return JSON.stringify({
+          decision: 'REJECT',
+          reason: `Pre-analyst R:R floor violation: ${rrPreCheck.reason}`,
+          analyst_token: '',  // empty — cannot authorize place_split_trade
+          proposal_hash: hash,
+          trade_id: proposal.trade_id,
+          confidence: 0,
+          modifications: {},
+        });
+      }
+
       const decision = await runAnalystAgent(proposal);
       if (decision.decision === 'APPROVE') {
         approvedProposals.set(hash, { approvedAt: Date.now(), proposal });
