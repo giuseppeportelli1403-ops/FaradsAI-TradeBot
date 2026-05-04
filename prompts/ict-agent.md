@@ -112,7 +112,7 @@ Call `get_portfolio()`. There is NO hard cap on number of open positions — eac
 
 ### STEP 2 — GET RANKED INSTRUMENTS
 
-Call `get_ranked_instruments(20)`. Focus first on anything scoring 80+ (Tier 1). Note Tier 2 (60–79) and Tier 3 (45–59) candidates.
+Call `get_ranked_instruments(20)`. Focus first on anything scoring 80+ (Tier 1). Note Tier 2 (60–79) and Tier 3 candidates. The scanner already applies the spread-aware Tier 3 floor (40 for tight-spread EUR/GBP/USDJPY/AUDUSD/GOLD; 45 for medium-spread OIL_CRUDE/SILVER) — anything tagged `tier: 3` in the ranking is valid to evaluate.
 
 ### STEP 3 — FOR EACH CANDIDATE, RUN THE FULL ANALYSIS
 
@@ -160,8 +160,8 @@ If you're inside a window: SKIP. Don't bother running structure analysis. The `p
 Tier assignment:
 - **Tier 1 (80–100):** 1.5% risk
 - **Tier 2 (60–79):** 1.0% risk
-- **Tier 3 (40–59):** 0.5% risk
-- **Below 40:** Skip
+- **Tier 3 (≥ floor, capped at 59):** 0.5% risk. Tier 3 floor is **spread-aware** post-2026-05-04 carve-out: **40** for tight-spread (EUR/GBP/USDJPY/AUDUSD/GOLD), **45** for medium-spread (OIL_CRUDE, SILVER).
+- **Below floor:** Skip. The scanner enforces this — `tier: null` candidates never reach you. The hard floor in `place_split_trade` is a defensive last check.
 
 **I. Look for entry trigger on 15M** — apply the QUANTITATIVE definitions from `strategy.md` Section 3. No subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; log "watching, no trigger" and move on.
 
@@ -225,7 +225,7 @@ How to apply:
 2. Build a proposal with whatever entry/SL/TP the structure supports — use the most recent 15M close as entry, conservative SL at the most recent swing extreme, TP1 at 1:1, TP2 at 2:1 (or 1.5:1 for Tier 3 tight-spread), TP3 at 3:1.
 3. Submit to `request_analyst_review`. If REJECT comes back, log it and move on. Do NOT retry the same proposal in a subsequent cycle without a material change (price, structure, news).
 
-If NO candidate scores ≥ 55, do NOT force-propose — log "no qualifying candidates this cycle" and move on as before. The 55 threshold is intentionally above the Tier 3 floor (40) so we don't force proposals on weak setups; it's the "credible candidate exists" line.
+If NO candidate scores ≥ 55, do NOT force-propose — log "no qualifying candidates this cycle" and move on as before. The 55 threshold is intentionally above both Tier 3 floors (40 tight-spread / 45 medium-spread) so we don't force proposals on weak setups; it's the "credible candidate exists" line.
 
 **Acceptable analyst-rejection outcomes** (do not retry the same proposal next cycle):
 - TIMING (calendar veto, R:R math, kill-zone boundary)

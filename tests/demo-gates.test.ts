@@ -91,8 +91,7 @@ describe('loadPromptWithDemoContext', () => {
     //   - 2026-05-04 (Phase C, audit Finding #10): equity tickers
     //     (AAPL/MSFT/NVDA/AMZN/GOOGL/META) removed — they were never in
     //     INSTRUMENT_UNIVERSE and Haiku reading them as "tight-spread"
-    //     was a phantom signal. SILVER/OIL_CRUDE are medium-spread and
-    //     not on this list either.
+    //     was a phantom signal.
     expect(wrapped).toContain('EURUSD');
     expect(wrapped).toContain('GBPUSD');
     expect(wrapped).toContain('USDJPY');
@@ -104,8 +103,25 @@ describe('loadPromptWithDemoContext', () => {
     expect(wrapped).not.toContain('US100');
     expect(wrapped).not.toContain('US500');
     expect(wrapped).not.toContain('DE40');
-    // SILVER and OIL_CRUDE are medium-spread — explicitly NOT in this list.
-    expect(wrapped).not.toContain('SILVER');
-    expect(wrapped).not.toContain('OIL_CRUDE');
+    // SILVER and OIL_CRUDE may now appear in the demo block, but only
+    // labelled as MEDIUM-spread (the post-2026-05-04 carve-out describes
+    // the spread-aware Tier 3 floor). They must NOT appear in the
+    // R:R 1.5:1 tight-spread interpolation list.
+    const tightSpreadList =
+      wrapped.match(/For trades on ([^,]+(?:,\s*[^,]+)*?),\s*\n?\s*an R:R/i)?.[1] ?? '';
+    expect(tightSpreadList).not.toContain('SILVER');
+    expect(tightSpreadList).not.toContain('OIL_CRUDE');
+  });
+
+  it('demo block describes the spread-aware Tier 3 floor (40 tight / 45 medium)', () => {
+    process.env.DEMO_RELAXED_GATES = 'true';
+    const wrapped = loadPromptWithDemoContext('ict-agent.md');
+    // Post-2026-05-04 carve-out: the LLM must see floor 40 for tight-spread
+    // and floor 45 for medium-spread, otherwise it'll waste tokens proposing
+    // OIL_CRUDE/SILVER trades at 40-44 that get hard-rejected.
+    expect(wrapped).toMatch(/spread-aware/i);
+    expect(wrapped).toMatch(/40.*tight|tight.*40/);
+    expect(wrapped).toMatch(/45.*medium|medium.*45/);
+    expect(wrapped).toMatch(/OIL_CRUDE|medium-spread/);
   });
 });
