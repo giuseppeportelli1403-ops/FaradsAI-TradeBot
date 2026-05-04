@@ -217,6 +217,61 @@ export function validateRRFloor(input: RRValidationInput): RRValidationResult {
   return { ok: true };
 }
 
+// ==================== ORDER-SIDE PRE-CHECK ====================
+// 2026-05-05 audit. Pre-existing place_split_trade had per-leg side checks
+// but the cheap path (request_analyst_review, called BEFORE any LLM cost)
+// did not. The 2026-05-04 08:31 UTC live failure was a GOLD SHORT proposal
+// with SL=4575 < entry=4576.29 and TPs above entry. The analyst correctly
+// detected the inversion but its long rejection prose truncated the JSON
+// output, dropping analyst parse rate to 0/6 over 6 days. This validator
+// is the cheap gate that catches the problem before the analyst is paid.
+
+export interface OrderSideInput {
+  direction: 'long' | 'short';
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+}
+
+export type OrderSideResult = { ok: true } | { ok: false; reason: string };
+
+/**
+ * Geometric sanity for the proposal. Pure, side-effect-free, no DB or
+ * network. Cheap pre-check called BEFORE the analyst LLM call, mirroring
+ * the same defense in place_split_trade.
+ *
+ * Long invariant:  sl < entry < tp1 < tp2 < tp3
+ * Short invariant: tp3 < tp2 < tp1 < entry < sl
+ */
+export function validateOrderSide(input: OrderSideInput): OrderSideResult {
+  const { direction, entry, sl, tp1, tp2, tp3 } = input;
+
+  for (const [k, v] of Object.entries({ entry, sl, tp1, tp2, tp3 })) {
+    if (!Number.isFinite(v)) {
+      return { ok: false, reason: `Order-side rejected: ${k}=${v} is not a finite number.` };
+    }
+  }
+
+  if (direction === 'long') {
+    if (!(sl < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3)) {
+      return {
+        ok: false,
+        reason: `Long order-side invariant violated: need sl<entry<tp1<tp2<tp3, got sl=${sl}, entry=${entry}, tp1=${tp1}, tp2=${tp2}, tp3=${tp3}.`,
+      };
+    }
+  } else {
+    if (!(tp3 < tp2 && tp2 < tp1 && tp1 < entry && entry < sl)) {
+      return {
+        ok: false,
+        reason: `Short order-side invariant violated: need tp3<tp2<tp1<entry<sl, got sl=${sl}, entry=${entry}, tp1=${tp1}, tp2=${tp2}, tp3=${tp3}.`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 // ==================== WEEKLY KILL SWITCH ====================
 // 2026-05-04 (Phase A3, audit Finding #6): pre-fix, strategy.md Section 7.2
 // said "Weekly loss limit: 10% of account equity. Non-negotiable. When

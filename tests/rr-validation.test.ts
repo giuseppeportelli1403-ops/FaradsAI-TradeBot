@@ -23,7 +23,7 @@
 // The validator is a pure function — no side effects, no async, no DB.
 
 import { describe, it, expect } from 'vitest';
-import { validateRRFloor, isTightSpreadTicker } from '../src/agents/trading-agent.js';
+import { validateRRFloor, isTightSpreadTicker, validateOrderSide } from '../src/agents/trading-agent.js';
 
 describe('isTightSpreadTicker', () => {
   it('returns true for EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD', () => {
@@ -297,5 +297,82 @@ describe('validateRRFloor — edge cases', () => {
       // Must mention at least one TP and the actual ratio
       expect(result.reason).toMatch(/TP\d/);
     }
+  });
+});
+
+describe('validateOrderSide — pre-analyst geometric sanity (2026-05-05)', () => {
+  // Background: the 2026-05-04 08:31 UTC live failure was a GOLD SHORT
+  // proposal with SL=4575 < entry=4576.29 and TPs above entry — geometrically
+  // impossible. The analyst rightly rejected it but its long rejection prose
+  // truncated the JSON output, dropping the analyst's parse rate to 0/6
+  // for ~6 days. This validator catches the malformed proposal BEFORE the
+  // analyst LLM call so neither the wasted API spend nor the truncation-
+  // by-verbose-rejection cascade can happen.
+
+  it('long with correct ordering passes', () => {
+    expect(validateOrderSide({
+      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.11, tp2: 1.12, tp3: 1.13,
+    }).ok).toBe(true);
+  });
+
+  it('long with SL above entry fails', () => {
+    const r = validateOrderSide({
+      direction: 'long', entry: 1.10, sl: 1.11, tp1: 1.12, tp2: 1.13, tp3: 1.14,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/long.*sl<entry/i);
+  });
+
+  it('long with TPs below entry fails', () => {
+    const r = validateOrderSide({
+      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.08, tp2: 1.07, tp3: 1.06,
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('long with TPs out of order fails (tp2 < tp1)', () => {
+    const r = validateOrderSide({
+      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.13, tp2: 1.12, tp3: 1.14,
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('short with correct ordering passes', () => {
+    expect(validateOrderSide({
+      direction: 'short', entry: 1.10, sl: 1.11, tp1: 1.09, tp2: 1.08, tp3: 1.07,
+    }).ok).toBe(true);
+  });
+
+  it('short with inverted geometry fails (the 2026-05-04 GOLD case)', () => {
+    const r = validateOrderSide({
+      direction: 'short', entry: 4576.29, sl: 4575.00, tp1: 4577.58, tp2: 4578.87, tp3: 4580.16,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toMatch(/short/i);
+      expect(r.reason).toContain('4576.29');
+    }
+  });
+
+  it('rejects equal levels (degenerate)', () => {
+    const r = validateOrderSide({
+      direction: 'long', entry: 1.10, sl: 1.10, tp1: 1.11, tp2: 1.12, tp3: 1.13,
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects non-finite numbers', () => {
+    const r = validateOrderSide({
+      direction: 'long', entry: NaN, sl: 1.09, tp1: 1.11, tp2: 1.12, tp3: 1.13,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/finite/i);
+  });
+
+  it('rejects non-finite TP', () => {
+    const r = validateOrderSide({
+      direction: 'short', entry: 1.10, sl: 1.11, tp1: 1.09, tp2: Infinity, tp3: 1.07,
+    });
+    expect(r.ok).toBe(false);
   });
 });
