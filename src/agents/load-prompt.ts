@@ -53,15 +53,22 @@ export function loadStrategy(filename: string): string {
 // block which references them by name, so the agent will flag any mismatch
 // against the ranked list it sees at runtime.
 //
-// Indices (US30 / US100 / US500 / DE40) removed 2026-04-22 — each routes to
-// an unrelated ETF on Twelve Data Grow tier and is now in
-// TWELVE_DATA_UNAVAILABLE. Letting the LLM believe those are valid R:R 1.5:1
-// candidates would be a back-door into place_order calls the scanner never
-// sanity-checked. Re-add when a real index feed is wired.
+// Tight-spread instrument list per memory/strategy.md Section 4. Used to
+// advertise to the LLM which symbols qualify for the Tier-3 R:R 1.5:1
+// carve-out (default is 2:1).
+//
+// History:
+//   - 2026-04-22: indices (US30/US100/US500/DE40) removed — each routed to
+//     an unrelated ETF on Twelve Data Grow tier (now in TWELVE_DATA_UNAVAILABLE).
+//   - 2026-05-04 (Phase C, audit Finding #10): equity tickers AAPL/MSFT/NVDA/
+//     AMZN/GOOGL/META removed — they were never in INSTRUMENT_UNIVERSE
+//     (src/scanner/index.ts) and Haiku reading them as "tight-spread"
+//     candidates was a phantom signal. Universe is FX majors + GOLD only
+//     for tight-spread. SILVER and OIL_CRUDE are medium-spread and not on
+//     this list.
 const TIGHT_SPREAD_TICKERS = [
   'EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD',
   'GOLD',
-  'AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META',
 ].join(', ');
 
 const DEMO_RELAXED_GATES_CONTEXT = `
@@ -84,17 +91,19 @@ documented above. Every other rule remains in force.
    bias is clear (clarity >= 10), news score is non-negative, and the
    Analyst Agent approves.
 
-3. **Kill-zone score bonus.** Outside official kill zones (London Open /
-   NY Open / London Close), the composite score bonus is +10 (was 0). This
-   lets strong setups clear Tier 2 off-hours when every other factor is
-   favourable. Kill-zone timing discipline still matters for entry *quality*,
-   but it no longer hard-gates entry viability.
+3. **(Retired 2026-04-29)** Earlier drafts of this block described an
+   off-hours "kill-zone score bonus" that let strong setups clear Tier 2
+   outside official kill zones. That mechanism was retired in the
+   2026-04-29 score-rubric rebalance — kill zone is now a HARD GATE. The
+   scanner returns no candidates outside London Open / NY Open / London
+   Close UTC windows regardless of any score override. This bullet is kept
+   as a tombstone so future readers don't reintroduce the off-hours path.
 
 **NOT relaxed under any circumstance:**
 - Daily 6% loss kill switch — still fires, still halts new trades.
-- Weekly 10% loss kill switch — unchanged.
-- Split-position method — every trade is still two legs (Position A + B),
-  with TP1 triggering Position B's SL-to-break-even move.
+- Weekly 10% loss kill switch — unchanged. Code-enforced 2026-05-04 (Phase A3).
+- Split-position method — every trade is THREE legs (Position A + B + C)
+  with TP1 triggering Positions B AND C SL-to-break-even moves.
 - Max concurrent positions — unchanged.
 - Live-trading opt-in gate — unchanged.
 

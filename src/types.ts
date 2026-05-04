@@ -420,5 +420,5 @@ export interface RankedInstrument {
   name: string;
   composite_score: number;
   bias: 'bullish' | 'bearish' | 'neutral';
-  tier: 1 | 2 | 3 | null;  // null if score < 65 (< 50 when DEMO_RELAXED_GATES=true). Tier 3 = 50-64 (demo only).
+  tier: 1 | 2 | 3 | null;  // null if score < 45. Tier 3 = 45-59, Tier 2 = 60-79, Tier 1 = 80-100. Range-mode setups capped at 59 by scanner.
 }

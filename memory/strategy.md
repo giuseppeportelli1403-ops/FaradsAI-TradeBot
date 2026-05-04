@@ -20,9 +20,11 @@ ICT (Inner Circle Trader) — order blocks, fair value gaps, liquidity sweeps, p
 |-----------|-----------|
 | London Open | 07:00–10:00 |
 | New York Open | 13:00–16:00 |
-| London Close | 15:00–17:00 |
+| London Close | 16:00–17:00 |
 
-Trading outside kill zones: scanner applies a kill-zone bonus that pushes the composite score below the Tier 3 threshold for marginal setups. The agent MUST NOT submit trades outside kill zones — this is a hard rule, no score override.
+Trading outside kill zones: hard gate. The scanner returns no candidates outside these UTC windows regardless of score. The agent MUST NOT submit trades outside kill zones — no override.
+
+(Pre-2026-04-29 the London Close window started at 15:00 and overlapped NY Open. The first-match-wins ordering misattributed every 15:00–16:00 reflection/weekly-review row to the wrong zone. Fixed in `src/scanner/index.ts:190-201`; this doc and the backtest engine were synced 2026-05-04 audit Phase B/C.)
 
 ---
 

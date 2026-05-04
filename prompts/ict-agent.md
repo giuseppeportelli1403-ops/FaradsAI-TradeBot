@@ -67,6 +67,8 @@ All legs share the same SL. If all three are stopped out simultaneously, total l
 
 `place_split_trade(analyst_token, proposal)` accepts the proposal you already submitted to `request_analyst_review` plus the returned token. The proposal must match exactly what was approved — the executor re-hashes and rejects on any field drift.
 
+The example below shows shape only. **Sizes (`size_a` / `size_b` / `size_c`) MUST be computed per the Section 7.1 formula**: per-leg size = `(account_balance × tier_risk_pct / 3) / |entry − sl|` in instrument-native units. The literal 1700/1650/1650 numbers below correspond to a $1000 demo account, 1% Tier 2 risk, EURUSD with 20-pip SL — they will NOT be correct for any other balance, tier, instrument, or SL distance. Compute fresh every trade.
+
 ```json
 {
   "analyst_token": "<hash returned by request_analyst_review>",
