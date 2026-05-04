@@ -119,6 +119,8 @@ Maximum no-structure score: 25 (base) + 0 + 0 + 10 (news) + 10 (history) + 5 (sp
 
 **On the historical win-rate adjustment:** the previous 5-trades-per-bucket threshold was effectively dead code — at the bot's typical ~0.5 trades/day, hitting 5 trades per (setup × kill zone × instrument) bucket would take ~2 years. Lowering the activation threshold to 2 trades opens the feedback loop within the demo window. The signal is noisier (a 0/2 vs 1/2 swing matters), but a noisy active feedback loop is better than a clean dead one.
 
+**Bias as a single-filter (Phase E 2026-05-04):** the 1H bias clarity score (0/15/20/25) is the ONLY bias-quality filter. Earlier prompt drafts had ICT applying a second "bias must be clean" hard gate, double-counting the same signal and forcing skips on otherwise-valid Tier 2/3 setups (observed 2026-05-04 with EURUSD score 65 skipped because bias was "moderately bearish (not clean)"). Removed Phase E. If a chart shows weak bias, the bias-clarity score will naturally be 0 or 15; combined with weak ICT array, that drops the total below 40 and the composite-score floor takes care of the skip without a separate gate. Direction still matters — long in a downtrend is still wrong. But CLARITY is now a score-only filter.
+
 ---
 
 ## Section 6: Banned Patterns

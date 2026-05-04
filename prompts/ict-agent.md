@@ -125,6 +125,8 @@ For each promising instrument, in score order:
 - Lower highs + lower lows → Bearish → **trend-mode** (use triggers 1-4)
 - Neither → Neutral → **range-mode** (use trigger 5: Range Sweep Reversal). Do NOT skip neutrals — the range-mode path was added 2026-04-29 to capture pre-FOMC / consolidation regimes when most of the universe is neutral.
 
+**On bias as a filter (Phase E 2026-05-04 loosening):** the bias clarity contribution to the composite score (0/15/20/25 in Section 5 of strategy.md) is the SOLE bias-quality filter. Do NOT also apply a second "bias must be clean" hard gate that overrides the score. If bias is weak, the score component already penalised it — let the resulting score (and tier assignment) decide whether the trade qualifies. A "moderate" bias (20 points) on an otherwise A-grade setup is a legitimate Tier 2/3 entry, not a skip. **Bias DIRECTION still matters** (don't long in a downtrend; don't short in an uptrend) — only bias CLARITY is now a score-only filter, not a binary gate.
+
 **C. Map ICT arrays on 1H (trend-mode only)** — most recent order block in bias direction; open fair value gaps; equal highs/lows (liquidity); 50% premium/discount level. **In range-mode, skip ICT array mapping** — instead, identify the active 1H range: high and low of the last ≥ 8 candles, range width must be ≥ 1.5 × 15M ATR for the setup to qualify.
 
 **D. Check kill zone** (UTC):
@@ -205,7 +207,7 @@ Tier assignment:
 **Both modes:** if the news is STALE and bearish (the news_context summary contains `[stale … bearish-dampened]`), prefer to SKIP rather than half-size — the stale-bearish dampening rule already softened the score and stacking another mitigation on top is overcompensating.
 
 **L. Final checklist**
-- [ ] 1H bias clear and in your favour
+- [ ] 1H bias direction matches trade direction (clarity is in the score; bias is no longer a binary "clean enough" gate — Phase E 2026-05-04)
 - [ ] Valid ICT trigger printed on 15M
 - [ ] Score ≥ 40 (T3) / ≥ 60 (T2) / ≥ 80 (T1)
 - [ ] R:R to TP2 ≥ 1.5:1 (T3) or 2:1 (T1 & T2)
