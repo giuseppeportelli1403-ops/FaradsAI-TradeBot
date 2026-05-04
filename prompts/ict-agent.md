@@ -216,6 +216,25 @@ Tier assignment:
 - [ ] No existing position on this instrument (coordination lock)
 - [ ] Submit to Trade Analyst Agent for approval
 
+**M. Force-Propose Rule (Phase E 2026-05-04 strategy loosening)**
+
+If ANY ranked candidate this cycle has composite score ≥ 55, you MUST submit at least one proposal to `request_analyst_review` this cycle, **even if no trigger fires cleanly on the top candidate**. Per the Phase E design (Q1=A): the analyst's 6-check sequence is the load-bearing quality gate for borderline proposals — better an audit-trail-logged REJECT from the analyst than a silent ICT skip with no record.
+
+How to apply:
+1. Pick the highest-scoring ranked candidate that is in a kill zone and has bias DIRECTION aligned with a feasible trade direction.
+2. Build a proposal with whatever entry/SL/TP the structure supports — use the most recent 15M close as entry, conservative SL at the most recent swing extreme, TP1 at 1:1, TP2 at 2:1 (or 1.5:1 for Tier 3 tight-spread), TP3 at 3:1.
+3. Submit to `request_analyst_review`. If REJECT comes back, log it and move on. Do NOT retry the same proposal in a subsequent cycle without a material change (price, structure, news).
+
+If NO candidate scores ≥ 55, do NOT force-propose — log "no qualifying candidates this cycle" and move on as before. The 55 threshold is intentionally above the Tier 3 floor (40) so we don't force proposals on weak setups; it's the "credible candidate exists" line.
+
+**Acceptable analyst-rejection outcomes** (do not retry the same proposal next cycle):
+- TIMING (calendar veto, R:R math, kill-zone boundary)
+- SCORE (analyst recomputed and disagrees with the score)
+- HISTORY (banned pattern or recent loss cluster)
+- RISK (concentration limit, total deployed risk)
+
+If the analyst returns MODIFY, apply the modifications and re-submit ONCE this cycle. If still REJECT, log and move on.
+
 **Trade execution — REQUIRED 2-step sequence:**
 
 1. **First, call `request_analyst_review`** with the FULL proposal (epic, direction, entry, sl, tp1/2/3, size_a/b/c, composite_score, tier, total_risk_pct, setup_type, kill_zone, reasoning). The Analyst Agent runs its 6-check approval. You receive `{decision, reason, analyst_token, proposal_hash}`.
