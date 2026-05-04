@@ -91,6 +91,133 @@ function pruneStaleApprovals(): void {
   }
 }
 
+// ==================== R:R FLOOR VALIDATION ====================
+// 2026-05-04 (Phase A1, audit Finding #2): pre-fix the place_split_trade
+// validation chain only checked order-side (sl<entry<tp1<tp2<tp3 for longs,
+// opposite for shorts). There was NO check that TP magnitudes respected
+// strategy.md Section 7.3 R:R minimums. A hallucinated proposal with TP1
+// 1 pip past entry could pass every code gate. The Analyst's 6-check
+// sanity step also doesn't verify R:R floors — only "TP1 closer to entry
+// than TP2".
+//
+// Strategy.md Section 7.3 (authoritative):
+//   Trend-mode (triggers 1-4):
+//     TP1 ≥ 1:1 (de-risk leg, 1.2:1 acceptable)
+//     TP2 ≥ 2:1 for Tier 1 & 2; ≥ 1.5:1 for Tier 3 on tight-spread only
+//     TP3 ≥ 3:1
+//   Range-mode (trigger 5):
+//     TP1 ≥ 1:1, TP2 ≥ 1.5:1, TP3 ≥ 2:1
+//
+// Tight-spread instruments (memory/strategy.md Section 4):
+//   EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD
+// Medium-spread (no T3 tight-spread carve-out):
+//   SILVER, OIL_CRUDE
+
+const TIGHT_SPREAD_TICKERS = new Set(['EURUSD', 'GBPUSD', 'USDJPY', 'AUDUSD', 'GOLD']);
+
+/** True if the ticker has tight-spread carve-out for Tier 3 R:R floor. */
+export function isTightSpreadTicker(ticker: string): boolean {
+  return TIGHT_SPREAD_TICKERS.has(ticker.toUpperCase());
+}
+
+export interface RRValidationInput {
+  direction: 'long' | 'short';
+  entry: number;
+  sl: number;
+  tp1: number;
+  tp2: number;
+  tp3: number;
+  tier: 1 | 2 | 3;
+  ticker: string;
+  isRangeMode: boolean;
+}
+
+export type RRValidationResult =
+  | { ok: true }
+  | { ok: false; error: 'INVALID_RISK' | 'RR_FLOOR_VIOLATION'; reason: string };
+
+/**
+ * Validate that the proposal's TPs respect the strategy R:R floors.
+ *
+ * Pure function: no side effects, no async, no DB. The caller (place_split_trade
+ * executor) invokes this AFTER the order-side validation so we know
+ * sl/entry/tps are on the correct sides — this lets us use abs(price - entry)
+ * for the R:R math regardless of long/short.
+ *
+ * Returns { ok: true } on pass, { ok: false, error, reason } with a specific
+ * machine-readable error code on fail. The reason mentions which TP leg
+ * violated and the actual ratio so the LLM can fix and retry.
+ */
+export function validateRRFloor(input: RRValidationInput): RRValidationResult {
+  const { entry, sl, tp1, tp2, tp3, tier, ticker, isRangeMode } = input;
+  const risk = Math.abs(entry - sl);
+  if (risk === 0 || !Number.isFinite(risk)) {
+    return {
+      ok: false,
+      error: 'INVALID_RISK',
+      reason: `Cannot compute R:R: entry (${entry}) equals SL (${sl}) or risk is non-finite.`,
+    };
+  }
+
+  const rr = (tp: number) => Math.abs(tp - entry) / risk;
+  const rr1 = rr(tp1);
+  const rr2 = rr(tp2);
+  const rr3 = rr(tp3);
+
+  // Floors per strategy.md Section 7.3.
+  let tp1Floor: number;
+  let tp2Floor: number;
+  let tp3Floor: number;
+  let mode: string;
+
+  if (isRangeMode) {
+    tp1Floor = 1.0;
+    tp2Floor = 1.5;
+    tp3Floor = 2.0;
+    mode = 'range-mode';
+  } else {
+    tp1Floor = 1.0;
+    tp3Floor = 3.0;
+    if (tier === 3 && isTightSpreadTicker(ticker)) {
+      tp2Floor = 1.5;  // T3 tight-spread carve-out
+      mode = 'trend-mode T3 tight-spread';
+    } else {
+      tp2Floor = 2.0;
+      mode = `trend-mode T${tier}`;
+    }
+  }
+
+  // Tolerance: allow tiny floating-point overshoot (0.001 R) so e.g. an
+  // exactly-at-floor proposal isn't rejected on rounding.
+  const tol = 0.001;
+  if (rr1 + tol < tp1Floor) {
+    return {
+      ok: false,
+      error: 'RR_FLOOR_VIOLATION',
+      reason: `TP1 R:R is ${rr1.toFixed(2)}, below ${mode} floor of ${tp1Floor}. ` +
+              `Re-compute: entry=${entry}, sl=${sl}, tp1=${tp1}.`,
+    };
+  }
+  if (rr2 + tol < tp2Floor) {
+    return {
+      ok: false,
+      error: 'RR_FLOOR_VIOLATION',
+      reason: `TP2 R:R is ${rr2.toFixed(2)}, below ${mode} floor of ${tp2Floor}. ` +
+              `Re-compute: entry=${entry}, sl=${sl}, tp2=${tp2}.`,
+    };
+  }
+  if (rr3 + tol < tp3Floor) {
+    return {
+      ok: false,
+      error: 'RR_FLOOR_VIOLATION',
+      reason: `TP3 R:R is ${rr3.toFixed(2)}, below ${mode} floor of ${tp3Floor}. ` +
+              `Re-compute: entry=${entry}, sl=${sl}, tp3=${tp3}.`,
+    };
+  }
+
+  return { ok: true };
+}
+
 // ==================== MCP TOOL DEFINITIONS ====================
 // These are passed to Claude as tool schemas so it can call them
 
@@ -544,6 +671,30 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         return JSON.stringify({
           error: 'INVALID_ORDER_SIDE',
           reason: `For direction='${direction}', expected ${direction === 'long' ? 'SL<entry<TP1<TP2<TP3' : 'SL>entry>TP1>TP2>TP3'}. Got SL=${sl} entry=${entry} TP1=${tp1} TP2=${tp2} TP3=${tp3}.`,
+        });
+      }
+
+      // === Step 3.3: R:R floor validation (Phase A1, 2026-05-04, audit Finding #2)
+      // strategy.md Section 7.3 specifies trend-mode TP1≥1, TP2≥2 (or 1.5 for
+      // T3 tight-spread), TP3≥3; range-mode TP1≥1, TP2≥1.5, TP3≥2. Pre-fix
+      // there was NO magnitude check — only ordering. A hallucinated proposal
+      // with TP1 1 pip past entry could pass every gate. See validateRRFloor
+      // above for the full rationale.
+      const rrCheck = validateRRFloor({
+        direction,
+        entry,
+        sl,
+        tp1,
+        tp2,
+        tp3,
+        tier: expectedTier,
+        ticker: String(input.instrument ?? '').toUpperCase(),
+        isRangeMode,
+      });
+      if (!rrCheck.ok) {
+        return JSON.stringify({
+          error: rrCheck.error,
+          reason: rrCheck.reason,
         });
       }
 
