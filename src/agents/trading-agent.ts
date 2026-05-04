@@ -14,7 +14,7 @@ import { withTimeout } from './llm-output.js';
 import { runAnalystAgent, type TradeProposal } from './analyst-agent.js';
 import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
 import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
-import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument } from '../database/index.js';
+import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument, getRealisedPnlSince } from '../database/index.js';
 import { alertTradePlaced } from '../notifications/telegram.js';
 
 const anthropic = new Anthropic();
@@ -215,6 +215,71 @@ export function validateRRFloor(input: RRValidationInput): RRValidationResult {
     };
   }
 
+  return { ok: true };
+}
+
+// ==================== WEEKLY KILL SWITCH ====================
+// 2026-05-04 (Phase A3, audit Finding #6): pre-fix, strategy.md Section 7.2
+// said "Weekly loss limit: 10% of account equity. Non-negotiable. When
+// triggered: No new positions opened (code-enforced in executeTool paths)"
+// — but no caller invoked getWeeklyPnl anywhere in the trading path. A 10%
+// weekly drawdown would not stop the bot. Daily 6% catches the worst day,
+// but four bad days in a week could clear 10% with the bot still trading.
+//
+// Strategy doc convention: weekly resets Sunday 00:00 UTC (matches the
+// weekly-review cron at `0 0 * * 0`). Current week runs from the most
+// recent Sunday 00:00 UTC to next Sunday 00:00 UTC.
+
+const WEEKLY_KILL_SWITCH_PCT = -10;
+
+/**
+ * Compute the YYYY-MM-DD UTC date of the most recent Sunday at 00:00 UTC.
+ *
+ * Sunday is day 0 in JavaScript's getUTCDay(). If today is Sunday, returns
+ * today's date. Otherwise subtracts (dayOfWeek) days to roll back to Sunday.
+ * Always returns a date in UTC — never local time.
+ */
+export function computeWeekStartUTC(now: Date = new Date()): string {
+  const dow = now.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  const sunday = new Date(now);
+  sunday.setUTCDate(now.getUTCDate() - dow);
+  sunday.setUTCHours(0, 0, 0, 0);
+  return sunday.toISOString().split('T')[0];
+}
+
+export interface WeeklyKillSwitchInput {
+  weeklyPnl: number;   // realised P&L this week (Sun → now) + current unrealised
+  equity: number;      // current account equity
+}
+
+export type WeeklyKillSwitchResult =
+  | { ok: true }
+  | { ok: false; error: 'WEEKLY_KILL_SWITCH_ACTIVE'; reason: string; currentPct: number; thresholdPct: number };
+
+/**
+ * Block trades when weekly P&L percentage is at or beyond -10%.
+ *
+ * Pure function: no side effects, no async, no DB. The caller computes
+ * weeklyPnl by summing realised_pnl from this week's Sunday + balance's
+ * current unrealised. equity is the account balance.
+ *
+ * Fail-open at equity=0 — a zero-equity account can't take any position
+ * anyway, and a divide-by-zero check on the kill switch would mask the
+ * downstream rejection in a misleading way.
+ */
+export function validateWeeklyKillSwitch(input: WeeklyKillSwitchInput): WeeklyKillSwitchResult {
+  const { weeklyPnl, equity } = input;
+  if (equity <= 0) return { ok: true };
+  const currentPct = (weeklyPnl / equity) * 100;
+  if (currentPct <= WEEKLY_KILL_SWITCH_PCT) {
+    return {
+      ok: false,
+      error: 'WEEKLY_KILL_SWITCH_ACTIVE',
+      reason: `Weekly P&L is ${currentPct.toFixed(2)}% — at or beyond the ${WEEKLY_KILL_SWITCH_PCT}% kill-switch threshold. No new positions until next Sunday 00:00 UTC.`,
+      currentPct,
+      thresholdPct: WEEKLY_KILL_SWITCH_PCT,
+    };
+  }
   return { ok: true };
 }
 
@@ -698,17 +763,24 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         });
       }
 
-      // === Step 3.5: code-enforced 6% daily kill switch (Codex P0-TA1, 2026-04-29)
-      // strategy.md Section 7.2 says daily 6% loss is non-negotiable.
-      // Pre-fix this was only visible to the LLM via get_daily_pnl as a
-      // FLAG — no code-level gate. Now enforced before any order touches
-      // Capital.
+      // === Step 3.5: code-enforced 6% daily + 10% weekly kill switches
+      // Daily 6%: Codex P0-TA1 (2026-04-29). strategy.md Section 7.2 says
+      // daily 6% loss is non-negotiable. Pre-fix this was only visible to
+      // the LLM via get_daily_pnl as a FLAG — no code-level gate.
+      // Weekly 10%: Phase A3 (2026-05-04, audit Finding #6). strategy.md
+      // Section 7.2 also says "Weekly loss limit: 10% of account equity.
+      // Non-negotiable. When triggered: No new positions opened
+      // (code-enforced in executeTool paths)" — but pre-fix no caller
+      // invoked getWeeklyPnl. Daily caught the worst day; four bad days
+      // could still clear 10% with the bot trading. Now enforced.
       try {
         const balance = await getPreferredAccountBalance();
         const today = new Date().toISOString().split('T')[0];
         const daily = getDailyPnl(today);
-        const pnl = balance.profitLoss + (daily?.realised_pnl ?? 0);
         const equity = balance.balance;
+
+        // Daily check (unchanged behaviour)
+        const pnl = balance.profitLoss + (daily?.realised_pnl ?? 0);
         const pct = equity ? (pnl / equity) * 100 : 0;
         if (pct <= -6) {
           console.error(`[ICT Agent] DAILY KILL SWITCH ACTIVE: ${pct.toFixed(2)}% — refusing place_split_trade for ${input.instrument}.`);
@@ -719,14 +791,33 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
             threshold_pct: -6,
           });
         }
+
+        // Weekly check (new). Realised P&L from this week's Sunday onward
+        // (includes today's realised if the daily log has been updated this
+        // tick) plus current unrealised. Avoids double-counting today's
+        // unrealised by using realised-only sum + balance.profitLoss.
+        const weekStart = computeWeekStartUTC(new Date());
+        const weeklyRealised = getRealisedPnlSince(weekStart);
+        const weeklyPnl = weeklyRealised + balance.profitLoss;
+        const weeklyCheck = validateWeeklyKillSwitch({ weeklyPnl, equity });
+        if (!weeklyCheck.ok) {
+          console.error(`[ICT Agent] WEEKLY KILL SWITCH ACTIVE: ${weeklyCheck.currentPct.toFixed(2)}% — refusing place_split_trade for ${input.instrument}.`);
+          return JSON.stringify({
+            error: weeklyCheck.error,
+            reason: weeklyCheck.reason,
+            current_pct: weeklyCheck.currentPct,
+            threshold_pct: weeklyCheck.thresholdPct,
+            week_start: weekStart,
+          });
+        }
       } catch (err) {
         // Fail-CLOSED on inability to read balance/PnL. A risk gate cannot
         // be allowed to silently bypass on data-source failure.
         const msg = err instanceof Error ? err.message : String(err);
-        console.error(`[ICT Agent] DAILY P&L FETCH FAILED: ${msg}. Refusing place_split_trade — cannot verify kill switch.`);
+        console.error(`[ICT Agent] DAILY/WEEKLY P&L FETCH FAILED: ${msg}. Refusing place_split_trade — cannot verify kill switch.`);
         return JSON.stringify({
           error: 'DAILY_PNL_FETCH_FAILED',
-          reason: `Cannot verify daily kill switch: ${msg}. Refusing order — risk gate fails closed.`,
+          reason: `Cannot verify daily/weekly kill switch: ${msg}. Refusing order — risk gate fails closed.`,
         });
       }
 

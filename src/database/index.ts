@@ -883,6 +883,24 @@ export function getWeeklyPnl(weekStart: string, weekEnd: string): number {
   return result[0]?.values[0]?.[0] as number || 0;
 }
 
+/**
+ * Sum of realised P&L from `startDate` (inclusive, YYYY-MM-DD) through today.
+ * Used by the weekly kill switch in trading-agent.ts (Phase A3, 2026-05-04):
+ * we want realised-only because the caller adds current unrealised
+ * (balance.profitLoss) on top to avoid double-counting today's open positions.
+ *
+ * getWeeklyPnl above sums total_pnl which includes EOD unrealised — fine for
+ * historical weekly review reporting but would double-count today's open
+ * positions if used for the live kill-switch check.
+ */
+export function getRealisedPnlSince(startDate: string): number {
+  const result = db.exec(
+    'SELECT SUM(realised_pnl) as realised_total FROM daily_pnl_log WHERE date >= ?',
+    [startDate]
+  );
+  return result[0]?.values[0]?.[0] as number || 0;
+}
+
 // ==================== HELPERS ====================
 
 function resultToObjects<T>(result: Array<{ columns: string[]; values: unknown[][] }>): T[] {
