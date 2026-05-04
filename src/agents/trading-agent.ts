@@ -331,7 +331,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   {
     name: 'get_economic_calendar',
     description:
-      'Return upcoming high/medium/low-impact macro events (FOMC, NFP, CPI, ECB, BoE, BoJ, central-bank rate decisions, GDP, payrolls). YOU MUST CALL THIS before any place_order — trading into a high-impact print on the trade currency is a hard rule violation. The place_order tool is code-level vetoed when a high-impact event is within −5/+30 minutes for any currency in the trade pair.',
+      'Return upcoming high/medium/low-impact macro events (FOMC, NFP, CPI, ECB, BoE, BoJ, central-bank rate decisions, GDP, Core PCE, AHE, Unemployment Rate, Retail Sales, ISM PMI, payrolls). YOU MUST CALL THIS before any request_analyst_review/place_split_trade — trading into a high-impact print on the trade currency is a hard rule violation. place_split_trade is code-level vetoed when a high-impact event for any currency in the trade pair falls inside the per-event veto window: generic high-impact events use −5/+30 min (5 before / 30 after); Tier-1 events (FOMC/NFP/CPI/central-bank rate decisions/Core PCE/GDP/ISM PMI/AHE/Unemployment Rate/Retail Sales/central-bank press conferences) use the wider −60/+30 min window.',
     input_schema: {
       type: 'object' as const,
       properties: {
