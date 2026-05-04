@@ -41,8 +41,22 @@ Run these 6 checks in order. Every check must pass or be flagged.
 - Recompute the position size independently using:
   `size_per_leg = (Account_balance × tier_risk_pct / 3) / (entry − SL)`
 - The divisor is **3** (3-leg split-position method, post-2026-04-21 upgrade), NOT 2.
-- tier_risk_pct: Tier 1 → 1.5%, Tier 2 → 1.0%, Tier 3 → 0.5%
-- If opposing Cat-A news is present AND not stale-bearish, expected size is `0.5 ×` the formula above (half-size posture).
+- tier_risk_pct (trend-mode triggers 1-4): Tier 1 → 1.5%, Tier 2 → 1.0%, Tier 3 → 0.5%.
+- **Range-mode (setup_type starts with `Range_`, e.g. `Range_Sweep_Reversal`):**
+  - tier_risk_pct = **0.25%** (half of Tier 3's 0.5% — range reversals are
+    higher-variance than trend-following entries).
+  - Tier MUST be 3. If the proposal claims Tier 1 or 2 with a `Range_*`
+    setup_type, REJECT — the executor will refuse with `RANGE_MODE_TIER_MISMATCH`
+    anyway and a rubber-stamp on a doomed proposal wastes the cycle.
+- **Half-size posture for opposing Cat-A news:**
+  - **Trend-mode** (setup_type does NOT start with `Range_`): if opposing
+    Cat-A news is present AND not stale-bearish, expected size is
+    `0.5 ×` the formula above.
+  - **Range-mode** (setup_type starts with `Range_`): the half-size rule
+    does NOT apply. Opposing Cat-A news INVALIDATES a range setup — the
+    reversal premise breaks under news-driven continuation pressure. If
+    you see a range-mode proposal with opposing Cat-A news, REJECT
+    outright (do NOT half-size; do NOT modify).
 - Compare with the proposed `size_per_leg` (or `size_a` / `size_b` / `size_c` if separate). All three legs should be approximately equal (34/33/33 split is acceptable). Reject if discrepancy from your independent calculation exceeds 5%.
 
 ---
