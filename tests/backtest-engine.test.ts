@@ -2,7 +2,7 @@
 //
 // Pre-fix the engine implemented the 2026-04-22 obsolete strategy:
 //   - TP1=2R, TP2=3R, TP3=4R (current docs: TP1=1R, TP2≥2R, TP3≥3R)
-//   - Tier 3 floor=50 (current: 45)
+//   - Tier 3 floor=50 (current: 40 post-Phase-E; was 45 post-Phase-B)
 //   - Bias clarity scale 0/10/20 (current rubric: 0/15/20/25)
 //   - Kill zone as score component +15/+5 (current: hard gate, not scored)
 //   - No range-mode path (skipped neutral bias entirely)
@@ -73,25 +73,27 @@ describe('assignTier — post-2026-04-22 floor', () => {
     expect(assignTier(79)).toBe(2);
   });
 
-  it('score 45-59 → Tier 3', () => {
+  it('score 40-59 → Tier 3', () => {
+    expect(assignTier(40)).toBe(3);
     expect(assignTier(45)).toBe(3);
     expect(assignTier(50)).toBe(3);
     expect(assignTier(59)).toBe(3);
   });
 
-  it('score 44 → null (below floor)', () => {
-    expect(assignTier(44)).toBeNull();
+  it('score 39 → null (below floor)', () => {
+    expect(assignTier(39)).toBeNull();
   });
 
   it('score 0 → null', () => {
     expect(assignTier(0)).toBeNull();
   });
 
-  it('does NOT use the obsolete 50 floor (Tier 3 now starts at 45)', () => {
-    // Pre-fix Tier 3 was 50-59; post-fix is 45-59.
-    expect(assignTier(45)).toBe(3);
-    expect(assignTier(46)).toBe(3);
-    expect(assignTier(49)).toBe(3);
+  it('uses the Phase-E 40 floor (history: 50 → 45 → 40)', () => {
+    // Pre-2026-04-22 Tier 3 was 50-59; pre-Phase-E it was 45-59;
+    // post-Phase-E (2026-05-04) it is 40-59.
+    expect(assignTier(40)).toBe(3);
+    expect(assignTier(41)).toBe(3);
+    expect(assignTier(44)).toBe(3);
   });
 });
 

@@ -713,10 +713,10 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // word (after trimming whitespace/underscores) is "range".
       const setupTypeNorm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_');
       const isRangeMode = /^range_/.test(setupTypeNorm);
-      if (!Number.isFinite(score) || score < 45) {
+      if (!Number.isFinite(score) || score < 40) {
         return JSON.stringify({
           error: 'SCORE_BELOW_TIER_MIN',
-          reason: `composite_score ${score} is below Tier 3 minimum 45. No trade.`,
+          reason: `composite_score ${score} is below Tier 3 minimum 40. No trade.`,
         });
       }
       const expectedTier = score >= 80 ? 1 : score >= 60 ? 2 : 3;

@@ -223,12 +223,13 @@ const KILL_ZONE_BONUS_OUT = 0;
 const TIER_1_THRESHOLD = 80;
 // Tier 2 lowered from 65 → 60 to capture more high-quality setups.
 const TIER_2_THRESHOLD = 60;
-// Tier 3 is now permanent (was demo-only). 0.5% risk, requires score 50-59.
-// Tier 3 lowered from 50 → 45 (2026-04-22) as part of Approach 2 loosening
-// to unblock observable trade cycles during the demo window. Both demo and
-// non-demo paths now use the same value — the demo-flag split no longer
-// serves a purpose since the production bar should match the demo bar.
-const TIER_3_THRESHOLD = 45;
+// Tier 3 is permanent (was demo-only). 0.5% risk, range 40-59.
+// History: 50 (original) → 45 (2026-04-22) → 40 (Phase E 2026-05-04).
+// Each lowering opened the funnel during the demo window when ICT was
+// silently skipping cycles with no audit trail despite candidates that
+// were structurally valid. The analyst gate is now the upstream quality
+// filter for borderline 40-44 setups.
+const TIER_3_THRESHOLD = 40;
 function tier3Threshold(): number {
   return TIER_3_THRESHOLD;
 }

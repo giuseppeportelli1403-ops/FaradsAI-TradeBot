@@ -158,8 +158,8 @@ If you're inside a window: SKIP. Don't bother running structure analysis. The `p
 Tier assignment:
 - **Tier 1 (80–100):** 1.5% risk
 - **Tier 2 (60–79):** 1.0% risk
-- **Tier 3 (45–59):** 0.5% risk
-- **Below 45:** Skip
+- **Tier 3 (40–59):** 0.5% risk
+- **Below 40:** Skip
 
 **I. Look for entry trigger on 15M** — apply the QUANTITATIVE definitions from `strategy.md` Section 3. No subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; log "watching, no trigger" and move on.
 
@@ -207,7 +207,7 @@ Tier assignment:
 **L. Final checklist**
 - [ ] 1H bias clear and in your favour
 - [ ] Valid ICT trigger printed on 15M
-- [ ] Score ≥ 45 (T3) / ≥ 60 (T2) / ≥ 80 (T1)
+- [ ] Score ≥ 40 (T3) / ≥ 60 (T2) / ≥ 80 (T1)
 - [ ] R:R to TP2 ≥ 1.5:1 (T3) or 2:1 (T1 & T2)
 - [ ] Calendar veto not triggered
 - [ ] Daily 6% kill switch not hit
@@ -281,7 +281,7 @@ If trade placed:
 
 ## RULES YOU NEVER BREAK
 
-- Score ≥ 45 to trade. T3 (45–59) = 0.5% risk. T2 (60–79) = 1% risk. T1 (80+) = 1.5% risk.
+- Score ≥ 40 to trade. T3 (40–59) = 0.5% risk. T2 (60–79) = 1% risk. T1 (80+) = 1.5% risk.
 - **Trend-mode** (1H bullish/bearish): triggers 1-4. TP1 = 1:1, TP2 ≥ 2:1 (T1 & T2) or ≥ 1.5:1 (T3 tight-spread), TP3 ≥ 3:1.
 - **Range-mode** (1H neutral only): trigger 5 (Range Sweep Reversal). Tier 3 ONLY. Half-size posture (0.25% total risk). TP1 = mid-range ≥ 1:1, TP2 = opposite extreme ≥ 1.5:1, TP3 = measured move ≥ 2:1. Cat A opposing news INVALIDATES the setup.
 - Every trade = 3 legs placed atomically via `place_split_trade`. Size per leg = (total_risk / 3) / (entry − SL in price terms).
