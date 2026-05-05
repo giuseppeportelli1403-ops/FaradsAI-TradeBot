@@ -166,15 +166,23 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
   // alone clears 1.0 and yields full ±10/-15; a single Tier-2 (0.6) yields
   // 60% magnitude; multiple corroborating sources cap at 1.0.
   const catAWeightFactor = Math.min(1, sumCatARelevance / CAT_A_WEIGHT_THRESHOLD);
-  const catBWeightFactor = Math.min(1, sumCatBRelevance / CAT_A_WEIGHT_THRESHOLD); // same denominator: relevance vs full Tier-1
+  // 2026-05-05 (Codex Round-4 review fix): Cat-B factor must divide by
+  // CAT_B_WEIGHT_THRESHOLD (0.6), NOT CAT_A_WEIGHT_THRESHOLD (1.0). Otherwise
+  // a single Tier-2 Cat-B article (relevance 0.6) would only achieve 60%
+  // weight when by design it should clear the Cat-B threshold and yield
+  // full Cat-B magnitude.
+  const catBWeightFactor = Math.min(1, sumCatBRelevance / CAT_B_WEIGHT_THRESHOLD);
+  // For below-threshold Cat-A items downgraded to Cat-B, scale by their
+  // Cat-A relevance against the Cat-B threshold (treats them as "B-grade
+  // with corroboration potential").
+  const catADowngradedFactor = Math.min(1, sumCatARelevance / CAT_B_WEIGHT_THRESHOLD);
   let overallScore = 0;
   if (dominantCategory === 'A') {
     const base = avgSentiment > 0 ? 10 : avgSentiment < 0 ? -15 : 0;
     overallScore = Math.round(base * catAWeightFactor);
   } else if (dominantCategory === 'B') {
     const base = avgSentiment > 0 ? 5 : avgSentiment < 0 ? -5 : 0;
-    // Cat B uses its own weight factor (sumCatBRelevance OR sumCatA below threshold).
-    const factor = sumCatBRelevance > 0 ? catBWeightFactor : catAWeightFactor;
+    const factor = sumCatBRelevance > 0 ? catBWeightFactor : catADowngradedFactor;
     overallScore = Math.round(base * factor);
   }
 

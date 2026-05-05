@@ -900,7 +900,12 @@ async function fetchMarketAuxBatch(
       )[0];
 
     const sentiment = Number(matchedEntity?.sentiment_score ?? 0);
-    const relevance = Number(matchedEntity?.match_score ?? 0);
+    // 2026-05-05 (Codex Round-4 review fix): clamp relevance to [0,1].
+    // MarketAux currently returns match_score in 0-1 range, but a future
+    // provider format change to 0-100 would saturate the tier-weighted
+    // scoring formula in news/index.ts. Defensive clamp.
+    const relevanceRaw = Number(matchedEntity?.match_score ?? 0);
+    const relevance = Number.isFinite(relevanceRaw) ? Math.max(0, Math.min(1, relevanceRaw)) : 0;
     const absScore = Math.abs(sentiment);
 
     const title = (article.title as string | undefined) ?? '';
