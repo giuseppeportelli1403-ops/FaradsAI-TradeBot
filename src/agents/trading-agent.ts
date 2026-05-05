@@ -217,6 +217,20 @@ export function validateRRFloor(input: RRValidationInput): RRValidationResult {
   return { ok: true };
 }
 
+// ==================== INSTRUMENT CATEGORY ====================
+// 2026-05-05 audit (A6): pre-fix, the proposal builder accepted
+// `input.instrument_category` from the LLM with `?? 'unknown'` fallback.
+// Lessons rows tagged 'unknown' silently fail category-based reflection
+// filtering. Now: derive deterministically from INSTRUMENT_UNIVERSE so
+// the LLM cannot poison the analytics dimension. Fail closed if the ticker
+// isn't in the universe.
+
+export function resolveInstrumentCategory(ticker: string): string | null {
+  const upper = ticker.toUpperCase();
+  const entry = INSTRUMENT_UNIVERSE.find((i) => i.ticker.toUpperCase() === upper);
+  return entry ? entry.category : null;
+}
+
 // ==================== RISK-PCT TOLERANCE ====================
 // 2026-05-05 audit (Phase 2 / Round 5+ / item A1): the existing inline
 // check `Math.abs(riskPct - expectedRiskPct) > 0.05` allowed ±0.05 absolute
@@ -536,7 +550,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
 import {
   fetchCandles, fetchNewsContext as fetchNewsRaw, fetchEconomicCalendar,
 } from '../mcp-server/market-data.js';
-import { getRankedInstruments } from '../scanner/index.js';
+import { getRankedInstruments, INSTRUMENT_UNIVERSE } from '../scanner/index.js';
 import {
   insertTrade, getTradeHistory, getLessons, getLessonWinRate,
   createSlTpOrder, updateSlPrice, getDailyPnl, upsertDailyPnl,
@@ -622,13 +636,23 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // and uses the SAME `trade-${hash}` as trades.id, so analyst_log.trade_id
       // joins to trades.id by construction.
       pruneStaleApprovals();
+      // 2026-05-05 audit (A6): derive instrument_category from the universe,
+      // not from the LLM. Fail closed if ticker isn't in the universe.
+      const reqInstrument = String(input.instrument);
+      const reqCategory = resolveInstrumentCategory(reqInstrument);
+      if (reqCategory === null) {
+        return JSON.stringify({
+          error: 'INSTRUMENT_NOT_RECOGNISED',
+          reason: `Cannot resolve instrument_category for ${reqInstrument} — ticker not in INSTRUMENT_UNIVERSE.`,
+        });
+      }
       const proposalDraft = {
         // trade_id placeholder — overwritten below with a unique id.
         trade_id: '',
         strategy_tag: 'ICT_INTRADAY' as const,
-        instrument: String(input.instrument),
+        instrument: reqInstrument,
         epic: String(input.epic ?? input.instrument),
-        instrument_category: String(input.instrument_category ?? 'unknown'),
+        instrument_category: reqCategory,
         direction: input.direction as 'long' | 'short',
         entry: Number(input.entry),
         sl: Number(input.sl),
@@ -759,12 +783,24 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
 
       // === Step 1: rebuild proposal from input + verify hash matches token
       pruneStaleApprovals();
+      // 2026-05-05 audit (A6): derive instrument_category from the universe;
+      // fail closed if not recognised. The hash includes instrument_category
+      // so this MUST match what request_analyst_review derived (it does, via
+      // the same resolveInstrumentCategory call).
+      const splitInstrument = String(input.instrument);
+      const splitCategory = resolveInstrumentCategory(splitInstrument);
+      if (splitCategory === null) {
+        return JSON.stringify({
+          error: 'INSTRUMENT_NOT_RECOGNISED',
+          reason: `Cannot resolve instrument_category for ${splitInstrument} — ticker not in INSTRUMENT_UNIVERSE.`,
+        });
+      }
       const proposalForVerify: TradeProposal = {
         trade_id: '<placeholder — not part of hash>',
         strategy_tag: 'ICT_INTRADAY',
-        instrument: String(input.instrument),
+        instrument: splitInstrument,
         epic,
-        instrument_category: String(input.instrument_category ?? 'unknown'),
+        instrument_category: splitCategory,
         direction,
         entry: Number(input.entry),
         sl: Number(input.sl),
@@ -1186,8 +1222,9 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       const tradeRow: any = {
         id: tradeId,
         strategy_tag: 'ICT_INTRADAY',
-        instrument: String(input.instrument),
-        instrument_category: String(input.instrument_category ?? 'unknown'),
+        instrument: splitInstrument,
+        // splitCategory was already validated as non-null at Step 1 above.
+        instrument_category: splitCategory,
         direction,
         setup_type: String(input.setup_type),
         entry,
