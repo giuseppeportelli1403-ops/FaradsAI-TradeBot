@@ -424,3 +424,59 @@ describe('validateRiskPct — tolerance tightened from ±0.05 to ±0.005 (audit 
     expect(validateRiskPct({ riskPct: 0.25, expectedRiskPct: Infinity }).ok).toBe(false);
   });
 });
+
+// 2026-05-05 (Audit defensive guard): assertUniverseSpreadConsistency
+// catches the case where a future PR adds a ticker to the universe without
+// updating the tight-spread carve-out classification.
+import { assertUniverseSpreadConsistency } from '../src/agents/spread.js';
+import { INSTRUMENT_UNIVERSE } from '../src/scanner/index.js';
+
+describe('assertUniverseSpreadConsistency', () => {
+  it('passes for the current INSTRUMENT_UNIVERSE (sanity)', () => {
+    expect(() => assertUniverseSpreadConsistency(INSTRUMENT_UNIVERSE)).not.toThrow();
+  });
+
+  it('throws when a tight-spread carve-out ticker is misclassified as medium in universe', () => {
+    const broken = [
+      { ticker: 'EURUSD', spread_quality: 'medium' }, // should be 'tight'
+    ];
+    expect(() => assertUniverseSpreadConsistency(broken)).toThrow(/EURUSD/);
+  });
+
+  it('throws when a non-carve-out ticker is misclassified as tight in universe', () => {
+    const broken = [
+      { ticker: 'OIL_CRUDE', spread_quality: 'tight' }, // should be 'medium'
+    ];
+    expect(() => assertUniverseSpreadConsistency(broken)).toThrow(/OIL_CRUDE/);
+  });
+
+  it('throws on a hypothetical new universe entry not in TIGHT_SPREAD_TICKERS marked tight', () => {
+    const broken = [
+      { ticker: 'PLATINUM', spread_quality: 'tight' }, // ticker not in TIGHT_SPREAD_TICKERS set
+    ];
+    expect(() => assertUniverseSpreadConsistency(broken)).toThrow(/PLATINUM/);
+  });
+
+  it('passes when a new ticker is correctly classified as medium-spread', () => {
+    const ok = [
+      { ticker: 'EURUSD', spread_quality: 'tight' },
+      { ticker: 'PLATINUM', spread_quality: 'medium' },
+    ];
+    expect(() => assertUniverseSpreadConsistency(ok)).not.toThrow();
+  });
+
+  it('error message lists ALL mismatches (not just the first)', () => {
+    const broken = [
+      { ticker: 'EURUSD', spread_quality: 'medium' },
+      { ticker: 'OIL_CRUDE', spread_quality: 'tight' },
+    ];
+    try {
+      assertUniverseSpreadConsistency(broken);
+      throw new Error('should have thrown');
+    } catch (e) {
+      const msg = (e as Error).message;
+      expect(msg).toContain('EURUSD');
+      expect(msg).toContain('OIL_CRUDE');
+    }
+  });
+});

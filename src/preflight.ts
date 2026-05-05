@@ -8,6 +8,8 @@
 
 import { CapitalClient } from './mcp-server/capital-client.js';
 import { alertSystemWarning, initTelegram } from './notifications/telegram.js';
+import { assertUniverseSpreadConsistency } from './agents/spread.js';
+import { INSTRUMENT_UNIVERSE } from './scanner/index.js';
 
 interface PreflightResult {
   canStart: boolean;
@@ -173,6 +175,17 @@ export async function runPreflight(): Promise<void> {
   }
 
   console.log(`[Preflight] Env OK — ${result.warnings.length} warning(s), 0 errors.`);
+
+  // 2026-05-05 (audit defensive guard): assert universe spread classification
+  // matches the tier3FloorFor carve-out logic. Loud failure if a new ticker
+  // is added to INSTRUMENT_UNIVERSE without being classified in the carve-out.
+  try {
+    assertUniverseSpreadConsistency(INSTRUMENT_UNIVERSE);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[Preflight] FATAL: ${msg}`);
+    process.exit(1);
+  }
 
   // 2026-05-05 audit (Phase 2 / Round 2 / item 2.1, Codex review fix):
   // initialise Telegram BEFORE the degraded-env alert call. Without this,

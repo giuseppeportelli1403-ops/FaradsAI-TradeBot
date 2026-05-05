@@ -23,3 +23,41 @@ export function isTightSpreadTicker(ticker: string): boolean {
 export function tier3FloorFor(ticker: string): number {
   return isTightSpreadTicker(ticker) ? 40 : 45;
 }
+
+/**
+ * 2026-05-05 (Audit defensive guard): assert that every entry in
+ * INSTRUMENT_UNIVERSE has an explicit spread classification consistent
+ * with this module's TIGHT_SPREAD_TICKERS set. Catches the case where a
+ * future PR adds a new ticker to the universe without updating the
+ * tight-spread list — the new ticker would silently default to the
+ * medium-spread floor (45), which may or may not be correct.
+ *
+ * Called from src/preflight.ts at startup. Throws on mismatch so the
+ * mistake is loud — bot refuses to boot until the classification is
+ * synced.
+ *
+ * Each universe entry has a `spread_quality` field ('tight'|'medium'|'wide').
+ * Rule: spread_quality === 'tight' iff isTightSpreadTicker(ticker).
+ */
+export function assertUniverseSpreadConsistency(
+  universe: ReadonlyArray<{ ticker: string; spread_quality: string }>,
+): void {
+  const mismatches: string[] = [];
+  for (const inst of universe) {
+    const isTightInUniverse = inst.spread_quality === 'tight';
+    const isTightInCarveOut = isTightSpreadTicker(inst.ticker);
+    if (isTightInUniverse !== isTightInCarveOut) {
+      mismatches.push(
+        `${inst.ticker}: universe says spread_quality='${inst.spread_quality}' (tight=${isTightInUniverse}) ` +
+          `but tier3FloorFor classifies tight=${isTightInCarveOut}`,
+      );
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `[spread] Universe / carve-out classification mismatch:\n  - ${mismatches.join('\n  - ')}\n` +
+        `Fix: add tight-spread tickers to TIGHT_SPREAD_TICKERS in src/agents/spread.ts, ` +
+        `or change spread_quality in INSTRUMENT_UNIVERSE.`,
+    );
+  }
+}
