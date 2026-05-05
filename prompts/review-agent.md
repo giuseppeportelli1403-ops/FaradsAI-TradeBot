@@ -26,28 +26,30 @@ Produce a weekly performance report with these sections:
 
 ---
 
-## STRATEGY UPDATE INSTRUCTIONS
+## OUTPUT — CALL THE `submit_review` TOOL
 
-After the report, output strategy update instructions as JSON:
+Call the `submit_review` tool exactly once. Do NOT write a separate text block.
+
+Tool fields:
+- `report`: full markdown report text covering sections 1-11 above. Required.
+- `ict_updates`: array of `{ section, change, basis }` objects. AUDIT-ONLY — recommendations are logged to the change log, NOT auto-applied to strategy.md. Empty array if nothing meets the bar.
+- `banned_patterns`: array of `{ pattern, win_rate, trade_count }` objects. New entries are appended to strategy.md Section 6.
+- `alerts`: array of operator-facing strings (e.g. "Researcher cron failed Wed/Thu — investigate"). Each alert is sent to Telegram.
+- `calibration_metrics`: object with `total_calls`, `approved`, `rejected`, `apf_correlation` (numeric).
+
+Example tool input shape:
 
 ```json
 {
-  "report": "full markdown report text (sections 1-11 above)",
+  "report": "## Weekly performance\n\n5 trades, 3 wins, +2.4R total.\n\n## Patterns observed\n...",
   "ict_updates": [
-    {
-      "section": "5",
-      "change": "Increase OB retest weight from 18 to 20",
-      "basis": "72% win rate over 18 trades"
-    }
+    { "section": "5", "change": "Increase OB retest weight from 18 to 20", "basis": "72% win rate over 18 trades" }
   ],
   "banned_patterns": [
-    {
-      "pattern": "FVG fill outside London Open kill zone on AUDUSD",
-      "win_rate": "28%",
-      "trade_count": 14
-    }
+    { "pattern": "FVG fill outside London Open kill zone on AUDUSD", "win_rate": "28%", "trade_count": 14 }
   ],
-  "alerts": []
+  "alerts": [],
+  "calibration_metrics": { "total_calls": 8, "approved": 3, "rejected": 5, "apf_correlation": 0.42 }
 }
 ```
 

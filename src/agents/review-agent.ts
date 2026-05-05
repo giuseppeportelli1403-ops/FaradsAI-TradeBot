@@ -7,7 +7,7 @@ import { writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { loadPromptWithSystemTime, loadStrategy } from './load-prompt.js';
-import { extractText, parseLastJsonObject, withTimeout } from './llm-output.js';
+import { withTimeout } from './llm-output.js';
 import { alertSystemWarning } from '../notifications/telegram.js';
 import { getTradesForWeek, getLessons, getLessonWinRate } from '../database/index.js';
 
@@ -16,6 +16,170 @@ const anthropic = new Anthropic();
 
 function saveFile(filename: string, content: string): void {
   writeFileSync(join(__dirname, '..', '..', 'memory', filename), content, 'utf-8');
+}
+
+// 2026-05-05 audit (Phase 2 / Round 1 / item 1.4): forced submit_review
+// tool calling. Largest schema of the four agents — multi-section. Pre-fix
+// the prose-then-JSON pattern blew the budget when the report grew, then
+// the entire week's review was lost (Telegram alert was the only signal).
+
+export interface IctUpdate {
+  section: string;
+  change: string;
+  basis: string;
+}
+
+export interface BannedPattern {
+  pattern: string;
+  win_rate: string;
+  trade_count: number;
+}
+
+export interface CalibrationMetrics {
+  total_calls: number;
+  approved: number;
+  rejected: number;
+  apf_correlation: number;
+}
+
+export interface ReviewOutput {
+  report: string;
+  ict_updates: IctUpdate[];
+  banned_patterns: BannedPattern[];
+  alerts: string[];
+  calibration_metrics: CalibrationMetrics | null;
+}
+
+const submitReviewTool = {
+  name: 'submit_review',
+  description:
+    'Submit the weekly review. Call exactly once. The full prose report goes in `report`; structured ' +
+    'recommendations go in their respective fields. ict_updates / banned_patterns / alerts are arrays — empty if nothing applies.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      report: {
+        type: 'string',
+        description:
+          'Markdown weekly report. Cite specific trade IDs and stats. Be honest. ~400-1000 words.',
+      },
+      ict_updates: {
+        type: 'array',
+        description: 'Proposed strategy.md changes. AUDIT-ONLY (logged, NOT applied). Empty array OK.',
+        items: {
+          type: 'object',
+          properties: {
+            section: { type: 'string', description: 'Strategy section number, e.g. "5", "7.3".' },
+            change: { type: 'string', description: 'Concrete change to make, written for a human reviewer.' },
+            basis: { type: 'string', description: 'What in this week\'s data motivates the change.' },
+          },
+          required: ['section', 'change', 'basis'],
+        },
+      },
+      banned_patterns: {
+        type: 'array',
+        description: 'New patterns to ban based on poor win-rate evidence. Appended to strategy.md Section 6.',
+        items: {
+          type: 'object',
+          properties: {
+            pattern: { type: 'string' },
+            win_rate: { type: 'string', description: 'e.g. "0%" or "1/5".' },
+            trade_count: { type: 'number' },
+          },
+          required: ['pattern', 'win_rate', 'trade_count'],
+        },
+      },
+      alerts: {
+        type: 'array',
+        items: { type: 'string' },
+        description:
+          'Operator alerts — sent to Telegram. Use for cron failures, data degradation, suspicious metrics, etc.',
+      },
+      calibration_metrics: {
+        type: 'object',
+        description:
+          'Analyst calibration math for the week. apf_correlation is the correlation between analyst confidence and trade-PnL outcome.',
+        properties: {
+          total_calls: { type: 'number' },
+          approved: { type: 'number' },
+          rejected: { type: 'number' },
+          apf_correlation: { type: 'number' },
+        },
+      },
+    },
+    required: ['report'],
+  },
+};
+
+function coerceFiniteNum(v: unknown, def: number = 0): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+
+/**
+ * Read the review from a forced submit_review tool_use block. Drops malformed
+ * row entries from the arrays rather than failing the whole review (we'd
+ * rather get partial recommendations than none). Returns null only on
+ * missing tool block or missing/empty report.
+ */
+export function extractReviewFromTool(content: unknown[]): ReviewOutput | null {
+  if (!Array.isArray(content) || content.length === 0) return null;
+
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'tool_use' &&
+      (block as { name?: unknown }).name === 'submit_review'
+    ) {
+      const rawInput = (block as { input?: unknown }).input;
+      if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return null;
+      const raw = rawInput as Record<string, unknown>;
+
+      const report = typeof raw.report === 'string' ? raw.report : '';
+      if (report.length === 0) return null;
+
+      const ictUpdates: IctUpdate[] = Array.isArray(raw.ict_updates)
+        ? (raw.ict_updates as unknown[])
+            .filter((u): u is Record<string, unknown> => !!u && typeof u === 'object' && !Array.isArray(u))
+            .map((u) => ({
+              section: typeof u.section === 'string' ? u.section : '',
+              change: typeof u.change === 'string' ? u.change : '',
+              basis: typeof u.basis === 'string' ? u.basis : '',
+            }))
+            .filter((u) => u.section.length > 0 && u.change.length > 0 && u.basis.length > 0)
+        : [];
+
+      const bannedPatterns: BannedPattern[] = Array.isArray(raw.banned_patterns)
+        ? (raw.banned_patterns as unknown[])
+            .filter((p): p is Record<string, unknown> => !!p && typeof p === 'object' && !Array.isArray(p))
+            .map((p) => ({
+              pattern: typeof p.pattern === 'string' ? p.pattern : '',
+              win_rate: typeof p.win_rate === 'string' ? p.win_rate : '',
+              trade_count: coerceFiniteNum(p.trade_count),
+            }))
+            .filter((p) => p.pattern.length > 0)
+        : [];
+
+      const alerts: string[] = Array.isArray(raw.alerts)
+        ? (raw.alerts as unknown[]).map((a) => String(a)).filter((a) => a.length > 0)
+        : [];
+
+      let calibration_metrics: CalibrationMetrics | null = null;
+      if (raw.calibration_metrics && typeof raw.calibration_metrics === 'object' && !Array.isArray(raw.calibration_metrics)) {
+        const cm = raw.calibration_metrics as Record<string, unknown>;
+        calibration_metrics = {
+          total_calls: coerceFiniteNum(cm.total_calls),
+          approved: coerceFiniteNum(cm.approved),
+          rejected: coerceFiniteNum(cm.rejected),
+          apf_correlation: coerceFiniteNum(cm.apf_correlation),
+        };
+      }
+
+      return { report, ict_updates: ictUpdates, banned_patterns: bannedPatterns, alerts, calibration_metrics };
+    }
+  }
+  return null;
 }
 
 export async function runWeeklyReviewAgent(): Promise<string> {
@@ -48,29 +212,16 @@ export async function runWeeklyReviewAgent(): Promise<string> {
     return 'No trades to review.';
   }
 
-  // 2026-04-29 audit: 60s timeout (Codex AN6). Weekly Review runs only once
-  // per week with effort='max' so Sonnet can take longer; 60s is generous.
   const timeoutMs = 60_000;
   const response = await withTimeout(
     anthropic.messages.create({
-    // 2026-04-29: downgraded Sonnet → Haiku 4.5 per user direction.
-    // Weekly Review runs once per week, so absolute cost was small
-    // either way — but the bot's auto-write paths to strategy.md were
-    // disabled in audit-2 (P0-RV1/RV2/RV3) and the review output is
-    // now AUDIT-ONLY (logs proposed changes, no auto-edits to rule
-    // sections). Haiku is sufficient for that audit-log role. Revert
-    // to 'claude-sonnet-4-6' if the weekly write-back logic is ever
-    // re-enabled.
-    model: 'claude-haiku-4-5-20251001',
-    // max_tokens 16000 → 12000 (2026-04-21) — weekly review output is
-    // structured + concise, rarely needs more than 8k tokens.
-    max_tokens: 12000,
-    // 2026-04-29: thinking + output_config removed for Haiku 4.5
-    // compatibility (Sonnet-only API params).
-    system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-    messages: [{
-      role: 'user',
-      content: `WEEK: ${weekStartStr.split('T')[0]} to ${weekEndStr.split('T')[0]}
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 12000,
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: [
+        {
+          role: 'user',
+          content: `WEEK: ${weekStartStr.split('T')[0]} to ${weekEndStr.split('T')[0]}
 
 TRADES THIS WEEK (${trades.length}):
 ${JSON.stringify(trades, null, 2)}
@@ -87,9 +238,12 @@ ${ictStrategy}
 CURRENT SWING STRATEGY:
 ${swingStrategy}
 
-Produce your weekly report and strategy update instructions.`,
-      }],
-    }),
+Call the submit_review tool with your weekly report and structured recommendations.`,
+        },
+      ],
+      tools: [submitReviewTool],
+      tool_choice: { type: 'tool', name: 'submit_review' },
+    } as Parameters<typeof anthropic.messages.create>[0]),
     timeoutMs,
     'Weekly Review',
   ).catch((err) => {
@@ -103,29 +257,17 @@ Produce your weekly report and strategy update instructions.`,
     return 'Weekly Review API failure — see pm2-err.log.';
   }
 
-  // 2026-04-29 audit fix (P0-A1): use extractText to read all blocks. Pre-
-  // fix `content[0].type === 'text'` returned '' whenever adaptive thinking
-  // was first; the catch silently lost the entire week's review.
-  const text = extractText(response.content);
+  const m = response as Anthropic.Messages.Message;
+  console.log(`[Review] stop_reason=${m.stop_reason} content_blocks=${m.content.length}`);
 
-  // 2026-04-29 audit fix (P0-RV1, RV3): parseLastJsonObject (balanced-brace,
-  // last-object). Pre-fix the greedy regex matched from first `{` to last
-  // `}` and could splice prose example objects.
-  const result = parseLastJsonObject<{
-    report?: string;
-    ict_updates?: Array<{ section: string; change: string; basis: string }>;
-    banned_patterns?: Array<{ pattern: string; win_rate: string; trade_count: number }>;
-    alerts?: string[];
-  }>(text);
+  const result = extractReviewFromTool(m.content as unknown[]);
 
   if (result === null) {
-    console.error('[Review] Failed to parse weekly review JSON. Raw response:');
-    console.error(text.length > 2000 ? text.slice(0, 2000) + '...[truncated]' : text);
-    // Fail loudly via Telegram so Giuseppe knows the week's review is lost.
-    await alertSystemWarning('Weekly Review Agent JSON parse failed — no strategy updates applied this week. Check pm2-err.log.').catch(() => {
+    console.error('[Review] No usable review in submit_review tool_use response.');
+    await alertSystemWarning('Weekly Review Agent — submit_review tool not called or report empty. No strategy updates applied this week. Check pm2-out.log.').catch(() => {
       /* don't let alert failure mask the real failure */
     });
-    return text;
+    return '';
   }
 
   // Log the report
@@ -196,5 +338,5 @@ Produce your weekly report and strategy update instructions.`,
     }
   }
 
-  return result.report || text;
+  return result.report;
 }
