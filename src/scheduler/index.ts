@@ -302,31 +302,29 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
   //      Reflection — silent loss on partial-leg trades that finalised on
   //      Leg A or B rather than Leg C.
   //   3. Pass 3 `handleSlOnLeg` queued Reflection UNCONDITIONALLY, even when
-  //      other legs were still active (e.g. out-of-order Leg C close while
-  //      A or B were still open). Reflection then ran on a still-open trade
-  //      with `closed_at = null`, polluting the lessons table.
+  //      other legs were still active. Reflection then ran on a still-open
+  //      trade with `closed_at = null`, polluting the lessons table.
   //
-  // The new helper re-reads the trade's status from DB AFTER the handler
-  // has run; only queues Reflection when status is in a finalised state
-  // (`'complete'` | `'sl_hit'` | `'closed_early'`). Skips when `deps` is
-  // injected (test path) so test runs don't kick off real LLM calls.
-  const queueReflectionIfFinalised = (tradeId: string): void => {
+  // 2026-05-05 (Phase 2 / Round 3 / item 3.2): added optional `postHandlerStatus`
+  // parameter so callers that already know the post-handler status (e.g. the
+  // Pass 3 path after handleTp3Hit, which always sets 'complete') can skip
+  // the DB re-query entirely. When omitted, falls back to the original
+  // re-query path. SQL.js is synchronous + in-memory so the re-query path is
+  // still reliable today, but the explicit-status path is forward-defensive
+  // against any future async-DB migration AND more testable.
+  //
+  // Skips when `deps` is injected (test path) so test runs don't kick off
+  // real LLM calls.
+  const queueReflectionIfFinalised = (
+    tradeId: string,
+    postHandlerStatus?: TradeStatus,
+  ): void => {
     if (deps) return; // test path — never fire real Reflection
-    const finalised = d.getTradeById(tradeId);
-    if (!finalised) return;
-    if (
-      finalised.status !== 'complete' &&
-      finalised.status !== 'sl_hit' &&
-      finalised.status !== 'closed_early'
-    ) {
-      return;
-    }
-    setTimeout(
-      () => runReflectionAgent(tradeId).catch(
-        (e) => console.error(`[Reflection] runReflectionAgent failed: ${summarizeError(e)}`),
-      ),
-      1000,
-    );
+    decideReflectionQueue(tradeId, postHandlerStatus, {
+      getTradeById: d.getTradeById,
+      runReflection: runReflectionAgent,
+      schedule: (fn, ms) => { setTimeout(fn, ms); },
+    });
   };
 
   // ---------- Pass 1: Leg A ----------
@@ -407,11 +405,14 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
 
       if (reason === 'TP') {
         await handleTp3Hit(trade, order.trade_id, d);
+        // handleTp3Hit always sets status='complete' — skip the DB re-query.
+        queueReflectionIfFinalised(order.trade_id, 'complete');
       } else {
         // SL or OTHER on Leg C: trailing SL at TP1 triggered, or just a normal SL.
+        // handleSlOnLeg's terminal status is conditional — fall back to DB re-query.
         await handleSlOnLeg(trade, order.trade_id, 'C', d);
+        queueReflectionIfFinalised(order.trade_id);
       }
-      queueReflectionIfFinalised(order.trade_id);
     } catch (error) {
       console.error(`[Monitor] Error processing Leg C for trade ${order.trade_id}: ${summarizeError(error)}`);
     }
@@ -622,6 +623,36 @@ async function safeRun(name: string, fn: () => Promise<unknown>): Promise<void> 
 // 19:30 UTC. Pass {timezone: 'UTC'} on every cron.schedule below to lock
 // the contract.
 const CRON_UTC = { timezone: 'UTC' as const };
+
+// 2026-05-05 audit (Phase 2 / Round 3 / item 3.2): pure reflection-queue
+// decision function. Extracted from the closure in monitorSplitPositions so
+// the post-handler-status logic is testable in isolation. Returns true iff
+// Reflection was scheduled. Pure — schedule() lets tests inject a synchronous
+// stub instead of setTimeout.
+export interface ReflectionQueueDeps {
+  getTradeById: (id: string) => TradeRecord | null;
+  runReflection: (id: string) => Promise<void>;
+  schedule: (fn: () => void, ms: number) => void;
+}
+
+export function decideReflectionQueue(
+  tradeId: string,
+  postHandlerStatus: TradeStatus | undefined,
+  deps: ReflectionQueueDeps,
+): boolean {
+  const status = postHandlerStatus ?? deps.getTradeById(tradeId)?.status;
+  if (!status) return false;
+  if (status !== 'complete' && status !== 'sl_hit' && status !== 'closed_early') {
+    return false;
+  }
+  deps.schedule(
+    () => deps.runReflection(tradeId).catch(
+      (e) => console.error(`[Reflection] runReflectionAgent failed: ${summarizeError(e)}`),
+    ),
+    1000,
+  );
+  return true;
+}
 
 // 2026-05-05 audit (Phase 2 / Round 3 / item 3.1): single-slot overlap queue.
 // Pre-fix: a 15m candle close arriving while ICT was in-flight was silently

@@ -961,3 +961,89 @@ describe('OverlapQueue — single-slot queue for missed candle closes', () => {
     expect(drainOverlap(state, 2000, 15 * 60_000)).toBeNull();
   });
 });
+
+// 2026-05-05 audit (Phase 2 / Round 3 / item 3.2): decideReflectionQueue
+// extracted from the closure in monitorSplitPositions. The optional
+// postHandlerStatus parameter lets callers skip the DB re-query when they
+// already know the status (e.g. handleTp3Hit always sets 'complete').
+import { decideReflectionQueue } from '../src/scheduler/index.js';
+
+describe('decideReflectionQueue', () => {
+  function mkDeps(opts?: {
+    trade?: TradeRecord | null;
+    onSchedule?: (fn: () => void) => void;
+  }) {
+    const scheduled: Array<() => void> = [];
+    const ranTradeIds: string[] = [];
+    return {
+      scheduled,
+      ranTradeIds,
+      deps: {
+        getTradeById: () => opts?.trade ?? null,
+        runReflection: async (id: string) => { ranTradeIds.push(id); },
+        schedule: (fn: () => void, _ms: number) => {
+          scheduled.push(fn);
+          opts?.onSchedule?.(fn);
+        },
+      },
+    };
+  }
+
+  const finalisedTrade = { id: 't', status: 'complete' } as TradeRecord;
+  const interimTrade = { id: 't', status: 'tp1_hit' } as TradeRecord;
+
+  it('queues when explicit postHandlerStatus is finalised — DB never queried', () => {
+    let dbCalls = 0;
+    const deps = {
+      getTradeById: () => { dbCalls++; return null; },
+      runReflection: async () => {},
+      schedule: () => {},
+    };
+    const queued = decideReflectionQueue('t', 'complete', deps);
+    expect(queued).toBe(true);
+    expect(dbCalls).toBe(0); // DB skip — explicit status used
+  });
+
+  it('queues when explicit postHandlerStatus is sl_hit', () => {
+    const { deps } = mkDeps();
+    expect(decideReflectionQueue('t', 'sl_hit', deps)).toBe(true);
+  });
+
+  it('queues when explicit postHandlerStatus is closed_early', () => {
+    const { deps } = mkDeps();
+    expect(decideReflectionQueue('t', 'closed_early', deps)).toBe(true);
+  });
+
+  it('does NOT queue when explicit postHandlerStatus is interim (tp1_hit)', () => {
+    const { deps, scheduled } = mkDeps();
+    expect(decideReflectionQueue('t', 'tp1_hit', deps)).toBe(false);
+    expect(scheduled).toHaveLength(0);
+  });
+
+  it('falls back to DB re-query when no postHandlerStatus given (finalised case)', () => {
+    const { deps, scheduled } = mkDeps({ trade: finalisedTrade });
+    expect(decideReflectionQueue('t', undefined, deps)).toBe(true);
+    expect(scheduled).toHaveLength(1);
+  });
+
+  it('falls back to DB re-query (interim case — no queue)', () => {
+    const { deps, scheduled } = mkDeps({ trade: interimTrade });
+    expect(decideReflectionQueue('t', undefined, deps)).toBe(false);
+    expect(scheduled).toHaveLength(0);
+  });
+
+  it('returns false when DB has no trade (and no explicit status)', () => {
+    const { deps } = mkDeps({ trade: null });
+    expect(decideReflectionQueue('t', undefined, deps)).toBe(false);
+  });
+
+  it('schedule callback invokes runReflection with the right trade id', async () => {
+    const { deps, ranTradeIds, scheduled } = mkDeps();
+    decideReflectionQueue('trade-xyz', 'complete', deps);
+    expect(scheduled).toHaveLength(1);
+    scheduled[0]();
+    // give the catch a microtask to settle (no-op promise)
+    await Promise.resolve();
+    expect(ranTradeIds).toEqual(['trade-xyz']);
+  });
+});
