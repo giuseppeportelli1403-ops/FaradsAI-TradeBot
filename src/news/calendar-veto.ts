@@ -139,7 +139,13 @@ const NO_VETO_PATTERNS: ReadonlyArray<RegExp> = [
 // "Schmid" → bypass veto, even though "Press Conference" + "PCE" together
 // signal a Tier-1 movements event. Now: if any of these phrases appear in
 // the event name, NO_VETO is overridden and the standard veto applies.
+//
+// 2026-05-05 (Codex follow-up): expanded with policy-instrument language
+// (NFP / CPI / inflation report / QE / balance sheet / forward guidance).
+// A regional speaker discussing any of these is effectively making a
+// monetary-policy statement — the wide veto window applies.
 const NO_VETO_OVERRIDE_PATTERNS: ReadonlyArray<RegExp> = [
+  // Venue phrases
   /\bpress conference\b/i,
   /\bpress briefing\b/i,
   /\bFOMC\b/i,
@@ -149,6 +155,16 @@ const NO_VETO_OVERRIDE_PATTERNS: ReadonlyArray<RegExp> = [
   /\b(congressional|senate|house) (hearing|testimony)\b/i,
   /\btestimony before\b/i,
   /\bsemi[- ]?annual (testimony|report|monetary policy)\b/i,
+  // Tier-1 economic-data phrases (the speaker is reacting to / commenting
+  // on a market-moving release, so the speech IS the high-impact event).
+  /\bNFP\b/i,
+  /\bnon[- ]?farm payroll/i,
+  /\bCPI\b/i,
+  /\binflation report\b/i,
+  /\bquantitative easing\b/i,
+  /\bQE\b/i,
+  /\bbalance sheet\b/i,
+  /\bforward guidance\b/i,
 ];
 
 /**

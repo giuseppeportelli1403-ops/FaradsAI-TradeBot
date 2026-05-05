@@ -402,4 +402,26 @@ describe('shouldBypassVeto — phrase-context check (A7)', () => {
     expect(shouldBypassVeto('FED WILLIAMS PRESS CONFERENCE')).toBe(false);
     expect(shouldBypassVeto('fed williams speech')).toBe(true);
   });
+
+  // 2026-05-05 (Codex follow-up): Tier-1 policy-instrument phrases that
+  // also override NO_VETO when paired with a regional speaker.
+  it('does NOT bypass when NFP / non-farm payroll is mentioned', () => {
+    expect(shouldBypassVeto('Fed Williams Comments on NFP Release')).toBe(false);
+    expect(shouldBypassVeto('Fed Williams Speech on Non-Farm Payrolls')).toBe(false);
+  });
+
+  it('does NOT bypass when CPI / inflation report is mentioned', () => {
+    expect(shouldBypassVeto('Fed Bostic Speech on CPI')).toBe(false);
+    expect(shouldBypassVeto('Fed Williams Inflation Report Discussion')).toBe(false);
+  });
+
+  it('does NOT bypass when QE / quantitative easing / balance sheet is mentioned', () => {
+    expect(shouldBypassVeto('Fed Williams on Quantitative Easing')).toBe(false);
+    expect(shouldBypassVeto('Fed Williams QE Comments')).toBe(false);
+    expect(shouldBypassVeto('Fed Williams Balance Sheet Outlook')).toBe(false);
+  });
+
+  it('does NOT bypass when forward guidance is mentioned', () => {
+    expect(shouldBypassVeto('Fed Williams Forward Guidance Speech')).toBe(false);
+  });
 });
