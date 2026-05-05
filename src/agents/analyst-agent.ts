@@ -285,8 +285,21 @@ Run your 6-check sequence and respond with your decision JSON.`;
   };
 
   // Hard timeout via Promise.race. SDK default is 10 minutes — far too long
-  // for a per-trade gate. 60s headroom for Sonnet 4.6 + adaptive thinking +
-  // cold cache + variable Anthropic backend latency.
+  // for a per-trade gate. 60s headroom for Sonnet 4.6 + cold cache +
+  // variable Anthropic backend latency.
+  //
+  // 2026-05-05 (Codex pre-deploy review of 82a4996): adaptive thinking and
+  // output_config:effort REMOVED from this call. Anthropic's API rejects
+  // requests that combine extended/adaptive thinking with a specific
+  // tool_choice — the two features are mutually exclusive. The whole
+  // point of this fix is to force submit_decision via tool_choice; that
+  // wins over adaptive thinking. Standard Sonnet 4.6 still runs the
+  // 6-check sequence reliably, and the analyst was making 0 successful
+  // decisions per day with thinking enabled (truncation bug), so the
+  // tradeoff is a clear win. If thinking is needed for some future
+  // hardness, switch tool_choice to 'auto' and re-add fail-closed for
+  // missing tool blocks — but only after the bot has shown live edge
+  // without it.
   const timeoutMs = 60_000;
   let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
   try {
@@ -294,8 +307,6 @@ Run your 6-check sequence and respond with your decision JSON.`;
       anthropic.messages.create({
         model: 'claude-sonnet-4-6',
         max_tokens: 8000,
-        thinking: { type: 'adaptive' },
-        output_config: { effort: 'medium' },
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: contextMessage }],
         tools: [submitDecisionTool],
