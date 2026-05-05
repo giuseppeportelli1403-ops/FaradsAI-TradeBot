@@ -896,3 +896,68 @@ describe('pingKeepAlive', () => {
     );
   });
 });
+
+// 2026-05-05 audit (Phase 2 / Round 3 / item 3.1): single-slot overlap queue
+// for ICT cycles. Pre-fix: a 15m candle close arriving while ICT is in-flight
+// was silently dropped. Post-fix: queue the most recent close, and after the
+// in-flight cycle finishes, fire a follow-up cycle if still inside the kill
+// zone (and the queued close is < 15 min old).
+import {
+  makeOverlapQueueState,
+  queueOverlap,
+  drainOverlap,
+} from '../src/scheduler/index.js';
+
+describe('OverlapQueue — single-slot queue for missed candle closes', () => {
+  it('starts empty', () => {
+    const state = makeOverlapQueueState();
+    expect(drainOverlap(state, 1000, 15 * 60_000)).toBeNull();
+  });
+
+  it('queues a single overlap and drains it when fresh', () => {
+    const state = makeOverlapQueueState();
+    queueOverlap(state, 'new 15m candle close', 1000);
+    const drained = drainOverlap(state, 1500, 15 * 60_000);
+    expect(drained).not.toBeNull();
+    expect(drained?.reason).toBe('new 15m candle close');
+    expect(drained?.queuedAt).toBe(1000);
+  });
+
+  it('drain returns null after first call (queue is empty after drain)', () => {
+    const state = makeOverlapQueueState();
+    queueOverlap(state, 'r1', 1000);
+    drainOverlap(state, 1500, 15 * 60_000);
+    expect(drainOverlap(state, 2000, 15 * 60_000)).toBeNull();
+  });
+
+  it('newer queue replaces older — single-slot semantics', () => {
+    const state = makeOverlapQueueState();
+    queueOverlap(state, 'old close', 1000);
+    queueOverlap(state, 'newer close', 5000);
+    const drained = drainOverlap(state, 6000, 15 * 60_000);
+    expect(drained?.reason).toBe('newer close');
+    expect(drained?.queuedAt).toBe(5000);
+  });
+
+  it('returns null when queued entry is older than maxAgeMs (stale)', () => {
+    const state = makeOverlapQueueState();
+    queueOverlap(state, 'stale close', 1000);
+    const drained = drainOverlap(state, 1000 + 16 * 60_000, 15 * 60_000);
+    expect(drained).toBeNull();
+  });
+
+  it('clears the queue even when stale (no zombie state)', () => {
+    const state = makeOverlapQueueState();
+    queueOverlap(state, 'stale', 1000);
+    drainOverlap(state, 1000 + 16 * 60_000, 15 * 60_000);
+    queueOverlap(state, 'fresh', 2_000_000);
+    const drained = drainOverlap(state, 2_000_001, 15 * 60_000);
+    expect(drained?.reason).toBe('fresh');
+  });
+
+  it('drain on empty state is idempotent', () => {
+    const state = makeOverlapQueueState();
+    expect(drainOverlap(state, 1000, 15 * 60_000)).toBeNull();
+    expect(drainOverlap(state, 2000, 15 * 60_000)).toBeNull();
+  });
+});

@@ -623,6 +623,42 @@ async function safeRun(name: string, fn: () => Promise<unknown>): Promise<void> 
 // the contract.
 const CRON_UTC = { timezone: 'UTC' as const };
 
+// 2026-05-05 audit (Phase 2 / Round 3 / item 3.1): single-slot overlap queue.
+// Pre-fix: a 15m candle close arriving while ICT was in-flight was silently
+// dropped — entire 15-minute setup window skipped. Post-fix: queue the most
+// recent close (single-slot — older queued closes are stale by definition),
+// drain after the in-flight cycle finishes if still inside the kill zone
+// and the queued entry is younger than the maxAge bound (default 15 min).
+
+export interface OverlapQueueState {
+  pending: { reason: string; queuedAt: number } | null;
+}
+
+export function makeOverlapQueueState(): OverlapQueueState {
+  return { pending: null };
+}
+
+export function queueOverlap(state: OverlapQueueState, reason: string, now: number): void {
+  state.pending = { reason, queuedAt: now };
+}
+
+/**
+ * Drain the queue. Returns the queued entry if present AND younger than
+ * maxAgeMs; null otherwise. ALWAYS clears the slot, even on stale skip,
+ * so a follow-up queueOverlap call works correctly.
+ */
+export function drainOverlap(
+  state: OverlapQueueState,
+  now: number,
+  maxAgeMs: number,
+): { reason: string; queuedAt: number } | null {
+  if (!state.pending) return null;
+  const drained = state.pending;
+  state.pending = null;
+  if (now - drained.queuedAt > maxAgeMs) return null;
+  return drained;
+}
+
 export function startScheduler(): void {
   console.log('Starting scheduler...');
 
@@ -634,6 +670,8 @@ export function startScheduler(): void {
   // flag stuck-on.
   let monitorRunning = false;
   let ictRunning = false;
+  // Phase 2 / Round 3 / item 3.1: single-slot queue for overlap recovery.
+  const ictOverlapQueue = makeOverlapQueueState();
   cron.schedule('*/5 * * * *', async () => {
     if (!monitorRunning) {
       monitorRunning = true;
@@ -650,11 +688,6 @@ export function startScheduler(): void {
     const new1h = await check1hCandleClose();
 
     if (new15m || new1h) {
-      // Cost gate (2026-04-21): ICT strategy only produces setups inside
-      // kill zones. Outside those windows the agent reliably decides
-      // NO TRADE ("outside kill zone" / "sub-threshold scores") after
-      // burning a full Claude cycle. Skip at the scheduler level to save
-      // ~20 cycles/day × ~$1 each.
       const kz = getCurrentKillZone();
       if (!kz.inKillZone) {
         console.log(
@@ -663,16 +696,16 @@ export function startScheduler(): void {
         );
         return;
       }
+      const reason = new15m && new1h ? '15m+1h candle close' : new15m ? 'new 15m candle close' : 'new 1h candle close';
       if (ictRunning) {
-        // 2026-04-29 audit-3 r3 fix (scheduler-audit BUG-S6): an in-flight
-        // overlap means the new candle close is silently DROPPED — the bot
-        // misses the next quarter-hour's setup detection entirely. This is a
-        // missed trading opportunity, not a benign skip. Escalate to error
-        // and surface via Telegram so ops sees patterns of overlap (likely
-        // signals a hot-loop in the agent or upstream API slowness).
-        console.error('[Scheduler] DROPPED ICT cycle — previous cycle still in flight. Next setup-detection chance is the next 15m candle close.');
-        // Best-effort alert; don't block the cron callback on it.
-        realAlertSystemWarning('ICT cycle dropped — previous cycle overlapped a candle-close trigger.').catch(() => {});
+        // 2026-05-05 (Phase 2 / Round 3 / item 3.1): queue instead of drop.
+        // Pre-fix the new candle close was silently dropped, missing the
+        // entire next-quarter-hour setup window. Post-fix: queue the most
+        // recent close; the in-flight cycle's `finally` drains it if still
+        // fresh (< 15 min) and still inside a kill zone.
+        queueOverlap(ictOverlapQueue, reason, Date.now());
+        console.warn(`[Scheduler] ICT cycle in-flight — queueing follow-up (${reason}).`);
+        realAlertSystemWarning(`ICT cycle queued (${reason}) — previous cycle still running.`).catch(() => {});
         return;
       }
       ictRunning = true;
@@ -680,6 +713,25 @@ export function startScheduler(): void {
         await safeRun('ICT Trading Agent', runTradingAgent);
       } finally {
         ictRunning = false;
+      }
+      // Drain any candle close that arrived during the cycle. Single follow-up
+      // only — if multiple candles passed, only the most recent matters.
+      const drained = drainOverlap(ictOverlapQueue, Date.now(), 15 * 60_000);
+      if (drained) {
+        const drainKz = getCurrentKillZone();
+        if (drainKz.inKillZone) {
+          console.log(
+            `[Scheduler] Draining queued ICT cycle (${drained.reason}, queued ${Math.floor((Date.now() - drained.queuedAt) / 1000)}s ago).`,
+          );
+          ictRunning = true;
+          try {
+            await safeRun('ICT Trading Agent (follow-up)', runTradingAgent);
+          } finally {
+            ictRunning = false;
+          }
+        } else {
+          console.log(`[Scheduler] Queued ICT cycle skipped — no longer in kill zone (${drainKz.zone}).`);
+        }
       }
     }
   }, CRON_UTC);
