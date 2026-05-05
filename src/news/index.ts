@@ -203,14 +203,25 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
 }
 
 // ==================== QUICK SCORE (for scanner) ====================
-// Returns just the numeric score adjustment without full news detail
+// 2026-05-05 audit (A2): now returns a structured result so the scanner
+// can distinguish "news fetched, score 0" from "news unavailable, defaulted
+// to 0". Pre-fix the catch silently returned 0 → scanner treated unavailable
+// as neutral, defeating the news_unavailable mechanism that getNewsContext
+// already supports. Callers who only care about the score can read .score.
 
-export async function getNewsScore(instrument: string): Promise<number> {
+export interface NewsScoreResult {
+  score: number;
+  news_unavailable: boolean;
+}
+
+export async function getNewsScore(instrument: string): Promise<NewsScoreResult> {
   try {
     const result = await getNewsContext(instrument);
-    return result.overall_score;
-  } catch {
-    return 0;
+    return { score: result.overall_score, news_unavailable: result.news_unavailable };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[News] getNewsScore failed for ${instrument}: ${msg}. Returning {score:0, news_unavailable:true}.`);
+    return { score: 0, news_unavailable: true };
   }
 }
 

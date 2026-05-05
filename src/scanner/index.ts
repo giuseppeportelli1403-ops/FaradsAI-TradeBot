@@ -302,8 +302,19 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           // posture (0.25% total risk) and the trigger-5 requirements.
           const isRangeMode = biasResult.bias === 'neutral';
 
-          // Get news score (quick check)
-          const rawNewsScore = await getNewsScore(inst.ticker);
+          // Get news score (quick check). 2026-05-05 audit (A2): now returns
+          // { score, news_unavailable } so we can log when news is degraded.
+          // Score is still added to the composite — when news is unavailable
+          // it's 0 (neutral fallback), but the loud log gives ops a signal
+          // that the instrument's news context is missing this cycle.
+          const newsResult = await getNewsScore(inst.ticker);
+          if (newsResult.news_unavailable) {
+            console.warn(
+              `[Scanner] ${inst.ticker} ranked with news_unavailable=true (score defaulted to 0). ` +
+              `Agent will see this in get_news_context if it queries; downstream Cat-A-opposing veto cannot fire.`,
+            );
+          }
+          const rawNewsScore = newsResult.score;
 
           // 2026-04-29 structural-overhaul rebalance (item 3 from
           // strategy.md Section 5):
