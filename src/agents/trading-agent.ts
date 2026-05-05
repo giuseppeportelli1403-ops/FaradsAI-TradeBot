@@ -217,6 +217,42 @@ export function validateRRFloor(input: RRValidationInput): RRValidationResult {
   return { ok: true };
 }
 
+// ==================== RISK-PCT TOLERANCE ====================
+// 2026-05-05 audit (Phase 2 / Round 5+ / item A1): the existing inline
+// check `Math.abs(riskPct - expectedRiskPct) > 0.05` allowed ±0.05 absolute
+// tolerance, which is 20% overage on Tier 3 range-mode (expected 0.25%, so
+// 0.20-0.30% accepted). At 0.30%, range-mode trade takes 1.2× intended
+// risk; multiplied across 3 legs the daily kill-switch (-6%) becomes
+// 6.67% loss before tripping. Tightened to ±0.005% absolute — small
+// enough to catch the over-sizing class, large enough to absorb any
+// floating-point precision artefacts (0.5/2 = 0.25 cleanly in IEEE 754
+// but defensive math like (0.1 + 0.15) wouldn't be).
+
+export interface RiskPctValidationInput {
+  riskPct: number;
+  expectedRiskPct: number;
+}
+
+export type RiskPctValidationResult =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+const RISK_PCT_TOLERANCE = 0.005;
+
+export function validateRiskPct(input: RiskPctValidationInput): RiskPctValidationResult {
+  const { riskPct, expectedRiskPct } = input;
+  if (!Number.isFinite(riskPct) || !Number.isFinite(expectedRiskPct)) {
+    return { ok: false, reason: `Non-finite risk values: riskPct=${riskPct}, expectedRiskPct=${expectedRiskPct}` };
+  }
+  if (Math.abs(riskPct - expectedRiskPct) > RISK_PCT_TOLERANCE) {
+    return {
+      ok: false,
+      reason: `Risk ${riskPct}% diverges from expected ${expectedRiskPct}% by more than ±${RISK_PCT_TOLERANCE}%`,
+    };
+  }
+  return { ok: true };
+}
+
 // ==================== ORDER-SIDE PRE-CHECK ====================
 // 2026-05-05 audit. Pre-existing place_split_trade had per-leg side checks
 // but the cheap path (request_analyst_review, called BEFORE any LLM cost)
@@ -819,10 +855,11 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         : expectedTier === 1 ? 1.5
         : expectedTier === 2 ? 1.0
         : 0.5;
-      if (Math.abs(riskPct - expectedRiskPct) > 0.05) {
+      const riskPctCheck = validateRiskPct({ riskPct, expectedRiskPct });
+      if (!riskPctCheck.ok) {
         return JSON.stringify({
           error: 'RISK_PCT_TIER_MISMATCH',
-          reason: `${isRangeMode ? 'Range-mode' : `Tier ${expectedTier}`} requires risk ${expectedRiskPct}% (±0.05). Proposal has ${riskPct}%.`,
+          reason: `${isRangeMode ? 'Range-mode' : `Tier ${expectedTier}`} requires risk ${expectedRiskPct}%. ${riskPctCheck.reason}.`,
         });
       }
 

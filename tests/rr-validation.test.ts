@@ -23,7 +23,7 @@
 // The validator is a pure function — no side effects, no async, no DB.
 
 import { describe, it, expect } from 'vitest';
-import { validateRRFloor, isTightSpreadTicker, validateOrderSide } from '../src/agents/trading-agent.js';
+import { validateRRFloor, isTightSpreadTicker, validateOrderSide, validateRiskPct } from '../src/agents/trading-agent.js';
 
 describe('isTightSpreadTicker', () => {
   it('returns true for EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD', () => {
@@ -374,5 +374,53 @@ describe('validateOrderSide — pre-analyst geometric sanity (2026-05-05)', () =
       direction: 'short', entry: 1.10, sl: 1.11, tp1: 1.09, tp2: Infinity, tp3: 1.07,
     });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('validateRiskPct — tolerance tightened from ±0.05 to ±0.005 (audit A1)', () => {
+  // Background: pre-2026-05-05, tolerance was ±0.05 absolute. Tier 3
+  // range-mode expected 0.25% so 0.20-0.30% was accepted. At 0.30% the
+  // trade takes 20% more risk than intended; multiplied across 3 legs
+  // the daily kill-switch trips at 6.67% loss instead of -6%. Tighter
+  // tolerance prevents that drift.
+
+  it('accepts exact match for range-mode 0.25%', () => {
+    expect(validateRiskPct({ riskPct: 0.25, expectedRiskPct: 0.25 }).ok).toBe(true);
+  });
+
+  it('accepts exact match for Tier 3 0.5%, Tier 2 1.0%, Tier 1 1.5%', () => {
+    expect(validateRiskPct({ riskPct: 0.5, expectedRiskPct: 0.5 }).ok).toBe(true);
+    expect(validateRiskPct({ riskPct: 1.0, expectedRiskPct: 1.0 }).ok).toBe(true);
+    expect(validateRiskPct({ riskPct: 1.5, expectedRiskPct: 1.5 }).ok).toBe(true);
+  });
+
+  it('rejects 0.30% on range-mode (was: accepted, the 20% overage bug)', () => {
+    const r = validateRiskPct({ riskPct: 0.30, expectedRiskPct: 0.25 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/0.005/);
+  });
+
+  it('rejects 0.20% on range-mode (under-sizing also rejected)', () => {
+    expect(validateRiskPct({ riskPct: 0.20, expectedRiskPct: 0.25 }).ok).toBe(false);
+  });
+
+  it('accepts 0.254% on range-mode (well within ±0.005)', () => {
+    expect(validateRiskPct({ riskPct: 0.254, expectedRiskPct: 0.25 }).ok).toBe(true);
+  });
+
+  it('rejects 0.26% on range-mode (clearly outside ±0.005)', () => {
+    expect(validateRiskPct({ riskPct: 0.26, expectedRiskPct: 0.25 }).ok).toBe(false);
+  });
+
+  it('absorbs IEEE 754 float artefacts on common decimal arithmetic', () => {
+    // 0.1 + 0.15 = 0.24999999999999997 — still within tolerance
+    expect(validateRiskPct({ riskPct: 0.1 + 0.15, expectedRiskPct: 0.25 }).ok).toBe(true);
+    // 0.5 / 2 = 0.25 exactly in IEEE 754; sanity check
+    expect(validateRiskPct({ riskPct: 0.5 / 2, expectedRiskPct: 0.25 }).ok).toBe(true);
+  });
+
+  it('rejects non-finite riskPct or expectedRiskPct', () => {
+    expect(validateRiskPct({ riskPct: NaN, expectedRiskPct: 0.25 }).ok).toBe(false);
+    expect(validateRiskPct({ riskPct: 0.25, expectedRiskPct: Infinity }).ok).toBe(false);
   });
 });
