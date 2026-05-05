@@ -115,15 +115,38 @@ describe('extractLessonFromTool — read lesson from submit_lesson tool_use', ()
     expect(lesson?.was_trigger_valid).toBe(true);
   });
 
-  it('coerces non-finite pnl values to 0', () => {
-    const input = { ...validInput, pnl_total_r: NaN, pnl_a_r: Infinity };
+  it('returns null on non-finite required pnl_total_r (Codex review fix — would falsify win-rate stats)', () => {
+    const input = { ...validInput, pnl_total_r: NaN };
+    const content = [
+      { type: 'tool_use', id: 'x', name: 'submit_lesson', input },
+    ];
+    expect(extractLessonFromTool(content as never)).toBeNull();
+  });
+
+  it('returns null on non-finite required pnl_a_r', () => {
+    const input = { ...validInput, pnl_a_r: Infinity };
+    const content = [
+      { type: 'tool_use', id: 'x', name: 'submit_lesson', input },
+    ];
+    expect(extractLessonFromTool(content as never)).toBeNull();
+  });
+
+  it('returns null on non-finite required composite_score', () => {
+    const input = { ...validInput, composite_score: 'not a number' };
+    const content = [
+      { type: 'tool_use', id: 'x', name: 'submit_lesson', input },
+    ];
+    expect(extractLessonFromTool(content as never)).toBeNull();
+  });
+
+  it('still coerces non-finite pnl_c_r to null (legacy 2-leg legitimate)', () => {
+    const input = { ...validInput, pnl_c_r: 'not a number' };
     const content = [
       { type: 'tool_use', id: 'x', name: 'submit_lesson', input },
     ];
     const lesson = extractLessonFromTool(content as never);
     expect(lesson).not.toBeNull();
-    expect(lesson?.pnl_total_r).toBe(0);
-    expect(lesson?.pnl_a_r).toBe(0);
+    expect(lesson?.pnl_c_r).toBeNull();
   });
 
   it('returns null when lesson text is empty (insufficient signal)', () => {

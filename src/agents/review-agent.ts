@@ -98,16 +98,21 @@ const submitReviewTool = {
       calibration_metrics: {
         type: 'object',
         description:
-          'Analyst calibration math for the week. apf_correlation is the correlation between analyst confidence and trade-PnL outcome.',
+          'Analyst calibration math for the week. apf_correlation is the correlation between analyst confidence and trade-PnL outcome. Use 0 for fields you cannot compute (e.g. zero analyst calls this week).',
         properties: {
           total_calls: { type: 'number' },
           approved: { type: 'number' },
           rejected: { type: 'number' },
           apf_correlation: { type: 'number' },
         },
+        required: ['total_calls', 'approved', 'rejected', 'apf_correlation'],
       },
     },
-    required: ['report'],
+    // All structured fields required: forces the model to engage with each
+    // slot rather than emit a report-only "successful" call (Codex Round-1
+    // review finding 2026-05-05). Empty arrays / zero metrics are explicit
+    // signals; missing fields are silent feature loss.
+    required: ['report', 'ict_updates', 'banned_patterns', 'alerts', 'calibration_metrics'],
   },
 };
 

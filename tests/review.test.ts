@@ -98,4 +98,23 @@ describe('extractReviewFromTool — read review from submit_review tool_use', ()
   it('returns null on empty content', () => {
     expect(extractReviewFromTool([] as never)).toBeNull();
   });
+
+  it('drops malformed banned_patterns (missing pattern field, string instead of object)', () => {
+    const content = [
+      { type: 'tool_use', id: 't', name: 'submit_review',
+        input: {
+          report: 'Report.',
+          banned_patterns: [
+            { pattern: 'OIL_CRUDE OB Retest', win_rate: '0%', trade_count: 3 },
+            { win_rate: '50%' /* missing pattern */ },
+            'not an object',
+            { pattern: 'Another valid', win_rate: '20%', trade_count: 5 },
+          ],
+        } },
+    ];
+    const review = extractReviewFromTool(content as never);
+    expect(review?.banned_patterns).toHaveLength(2);
+    expect(review?.banned_patterns?.[0].pattern).toBe('OIL_CRUDE OB Retest');
+    expect(review?.banned_patterns?.[1].pattern).toBe('Another valid');
+  });
 });

@@ -84,13 +84,16 @@ function coerceBool(v: unknown): boolean {
   return false;
 }
 
-/** Coerce a value to a finite number, defaulting to 0 for non-finite / non-numeric. */
-function coerceNum(v: unknown, def: number = 0): number {
+/** Coerce a value to a finite number. Returns null on non-finite/non-numeric so the caller can fail-closed
+ *  instead of writing falsified zero stats to the DB (Codex Round-1 review finding 2026-05-05). */
+function coerceFiniteNum(v: unknown): number | null {
   const n = Number(v);
-  return Number.isFinite(n) ? n : def;
+  return Number.isFinite(n) ? n : null;
 }
 
-/** Coerce a value to a finite number OR null (for the leg-C fields that legitimately can be null). */
+/** Coerce a value to a finite number OR null (for the leg-C fields that legitimately can be null).
+ *  Distinct from coerceFiniteNum: explicit null/undefined → null (legitimate legacy 2-leg signal).
+ *  Non-finite numerics (NaN, Infinity) also map to null so we don't lie about leg-C P&L. */
 function coerceNumOrNull(v: unknown): number | null {
   if (v === null || v === undefined) return null;
   const n = Number(v);
@@ -137,6 +140,17 @@ export function extractLessonFromTool(content: unknown[]): Lesson | null {
       const strategyRaw = String(raw.strategy_tag ?? '').toUpperCase();
       const strategy_tag = (strategyRaw === 'SWING' ? 'SWING' : 'ICT_INTRADAY') as StrategyTag;
 
+      // Required numerics — fail-closed if any are non-finite. The DB row is
+      // load-bearing for win-rate calcs (a falsified 0 PnL counts as a non-win
+      // and skews stats), so we'd rather have no lesson than a false one.
+      const composite_score = coerceFiniteNum(raw.composite_score);
+      const pnl_a_r = coerceFiniteNum(raw.pnl_a_r);
+      const pnl_b_r = coerceFiniteNum(raw.pnl_b_r);
+      const pnl_total_r = coerceFiniteNum(raw.pnl_total_r);
+      if (composite_score === null || pnl_a_r === null || pnl_b_r === null || pnl_total_r === null) {
+        return null;
+      }
+
       return {
         lesson_id: typeof raw.lesson_id === 'string' && raw.lesson_id.length > 0
           ? raw.lesson_id
@@ -152,15 +166,15 @@ export function extractLessonFromTool(content: unknown[]): Lesson | null {
         kill_zone: String(raw.kill_zone),
         news_category: String(raw.news_category),
         news_description: String(raw.news_description),
-        composite_score: coerceNum(raw.composite_score),
+        composite_score,
         analyst_decision: String(raw.analyst_decision),
         position_a_outcome: String(raw.position_a_outcome),
         position_b_outcome: String(raw.position_b_outcome),
         position_c_outcome: typeof raw.position_c_outcome === 'string' ? raw.position_c_outcome : null,
-        pnl_a_r: coerceNum(raw.pnl_a_r),
-        pnl_b_r: coerceNum(raw.pnl_b_r),
+        pnl_a_r,
+        pnl_b_r,
         pnl_c_r: coerceNumOrNull(raw.pnl_c_r),
-        pnl_total_r: coerceNum(raw.pnl_total_r),
+        pnl_total_r,
         was_bias_correct: coerceBool(raw.was_bias_correct),
         was_trigger_valid: coerceBool(raw.was_trigger_valid),
         was_news_correctly_weighted: coerceBool(raw.was_news_correctly_weighted),

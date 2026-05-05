@@ -251,6 +251,27 @@ export async function runResearcherAgent(): Promise<ResearchBrief> {
   // Phase 2: Extract themes using Claude
   const themes = await extractThemes(regime, calendar, sectors);
 
+  // 2026-05-05 (Codex Round-1 review fix): empty themes mean the LLM call
+  // failed (timeout, parse, schema reject, etc.). DO NOT overwrite the last
+  // good brief with an empty-themes one — getLatestBrief()'s 24h staleness
+  // check will warn loudly if the prior brief ages out, which is the right
+  // signal. A fresh-but-empty brief silently masks the freshness check and
+  // poisons the analyst's regime context.
+  if (themes.length === 0) {
+    console.warn('[Researcher] No themes extracted — skipping brief save. Last good brief (if any) remains in DB.');
+    // Return a synthetic-but-clearly-degraded brief for the caller's logs;
+    // do NOT call saveResearchBrief.
+    return {
+      brief_id: 'brief-degraded-no-save',
+      date: new Date().toISOString(),
+      regime,
+      themes: [],
+      events_calendar: calendar.filter((e) => e.impact === 'high' || e.impact === 'medium'),
+      ict_shortlist: [],
+      warnings: [...dataWarnings, '⚠️ Theme extraction returned no themes — brief NOT saved. Last good brief remains in DB.'],
+    };
+  }
+
   // Phase 3: Get ranked instruments for the ICT shortlist.
   // Universe is 7 instruments post-2026-04-22 indices removal — slice to 7,
   // not 10 (audit P2-R4).

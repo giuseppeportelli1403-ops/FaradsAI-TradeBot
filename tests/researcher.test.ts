@@ -90,4 +90,23 @@ describe('extractThemesFromTool — read themes from submit_themes tool_use', ()
   it('returns null on empty content', () => {
     expect(extractThemesFromTool([] as never)).toBeNull();
   });
+
+  it('accepts 1 theme (extractor allows; LLM schema enforces 3-5 minimum)', () => {
+    // The extractor is permissive — it doesn't enforce the schema's minItems.
+    // The Anthropic SDK enforces minItems server-side. If the model somehow
+    // returns 1 theme (e.g. via tool_choice='auto' fallback), we don't want
+    // to lose that signal — better than nothing.
+    const content = [
+      { type: 'tool_use', id: 'x', name: 'submit_themes', input: { themes: ['solo theme'] } },
+    ];
+    const themes = extractThemesFromTool(content as never);
+    expect(themes).toEqual(['solo theme']);
+  });
+
+  it('accepts 2 themes (same rationale)', () => {
+    const content = [
+      { type: 'tool_use', id: 'x', name: 'submit_themes', input: { themes: ['t1', 't2'] } },
+    ];
+    expect(extractThemesFromTool(content as never)).toEqual(['t1', 't2']);
+  });
 });
