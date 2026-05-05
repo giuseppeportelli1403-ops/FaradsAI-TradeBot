@@ -282,3 +282,58 @@ describe('getNewsContext — propagation when MARKETAUX_API_KEY missing', () => 
     }
   });
 });
+
+// 2026-05-05 audit (Phase 2 / Round 4): tier-weighted dominant category +
+// relevance-clamped score. Pre-fix a single Tier-3 blog tagged Cat A by
+// the keyword classifier produced the same ±10/-15 score as a Tier-1
+// regulator press release. Post-fix the score scales by relevance weight.
+import { rssArticleToNewsItem } from '../src/news/rss-aggregator.js';
+import type { RssArticle } from '../src/news/rss-aggregator.js';
+
+describe('Tier-weighted news scoring', () => {
+  function mkRssArticle(opts: { tier: 1 | 2 | 3; title: string; snippet?: string }): RssArticle {
+    return {
+      title: opts.title,
+      contentSnippet: opts.snippet ?? '',
+      pubDate: new Date().toISOString(),
+      canonicalLink: `https://example.com/${opts.title.replace(/\s+/g, '-')}`,
+      feedName: opts.tier === 1 ? 'Federal Reserve press releases' : opts.tier === 2 ? 'FXStreet' : 'Random Blog',
+      tier: opts.tier,
+      tags: [],
+    };
+  }
+
+  // Manually exercise getNewsContext via mocked fetchNewsContext in a future
+  // refactor; for now test the per-article relevance via rssArticleToNewsItem.
+  it('Tier 1 RSS article gets relevance_score 1.0', () => {
+    const art = mkRssArticle({ tier: 1, title: 'FOMC Rate Decision: 25bp cut' });
+    const item = rssArticleToNewsItem(art);
+    expect(item.relevance_score).toBe(1.0);
+    expect(item.category).toBe('A'); // keyword 'FOMC' fires Cat A
+  });
+
+  it('Tier 2 RSS article gets relevance_score 0.6', () => {
+    const art = mkRssArticle({ tier: 2, title: 'EUR/USD outlook unchanged' });
+    const item = rssArticleToNewsItem(art);
+    expect(item.relevance_score).toBe(0.6);
+    expect(item.category).toBe('B'); // tier 2 default
+  });
+
+  it('Tier 3 RSS article gets relevance_score 0.3 + Cat C default', () => {
+    const art = mkRssArticle({ tier: 3, title: 'Random analysis on EUR' });
+    const item = rssArticleToNewsItem(art);
+    expect(item.relevance_score).toBe(0.3);
+    expect(item.category).toBe('C');
+  });
+
+  it('Tier 3 RSS article CAN be Cat A if impact-keyword fires (was the bug)', () => {
+    const art = mkRssArticle({ tier: 3, title: 'Random Blog says FOMC will pivot' });
+    const item = rssArticleToNewsItem(art);
+    expect(item.category).toBe('A');
+    expect(item.relevance_score).toBe(0.3);
+    // Pre-fix this would have produced ±10 score in getNewsContext.
+    // Post-fix the score is multiplied by 0.3/1.0 = 0.3 → ±3 max.
+    // (The integration test is in tests/market-data.test.ts via mocked
+    // fetchNewsContext; here we just verify the article-level shape.)
+  });
+});

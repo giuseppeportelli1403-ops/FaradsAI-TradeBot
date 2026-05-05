@@ -128,13 +128,29 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
     ? sentimentItems.reduce((sum, item) => sum + item.sentiment_score, 0) / sentimentItems.length
     : 0;
 
-  // Find dominant category (highest impact news wins)
-  const catACounts = items.filter(i => i.category === 'A').length;
-  const catBCounts = items.filter(i => i.category === 'B').length;
+  // 2026-05-05 audit (Phase 2 / Round 4): tier-weighted dominant category.
+  // Pre-fix dominantCategory was a binary count — a single Tier-3 blog post
+  // tagged Cat A by the keyword classifier produced the same ±10/-15 score
+  // as a Federal Reserve press release. Now we weight by relevance_score
+  // (RSS sets 1.0/0.6/0.3 by tier in rssArticleToNewsItem; MarketAux sets
+  // its own relevance from the source provider). Cat A "active" requires
+  // weight sum ≥ 1.0 (one Tier-1 item OR multiple corroborating mid-tier
+  // items); Cat B requires ≥ 0.6.
+  const catAItems = items.filter((i) => i.category === 'A');
+  const catBItems = items.filter((i) => i.category === 'B');
+  const sumCatARelevance = catAItems.reduce((s, i) => s + (Number.isFinite(i.relevance_score) ? i.relevance_score : 0), 0);
+  const sumCatBRelevance = catBItems.reduce((s, i) => s + (Number.isFinite(i.relevance_score) ? i.relevance_score : 0), 0);
+
+  const CAT_A_WEIGHT_THRESHOLD = 1.0;
+  const CAT_B_WEIGHT_THRESHOLD = 0.6;
 
   let dominantCategory: 'A' | 'B' | 'C' | 'none';
-  if (catACounts > 0) dominantCategory = 'A';
-  else if (catBCounts > 0) dominantCategory = 'B';
+  if (sumCatARelevance >= CAT_A_WEIGHT_THRESHOLD) dominantCategory = 'A';
+  else if (sumCatARelevance > 0 || sumCatBRelevance >= CAT_B_WEIGHT_THRESHOLD) {
+    // Cat-A items below the weight threshold are downgraded to Cat B effective.
+    // (Single Tier-3 blog flagged Cat A by keyword → counts toward B floor.)
+    dominantCategory = 'B';
+  } else if (catBItems.length > 0) dominantCategory = 'C';  // weak Cat B signal
   else dominantCategory = 'C';
 
   // Determine dominant sentiment direction
@@ -144,17 +160,22 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
   else dominantSentiment = 'neutral';
 
   // Calculate composite score adjustment per the post-2026-04-29 rebalanced
-  // rubric (strategy.md Section 5). Phase A2 (2026-05-04, audit Finding #5):
-  // pre-fix this function emitted +20 / +10 for Cat A / Cat B bullish, and
-  // src/scanner/index.ts:333-337 capped them to +10 / +5 before composite
-  // scoring. The cap was a workaround. Now the source emits the correct
-  // post-rebalance values directly; the scanner cap becomes a no-op and is
-  // removed in the same commit.
+  // rubric (strategy.md Section 5). 2026-05-05 (Phase 2 / Round 4): score
+  // additionally multiplied by the relevance-weight clamp [0,1] so weak
+  // single-source signals don't get full-credit scores. A Tier-1 source
+  // alone clears 1.0 and yields full ±10/-15; a single Tier-2 (0.6) yields
+  // 60% magnitude; multiple corroborating sources cap at 1.0.
+  const catAWeightFactor = Math.min(1, sumCatARelevance / CAT_A_WEIGHT_THRESHOLD);
+  const catBWeightFactor = Math.min(1, sumCatBRelevance / CAT_A_WEIGHT_THRESHOLD); // same denominator: relevance vs full Tier-1
   let overallScore = 0;
   if (dominantCategory === 'A') {
-    overallScore = avgSentiment > 0 ? 10 : avgSentiment < 0 ? -15 : 0;
+    const base = avgSentiment > 0 ? 10 : avgSentiment < 0 ? -15 : 0;
+    overallScore = Math.round(base * catAWeightFactor);
   } else if (dominantCategory === 'B') {
-    overallScore = avgSentiment > 0 ? 5 : avgSentiment < 0 ? -5 : 0;
+    const base = avgSentiment > 0 ? 5 : avgSentiment < 0 ? -5 : 0;
+    // Cat B uses its own weight factor (sumCatBRelevance OR sumCatA below threshold).
+    const factor = sumCatBRelevance > 0 ? catBWeightFactor : catAWeightFactor;
+    overallScore = Math.round(base * factor);
   }
 
   // ===== Layer 4 — stale-bearish dampening =====
