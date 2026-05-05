@@ -742,43 +742,64 @@ export class CapitalClient {
     // whose `dealReference` matches. If found, synthesise an ACCEPTED
     // confirmation from the live position state. If not found, the deal
     // genuinely failed — throw as before.
-    try {
-      const positions = await this.getOpenPositions();
-      const match = positions.find((p) => p.position?.dealReference === dealReference);
-      if (match) {
-        console.warn(
-          `[Capital] /confirms/${dealReference} timed out but position is LIVE on Capital (dealId=${match.position.dealId}). Synthesising confirmation from live state.`,
+    // 2026-05-05 audit (B1): the reconcile path itself can fail transiently
+    // (network blip, Capital API temporary outage). Pre-fix the single
+    // getOpenPositions() attempt would fall through to the throw, producing
+    // an orphan: position live on Capital, bot reports failure, compensation
+    // runs on empty placedDeals[], and the live position is untracked.
+    // Now: 2-attempt retry with 1s backoff before giving up.
+    const RECONCILE_ATTEMPTS = 2;
+    const RECONCILE_BACKOFF_MS = 1000;
+    let reconcileAttempt = 0;
+    let lastReconcileErr: unknown = null;
+    while (reconcileAttempt < RECONCILE_ATTEMPTS) {
+      try {
+        const positions = await this.getOpenPositions();
+        const match = positions.find((p) => p.position?.dealReference === dealReference);
+        if (match) {
+          console.warn(
+            `[Capital] /confirms/${dealReference} timed out but position is LIVE on Capital (dealId=${match.position.dealId}). Synthesising confirmation from live state.`,
+          );
+          const reconciled: DealConfirmation = {
+            dealId: match.position.dealId,
+            dealReference,
+            dealStatus: 'ACCEPTED',
+            reason: 'RECONCILED_FROM_LIVE_POSITIONS',
+            status: 'OPEN',
+            direction: match.position.direction as 'BUY' | 'SELL',
+            epic: match.market?.epic ?? '',
+            size: match.position.size,
+            level: match.position.openLevel,
+            stopLevel: match.position.stopLevel ?? null,
+            profitLevel: match.position.profitLevel ?? null,
+            affectedDeals: [{ dealId: match.position.dealId, status: 'OPENED' }],
+          };
+          return reconciled;
+        }
+        // Reconcile succeeded but the position genuinely isn't on Capital —
+        // the deal failed for real. Break out and throw.
+        break;
+      } catch (reconcileErr) {
+        lastReconcileErr = reconcileErr;
+        reconcileAttempt++;
+        console.error(
+          `[Capital] Reconcile attempt ${reconcileAttempt}/${RECONCILE_ATTEMPTS} via getOpenPositions failed during /confirms/${dealReference} timeout: ${reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr)}`,
         );
-        const reconciled: DealConfirmation = {
-          dealId: match.position.dealId,
-          dealReference,
-          dealStatus: 'ACCEPTED',
-          reason: 'RECONCILED_FROM_LIVE_POSITIONS',
-          status: 'OPEN',
-          direction: match.position.direction as 'BUY' | 'SELL',
-          epic: match.market?.epic ?? '',
-          size: match.position.size,
-          level: match.position.openLevel,
-          stopLevel: match.position.stopLevel ?? null,
-          profitLevel: match.position.profitLevel ?? null,
-          affectedDeals: [{ dealId: match.position.dealId, status: 'OPENED' }],
-        };
-        return reconciled;
+        if (reconcileAttempt < RECONCILE_ATTEMPTS) {
+          await new Promise((r) => setTimeout(r, RECONCILE_BACKOFF_MS));
+        }
       }
-    } catch (reconcileErr) {
-      // If reconcile fails, fall through to the original timeout throw.
-      // We don't want to mask the real "deal failed" case behind a
-      // network blip on the reconcile path.
-      console.error(
-        `[Capital] Reconcile via getOpenPositions failed during /confirms/${dealReference} timeout:`,
-        reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
-      );
     }
 
-    throw new CapitalDealError(
-      `Deal confirmation timed out after ${DEAL_CONFIRM_MAX_ATTEMPTS} attempts (live-positions reconcile found no match)`,
-      dealReference
-    );
+    // All reconcile attempts failed OR succeeded but found no matching
+    // position. If we exhausted attempts, the throw below carries the
+    // last error so ops can see what's wrong with Capital connectivity.
+    const reconcileFailedAll = lastReconcileErr !== null && reconcileAttempt >= RECONCILE_ATTEMPTS;
+    const reason = reconcileFailedAll
+      ? `Deal confirmation timed out after ${DEAL_CONFIRM_MAX_ATTEMPTS} attempts AND ${RECONCILE_ATTEMPTS} reconcile attempts also failed (last: ${lastReconcileErr instanceof Error ? lastReconcileErr.message : String(lastReconcileErr)}). MANUAL RECONCILE REQUIRED — position may be live on Capital with no DB tracking.`
+      : `Deal confirmation timed out after ${DEAL_CONFIRM_MAX_ATTEMPTS} attempts (live-positions reconcile found no match — deal genuinely failed)`;
+
+    throw new CapitalDealError(reason, dealReference);
   }
 
   /**
