@@ -8,41 +8,28 @@ You receive: the complete trade record including entry, exit, setup type, news c
 
 ---
 
-## STRUCTURED LESSON JSON FORMAT
+## OUTPUT — CALL THE `submit_lesson` TOOL
 
-Write a structured lesson in EXACTLY this format. Output ONLY the JSON object, no other text.
+You will be given a `submit_lesson` tool. Call this tool exactly once with the structured lesson fields. Do NOT write a separate text block — the lesson body goes in the `lesson` field of the tool input. The tool's input_schema enforces the field shape; the runtime SDK rejects malformed inputs at schema-validation time.
 
-```json
-{
-  "lesson_id": "lesson-[timestamp]",
-  "timestamp": "[UTC ISO timestamp]",
-  "strategy_tag": "ICT_INTRADAY",
-  "instrument": "[ticker]",
-  "instrument_category": "[fx / commodity]",
-  "direction": "[long/short]",
-  "setup_type": "[OB retest / FVG fill / liquidity sweep / breakout retest]",
-  "kill_zone": "[London Open / NY Open / London Close / outside]",
-  "hold_duration": "[calculated from opened_at to closed_at, e.g. '2h 15m']",
-  "news_category": "[A/B/C/none]",
-  "news_description": "[brief description of news context at entry]",
-  "composite_score": 82,
-  "analyst_decision": "[APPROVE/MODIFY — what the analyst said]",
-  "position_a_outcome": "[TP1 hit / SL hit]",
-  "position_b_outcome": "[TP2 hit / SL hit / BE exit]",
-  "position_c_outcome": "[TP3 hit / SL hit / trailing stop hit / BE exit]",
-  "pnl_a_r": 1.5,
-  "pnl_b_r": 2.0,
-  "pnl_c_r": 3.2,
-  "pnl_total_r": 2.23,
-  "was_bias_correct": true,
-  "was_trigger_valid": true,
-  "was_news_correctly_weighted": true,
-  "was_split_execution_clean": true,
-  "score_accuracy_notes": "Score accurately reflected quality. OB + sweep combination proved strong.",
-  "lesson": "SPECIFIC and ACTIONABLE insight — see rules below",
-  "rule_suggestion": "Optional rule change suggestion based on this trade"
-}
-```
+Field reference (all required unless noted):
+
+- `strategy_tag`: always `"ICT_INTRADAY"` for new lessons.
+- `instrument`, `instrument_category` (fx / commodity / index / equity), `direction` (long / short).
+- `setup_type`: e.g. "OB Retest", "FVG Fill", "Liquidity Sweep", "Range Sweep Reversal".
+- `kill_zone`: one of "London Open" / "NY Open" / "London Close" / "outside".
+- `hold_duration`: calculated from opened_at → closed_at, e.g. `"2h 15m"`.
+- `news_category` (A / B / C / none), `news_description`.
+- `composite_score`: numeric.
+- `analyst_decision`: APPROVE / MODIFY — what the analyst returned.
+- `position_a_outcome`, `position_b_outcome`: e.g. "TP1 hit", "SL hit", "BE exit".
+- `position_c_outcome`: same shape, OR `null` for legacy 2-leg trades.
+- `pnl_a_r`, `pnl_b_r`, `pnl_total_r`: leg + size-weighted total in R units.
+- `pnl_c_r`: number, OR `null` for legacy 2-leg trades.
+- `was_bias_correct`, `was_trigger_valid`, `was_news_correctly_weighted`, `was_split_execution_clean`: booleans.
+- `score_accuracy_notes`: short explanation of whether the composite_score reflected reality.
+- `lesson`: SPECIFIC and ACTIONABLE — see rules below.
+- `rule_suggestion`: optional rule change. Empty string if none.
 
 > Note: `pnl_total_r` is the size-weighted average across the three legs (each leg is roughly 1/3 of total risk). A "TP1 only" trade where Legs B and C stopped at break-even is approximately `(1.5 + 0 + 0) / 3 = 0.5R` — a small win, not a flat result.
 
