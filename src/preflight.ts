@@ -7,6 +7,7 @@
 // demo URL, and cleanly logging out.
 
 import { CapitalClient } from './mcp-server/capital-client.js';
+import { alertSystemWarning } from './notifications/telegram.js';
 
 interface PreflightResult {
   canStart: boolean;
@@ -113,6 +114,47 @@ async function verifyCapitalConnectivity(): Promise<void> {
   }
 }
 
+/**
+ * 2026-05-05 audit (Phase 2 / Round 2 / item 2.1).
+ *
+ * Emits ONE Telegram alert at startup listing optional env vars that are
+ * missing AND would cause silent feature degradation (TWELVE_DATA, FINNHUB,
+ * FRED, MARKETAUX, TELEGRAM_*). Pre-fix the warnings only printed to
+ * console; ops never noticed when a deploy lost a key. Skips warnings
+ * for keys with sensible defaults (CAPITAL_API_URL).
+ *
+ * Edge case: when TELEGRAM_BOT_TOKEN itself is missing, Telegram cannot
+ * deliver the alert. Falls back to a console.error '[CRITICAL]' line so
+ * the missing-Telegram failure is at least visible in pm2-out.log.
+ *
+ * Pure function for testability — caller injects the alert function and
+ * the boolean indicating whether Telegram is configured.
+ */
+export async function alertOnDegradedEnv(
+  warnings: string[],
+  alertFn: (msg: string) => Promise<void>,
+  hasTelegram: boolean,
+): Promise<void> {
+  // Skip warnings about keys with sensible defaults that don't degrade behaviour.
+  const SKIPPED = ['CAPITAL_API_URL'];
+  const degraded = warnings.filter((w) => !SKIPPED.some((s) => w.includes(s)));
+  if (degraded.length === 0) return;
+
+  const body = `🚨 Bot started with degraded data sources:\n\n${degraded.join('\n')}`;
+
+  if (!hasTelegram) {
+    console.error(`[CRITICAL] ${body}\n[CRITICAL] (Telegram itself is unconfigured — this alert is console-only)`);
+    return;
+  }
+
+  try {
+    await alertFn(body);
+  } catch {
+    // Telegram delivery failure must not block boot. The console.warn lines
+    // earlier in runPreflight() already captured the same warnings.
+  }
+}
+
 export async function runPreflight(): Promise<void> {
   console.log('[Preflight] Checking environment variables...');
   const result = checkEnvKeys();
@@ -131,6 +173,12 @@ export async function runPreflight(): Promise<void> {
   }
 
   console.log(`[Preflight] Env OK — ${result.warnings.length} warning(s), 0 errors.`);
+
+  // 2026-05-05 audit (Phase 2 / Round 2 / item 2.1): emit a single Telegram
+  // alert listing degraded optional env keys. Fire-and-forget; failure does
+  // not block boot.
+  const hasTelegram = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_CHAT_ID;
+  await alertOnDegradedEnv(result.warnings, alertSystemWarning, hasTelegram);
 
   // 2026-04-29 audit-3 fix (scanner+misc P0-2): the live-trading gate now
   // ALWAYS runs, even with --skip-broker-check. Pre-fix, --skip-broker-check

@@ -211,3 +211,63 @@ describe('checkLiveTradingGate', () => {
     expect(() => checkLiveTradingGate(LIVE_URL, undefined)).toThrow(LIVE_URL);
   });
 });
+
+// 2026-05-05 audit (Phase 2 / Round 2 / item 2.1): Telegram alert when
+// optional graceful-degradation env vars are missing. Pre-fix the warnings
+// only printed to console; ops never noticed silent feature loss.
+import { alertOnDegradedEnv } from '../src/preflight.js';
+
+describe('alertOnDegradedEnv', () => {
+  it('does nothing when no degraded warnings', async () => {
+    const calls: string[] = [];
+    await alertOnDegradedEnv([], async (m) => { calls.push(m); }, true);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('emits one Telegram alert when degraded keys are present', async () => {
+    const calls: string[] = [];
+    const warnings = [
+      'OPTIONAL: TWELVE_DATA_API_KEY is not set — Twelve Data candles will be disabled',
+      'OPTIONAL: MARKETAUX_API_KEY is not set — News feed (sentiment) will be disabled',
+    ];
+    await alertOnDegradedEnv(warnings, async (m) => { calls.push(m); }, true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('TWELVE_DATA_API_KEY');
+    expect(calls[0]).toContain('MARKETAUX_API_KEY');
+    expect(calls[0]).toMatch(/degraded/i);
+  });
+
+  it('skips CAPITAL_API_URL (has sensible default) — not worth alerting', async () => {
+    const calls: string[] = [];
+    const warnings = [
+      'OPTIONAL: CAPITAL_API_URL is not set — Capital.com base URL (defaults to demo)',
+    ];
+    await alertOnDegradedEnv(warnings, async (m) => { calls.push(m); }, true);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("falls back to console.error '[CRITICAL]' when Telegram itself is missing", async () => {
+    const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const calls: string[] = [];
+    const warnings = [
+      'OPTIONAL: TELEGRAM_BOT_TOKEN is not set — Telegram alerts will be disabled',
+      'OPTIONAL: FINNHUB_API_KEY is not set — Economic calendar will be disabled',
+    ];
+    await alertOnDegradedEnv(warnings, async (m) => { calls.push(m); }, false);
+    expect(calls).toHaveLength(0); // Telegram fn NOT called
+    expect(consoleErrSpy).toHaveBeenCalled();
+    const allErrors = consoleErrSpy.mock.calls.map((c) => c[0]).join('\n');
+    expect(allErrors).toMatch(/CRITICAL/);
+    expect(allErrors).toContain('TELEGRAM_BOT_TOKEN');
+    consoleErrSpy.mockRestore();
+  });
+
+  it('survives Telegram alert function rejection (does not block boot)', async () => {
+    const warnings = [
+      'OPTIONAL: TWELVE_DATA_API_KEY is not set — Twelve Data candles will be disabled',
+    ];
+    await expect(
+      alertOnDegradedEnv(warnings, async () => { throw new Error('Telegram down'); }, true),
+    ).resolves.toBeUndefined();
+  });
+});
