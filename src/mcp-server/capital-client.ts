@@ -793,19 +793,39 @@ export class CapitalClient {
   private normaliseDealId(confirmation: DealConfirmation): DealConfirmation {
     const affected = confirmation.affectedDeals;
     if (Array.isArray(affected) && affected.length > 0) {
-      // 2026-04-29 audit-3 r3 (broker-audit P1-CC4): warn on
-      // affectedDeals.length > 1 so we have telemetry if Capital ever
-      // returns multi-leg /confirms/ shapes (partial close + reopen,
-      // hedge flip, AMENDED status). Picking [0] without validating
-      // status could pick a DELETED entry over an OPEN one. Logged so
-      // ops can investigate before the bot acts on a stale dealId.
+      // 2026-05-05 audit (5.2): pick the first affectedDeal whose status is
+      // OPEN/ACCEPTED rather than [0] blindly. Pre-fix Codex flagged that a
+      // multi-status response like [{DELETED}, {OPEN}] would pick DELETED
+      // and the bot would track the wrong dealId, leaving the OPEN position
+      // untracked. Capital hasn't been observed returning multi-status
+      // responses yet, but the warning at 2026-04-29 audit-3 r3 was just
+      // telemetry — this turns the defensive guard into actual selection.
+      //
+      // Status preference order (Capital uses these strings):
+      //   1. OPEN (live, our typical confirmation result)
+      //   2. ACCEPTED (just placed, awaiting fill — tracked, not yet OPEN)
+      //   3. AMENDED (modified, still active)
+      //   4. PARTIALLY_CLOSED (split close — still partly OPEN)
+      // Anything else (DELETED, CLOSED, REJECTED, CANCELLED) is skipped.
+      const ACCEPTABLE_STATUSES = new Set(['OPEN', 'ACCEPTED', 'AMENDED', 'PARTIALLY_CLOSED']);
       if (affected.length > 1) {
         const summary = affected.map((d) => `${d.dealId}:${d.status}`).join(',');
         console.warn(
-          `[Capital] /confirms/${confirmation.dealReference} returned ${affected.length} affectedDeals — picking [0]. Full list: ${summary}`,
+          `[Capital] /confirms/${confirmation.dealReference} returned ${affected.length} affectedDeals — selecting first acceptable status. Full list: ${summary}`,
         );
       }
-      const positionDealId = affected[0]?.dealId;
+      // Find the first acceptable-status deal. Falls back to [0] if no
+      // acceptable status (preserves prior behavior for unknown response shapes).
+      const acceptable = affected.find(
+        (d) => typeof d.status === 'string' && ACCEPTABLE_STATUSES.has(d.status.toUpperCase()),
+      );
+      const selected = acceptable ?? affected[0];
+      if (!acceptable && affected.length > 1) {
+        console.warn(
+          `[Capital] /confirms/${confirmation.dealReference} affectedDeals had NO OPEN/ACCEPTED/AMENDED/PARTIALLY_CLOSED entry — falling back to [0] (status=${affected[0]?.status}). May indicate a stale dealId tracking risk.`,
+        );
+      }
+      const positionDealId = selected?.dealId;
       if (typeof positionDealId === 'string' && positionDealId.length > 0) {
         return { ...confirmation, dealId: positionDealId };
       }
