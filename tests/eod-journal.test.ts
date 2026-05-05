@@ -142,3 +142,65 @@ describe('loadRecentJournal — ICT preamble lookup (B, 2026-04-28)', () => {
     expect(result!.markdown).toContain('Newer');
   });
 });
+
+// 2026-05-05 audit (Phase 2 / Round 1 / item 1.3): forced submit_journal
+// tool call. Replaces text-extract pattern that silently saved empty
+// journals when output truncated.
+import { extractJournalFromTool } from '../src/agents/eod-journal-agent.js';
+
+describe('extractJournalFromTool — read journal from submit_journal tool_use', () => {
+  const longSummary = '# 2026-05-05 EOD Journal\n\n## Trades\n\nOne SILVER long executed during London Open at 73.398. Hit TP1 cleanly, Legs B+C rolled to BE on Fed-speak headline. Net +0.5R for the day.\n\n## Lessons\n\nThe FVG fill held — clean structure pays.';
+
+  it('extracts a complete journal from a submit_journal tool_use block', () => {
+    const content = [
+      {
+        type: 'tool_use', id: 't', name: 'submit_journal',
+        input: { summary: longSummary, tags: ['SILVER', 'London Open'], total_trades: 1, total_r: 0.5 },
+      },
+    ];
+    const journal = extractJournalFromTool(content as never);
+    expect(journal).not.toBeNull();
+    expect(journal?.summary).toBe(longSummary);
+    expect(journal?.total_trades).toBe(1);
+    expect(journal?.tags).toContain('SILVER');
+  });
+
+  it('returns null on missing tool block', () => {
+    expect(extractJournalFromTool([{ type: 'text', text: 'oops' }] as never)).toBeNull();
+  });
+
+  it('returns null when summary is too short (< 100 chars)', () => {
+    const content = [
+      { type: 'tool_use', id: 't', name: 'submit_journal',
+        input: { summary: 'too short', tags: [], total_trades: 0, total_r: 0 } },
+    ];
+    expect(extractJournalFromTool(content as never)).toBeNull();
+  });
+
+  it('returns null when summary is missing', () => {
+    const content = [
+      { type: 'tool_use', id: 't', name: 'submit_journal',
+        input: { tags: [], total_trades: 0, total_r: 0 } },
+    ];
+    expect(extractJournalFromTool(content as never)).toBeNull();
+  });
+
+  it('coerces non-finite numerics defensively', () => {
+    const content = [
+      { type: 'tool_use', id: 't', name: 'submit_journal',
+        input: { summary: longSummary, tags: [], total_trades: NaN, total_r: 'not-a-number' } },
+    ];
+    const journal = extractJournalFromTool(content as never);
+    expect(journal?.total_trades).toBe(0);
+    expect(journal?.total_r).toBe(0);
+  });
+
+  it('handles tags as empty array when missing', () => {
+    const content = [
+      { type: 'tool_use', id: 't', name: 'submit_journal',
+        input: { summary: longSummary, total_trades: 0, total_r: 0 } },
+    ];
+    const journal = extractJournalFromTool(content as never);
+    expect(journal?.tags).toEqual([]);
+  });
+});

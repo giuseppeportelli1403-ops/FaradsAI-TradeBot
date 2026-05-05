@@ -16,7 +16,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { loadPromptWithSystemTime } from './load-prompt.js';
 import { loadStrategy } from './load-prompt.js';
-import { extractText, withTimeout } from './llm-output.js';
+import { withTimeout } from './llm-output.js';
 import { getTradesForWeek, getLessons, getDailyPnl, getLatestBrief } from '../database/index.js';
 
 const anthropic = new Anthropic();
@@ -99,6 +99,82 @@ export function saveJournalEntry(date: string, markdown: string): string {
   return path;
 }
 
+// 2026-05-05 audit (Phase 2 / Round 1 / item 1.3): forced submit_journal
+// tool call. Pre-fix the agent emitted free-form Markdown that silently
+// truncated to empty when adaptive thinking ate the budget; the tool now
+// holds the markdown body in the `summary` field, decoupling output shape
+// from token contention.
+
+export interface JournalEntry {
+  summary: string;
+  tags: string[];
+  total_trades: number;
+  total_r: number;
+}
+
+const submitJournalTool = {
+  name: 'submit_journal',
+  description:
+    'Submit the day-end journal entry. Call this tool exactly once. The full Markdown journal body goes ' +
+    'in the `summary` field (no length cap from us, only Anthropic max_tokens).',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      summary: {
+        type: 'string',
+        description:
+          'Full Markdown journal — sections per the system prompt. Must be at least 100 chars; shorter is rejected.',
+      },
+      tags: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Short tags for indexing — instruments, kill-zones, themes mentioned. Empty array OK.',
+      },
+      total_trades: { type: 'number', description: 'Number of trades closed today (from the input data).' },
+      total_r: { type: 'number', description: 'Total R for the day across all closed trades.' },
+    },
+    required: ['summary', 'tags', 'total_trades', 'total_r'],
+  },
+};
+
+/**
+ * Read the journal entry from a forced submit_journal tool_use block.
+ * Returns null on missing tool / short summary (< 100 chars) — caller
+ * skips save and logs warning.
+ */
+export function extractJournalFromTool(content: unknown[]): JournalEntry | null {
+  if (!Array.isArray(content) || content.length === 0) return null;
+
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'tool_use' &&
+      (block as { name?: unknown }).name === 'submit_journal'
+    ) {
+      const rawInput = (block as { input?: unknown }).input;
+      if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return null;
+      const raw = rawInput as Record<string, unknown>;
+
+      const summary = typeof raw.summary === 'string' ? raw.summary : '';
+      if (summary.length < 100) return null;
+
+      const tags = Array.isArray(raw.tags)
+        ? (raw.tags as unknown[]).map((t) => String(t)).filter((t) => t.length > 0)
+        : [];
+
+      const totalTradesRaw = Number(raw.total_trades);
+      const total_trades = Number.isFinite(totalTradesRaw) ? Math.max(0, Math.floor(totalTradesRaw)) : 0;
+
+      const totalRRaw = Number(raw.total_r);
+      const total_r = Number.isFinite(totalRRaw) ? totalRRaw : 0;
+
+      return { summary, tags, total_trades, total_r };
+    }
+  }
+  return null;
+}
+
 export async function runEodJournalAgent(now: Date = new Date()): Promise<string> {
   const bucket = dayBucket(now);
   console.log(`EOD Journal Agent starting for ${bucket.date}...`);
@@ -114,21 +190,18 @@ export async function runEodJournalAgent(now: Date = new Date()): Promise<string
 
   const systemPrompt = loadPromptWithSystemTime('eod-journal.md', now);
 
-  // 2026-04-29 audit: 30s timeout (Codex AN6 — Anthropic SDK default is
-  // 600s, way too long for a daily summary).
   const timeoutMs = 30_000;
   let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
   try {
     response = await withTimeout(
       anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 2000,
-        // 2026-04-29: thinking + output_config removed for Haiku 4.5
-        // compatibility (silently failing every cycle prior).
+        max_tokens: 4000,
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-        messages: [{
-          role: 'user',
-          content: `EOD CONTEXT — ${bucket.date}
+        messages: [
+          {
+            role: 'user',
+            content: `EOD CONTEXT — ${bucket.date}
 
 DAILY P&L: ${dailyPnl ? JSON.stringify(dailyPnl) : 'No P&L record for today.'}
 
@@ -144,9 +217,12 @@ ${brief ? JSON.stringify(brief, null, 2) : 'No brief available.'}
 CURRENT STRATEGY (excerpt):
 ${strategy.slice(0, 2000)}
 
-Write the journal entry in the exact Markdown format from your system prompt. Output ONLY the Markdown document — no JSON, no preamble.`,
-        }],
-      }),
+Write the journal entry in the exact Markdown format from your system prompt and call the submit_journal tool with the Markdown body in the summary field.`,
+          },
+        ],
+        tools: [submitJournalTool],
+        tool_choice: { type: 'tool', name: 'submit_journal' },
+      } as Parameters<typeof anthropic.messages.create>[0]),
       timeoutMs,
       'EOD Journal',
     );
@@ -156,17 +232,16 @@ Write the journal entry in the exact Markdown format from your system prompt. Ou
     return '';
   }
 
-  // 2026-04-29 audit fix (P0-A1): use extractText to read all blocks.
-  // Pre-fix `response.content[0]?.type === 'text'` returned '' whenever
-  // adaptive thinking placed a ThinkingBlock at index 0 — every EOD
-  // journal entry was silently empty.
-  const text = extractText(response.content);
-  if (!text) {
-    console.warn(`[EOD Journal] Empty response for ${bucket.date}; skipping save.`);
+  const m = response as Anthropic.Messages.Message;
+  console.log(`[EOD Journal] stop_reason=${m.stop_reason} content_blocks=${m.content.length}`);
+
+  const journal = extractJournalFromTool(m.content as unknown[]);
+  if (journal === null) {
+    console.warn(`[EOD Journal] No usable journal in tool_use for ${bucket.date}; skipping save.`);
     return '';
   }
 
-  const path = saveJournalEntry(bucket.date, text);
-  console.log(`EOD Journal saved: ${path}`);
-  return text;
+  const path = saveJournalEntry(bucket.date, journal.summary);
+  console.log(`EOD Journal saved: ${path} (trades=${journal.total_trades}, R=${journal.total_r}, tags=${journal.tags.length})`);
+  return journal.summary;
 }

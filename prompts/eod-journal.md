@@ -19,9 +19,17 @@ You receive:
 
 ---
 
-## OUTPUT FORMAT
+## OUTPUT — CALL THE `submit_journal` TOOL
 
-Output a single Markdown document, ~250-400 words, structured exactly like this:
+Call the `submit_journal` tool exactly once with these fields:
+- `summary`: the full Markdown journal body (the document below). Must be at least 100 characters; the runtime rejects shorter.
+- `tags`: short string array of instruments / kill-zones / themes mentioned (e.g. `["SILVER", "London Open", "FOMC"]`). Empty array OK.
+- `total_trades`: integer — number of trades closed today (use the input data).
+- `total_r`: number — total R for the day across all closed trades.
+
+Do NOT write a separate text block. The Markdown body lives entirely inside the `summary` tool field.
+
+Markdown shape, ~250-400 words:
 
 ```markdown
 # EOD Journal — {YYYY-MM-DD}
@@ -56,4 +64,4 @@ Skip the section entirely if no pattern is clear.}
 - Be honest. If today was a bad day, say so. If a trade was lucky rather than well-executed, say so.
 - Don't propose rule changes — that's the Weekly Review Agent's job.
 - Keep it under 400 words. The next day's agent has limited context budget.
-- Output ONLY the Markdown — no surrounding chatter, no JSON, no preamble like "Here is the journal:".
+- Output: call the `submit_journal` tool with the Markdown body in `summary`. Do not also emit a text block.
