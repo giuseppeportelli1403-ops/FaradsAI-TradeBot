@@ -1047,3 +1047,93 @@ describe('decideReflectionQueue', () => {
     expect(ranTradeIds).toEqual(['trade-xyz']);
   });
 });
+
+// 2026-05-05 audit (Phase 2 / Round 3 / item 3.3): initial-RSS-poll retry.
+import { pollWithRetry } from '../src/scheduler/index.js';
+
+describe('pollWithRetry — initial RSS poll retry-with-backoff', () => {
+  const noSleep = async (_ms: number) => { /* instant */ };
+
+  it('succeeds on first attempt — no retry, no alert', async () => {
+    let pollCalls = 0;
+    let alertCalls = 0;
+    await pollWithRetry(
+      async () => { pollCalls++; },
+      async () => { alertCalls++; },
+      [1, 1, 1],
+      noSleep,
+    );
+    expect(pollCalls).toBe(1);
+    expect(alertCalls).toBe(0);
+  });
+
+  it('retries after first failure and succeeds on second attempt', async () => {
+    let pollCalls = 0;
+    let alertCalls = 0;
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await pollWithRetry(
+      async () => {
+        pollCalls++;
+        if (pollCalls === 1) throw new Error('first transient blip');
+      },
+      async () => { alertCalls++; },
+      [1, 1, 1],
+      noSleep,
+    );
+    expect(pollCalls).toBe(2);
+    expect(alertCalls).toBe(0);
+    consoleWarnSpy.mockRestore();
+  });
+
+  it('exhausts all attempts then alerts', async () => {
+    let pollCalls = 0;
+    const alertMessages: string[] = [];
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await pollWithRetry(
+      async () => {
+        pollCalls++;
+        throw new Error('persistent network down');
+      },
+      async (m) => { alertMessages.push(m); },
+      [1, 1, 1],
+      noSleep,
+    );
+    expect(pollCalls).toBe(4); // 1 initial + 3 retries
+    expect(alertMessages).toHaveLength(1);
+    expect(alertMessages[0]).toMatch(/BOOT/);
+    expect(alertMessages[0]).toMatch(/persistent network down/);
+    consoleWarnSpy.mockRestore();
+    consoleErrSpy.mockRestore();
+  });
+
+  it('alert failure does not block boot', async () => {
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(
+      pollWithRetry(
+        async () => { throw new Error('always fails'); },
+        async () => { throw new Error('telegram down too'); },
+        [1, 1, 1],
+        noSleep,
+      ),
+    ).resolves.toBeUndefined();
+    consoleWarnSpy.mockRestore();
+    consoleErrSpy.mockRestore();
+  });
+
+  it('respects custom delays array (length controls retry count)', async () => {
+    let pollCalls = 0;
+    const consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const consoleErrSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await pollWithRetry(
+      async () => { pollCalls++; throw new Error('fail'); },
+      async () => {},
+      [1], // only 1 retry
+      noSleep,
+    );
+    expect(pollCalls).toBe(2); // 1 initial + 1 retry
+    consoleWarnSpy.mockRestore();
+    consoleErrSpy.mockRestore();
+  });
+});

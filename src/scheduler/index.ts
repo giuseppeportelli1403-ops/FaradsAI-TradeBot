@@ -624,6 +624,54 @@ async function safeRun(name: string, fn: () => Promise<unknown>): Promise<void> 
 // the contract.
 const CRON_UTC = { timezone: 'UTC' as const };
 
+// 2026-05-05 audit (Phase 2 / Round 3 / item 3.3): initial-RSS-poll retry.
+// Pre-fix the boot-time `pollAllFeeds().catch(...)` swallowed all errors
+// silently. On a network blip / DNS lag at boot, the first 3-4 trading
+// cycles operated with zero RSS news context — bot trades blind to news
+// flow until the next */10 cron tick.
+//
+// Post-fix: 3-attempt retry chain (1s, 5s, 15s backoff). On final failure
+// emit a Telegram [BOOT] alert and continue (do not block boot — ICT can
+// still run with empty news, just with degraded context).
+//
+// Pure helper so tests can inject the poller and alerter (and override
+// delays for fast tests).
+export async function pollWithRetry(
+  poll: () => Promise<void>,
+  alert: (msg: string) => Promise<void>,
+  delaysMs: number[] = [1_000, 5_000, 15_000],
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<void> {
+  let lastError: string = '';
+  for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+    try {
+      await poll();
+      if (attempt > 0) {
+        console.log(`[Scheduler] Initial RSS poll succeeded on attempt ${attempt + 1}.`);
+      }
+      return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      if (attempt < delaysMs.length) {
+        console.warn(
+          `[Scheduler] Initial RSS poll attempt ${attempt + 1} failed: ${lastError}. ` +
+            `Retrying in ${Math.round(delaysMs[attempt] / 1000)}s.`,
+        );
+        await sleep(delaysMs[attempt]);
+      }
+    }
+  }
+  console.error(
+    `[Scheduler] Initial RSS poll FAILED after ${delaysMs.length + 1} attempts. Last error: ${lastError}. ` +
+      `First trading cycles will operate with empty news context until the next */10 RSS cron tick.`,
+  );
+  await alert(
+    `[BOOT] Initial RSS poll failed after ${delaysMs.length + 1} attempts. Last error: ${lastError}.`,
+  ).catch(() => {
+    /* alert failure is non-blocking — boot continues regardless */
+  });
+}
+
 // 2026-05-05 audit (Phase 2 / Round 3 / item 3.2): pure reflection-queue
 // decision function. Extracted from the closure in monitorSplitPositions so
 // the post-handler-status logic is testable in isolation. Returns true iff
@@ -814,9 +862,10 @@ export function startScheduler(): void {
 
   // Initial RSS poll on startup so the first agent cycles have data
   // immediately rather than waiting up to 10 min for the first cron tick.
-  pollAllFeeds().catch((err) => {
-    console.warn(`[Scheduler] Initial RSS poll failed: ${(err as Error).message}`);
-  });
+  // 2026-05-05 (Phase 2 / Round 3 / item 3.3): retry-with-backoff. Pre-fix
+  // a network blip at boot left the first 3-4 cycles with empty news; now
+  // we retry up to 3 times then alert via Telegram.
+  void pollWithRetry(() => pollAllFeeds(), realAlertSystemWarning);
 
   // Daily at 00:05 UTC: dump previous day's reject metrics.
   // Added 2026-04-23 (P4). Spawned as a detached process so the scheduler
