@@ -7,7 +7,7 @@
 // demo URL, and cleanly logging out.
 
 import { CapitalClient } from './mcp-server/capital-client.js';
-import { alertSystemWarning } from './notifications/telegram.js';
+import { alertSystemWarning, initTelegram } from './notifications/telegram.js';
 
 interface PreflightResult {
   canStart: boolean;
@@ -174,10 +174,18 @@ export async function runPreflight(): Promise<void> {
 
   console.log(`[Preflight] Env OK — ${result.warnings.length} warning(s), 0 errors.`);
 
-  // 2026-05-05 audit (Phase 2 / Round 2 / item 2.1): emit a single Telegram
-  // alert listing degraded optional env keys. Fire-and-forget; failure does
-  // not block boot.
-  const hasTelegram = !!process.env.TELEGRAM_BOT_TOKEN && !!process.env.TELEGRAM_CHAT_ID;
+  // 2026-05-05 audit (Phase 2 / Round 2 / item 2.1, Codex review fix):
+  // initialise Telegram BEFORE the degraded-env alert call. Without this,
+  // alertSystemWarning would no-op silently (bot=null until initTelegram
+  // runs) and the whole alert mechanism would be lost. Idempotent — calling
+  // initTelegram() again later in src/index.ts is safe.
+  //
+  // Whitespace edge case: trim the env values for the boolean check so it
+  // matches initTelegram's own trim() at telegram.ts:20-26.
+  initTelegram();
+  const hasTelegram =
+    (process.env.TELEGRAM_BOT_TOKEN ?? '').trim().length > 0 &&
+    (process.env.TELEGRAM_CHAT_ID ?? '').trim().length > 0;
   await alertOnDegradedEnv(result.warnings, alertSystemWarning, hasTelegram);
 
   // 2026-04-29 audit-3 fix (scanner+misc P0-2): the live-trading gate now

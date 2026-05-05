@@ -258,3 +258,27 @@ describe('getNewsContext — Layer 4 stale-bearish dampening', () => {
     vi.mocked(Date.now).mockRestore();
   });
 });
+
+// 2026-05-05 audit (Phase 2 / Round 2 / item 2.2): propagation test.
+// fetchNewsContext now throws when MARKETAUX_API_KEY is missing
+// (commit 497d831). getNewsContext catches that and must surface
+// news_unavailable=true so the analyst sees real signal that news is
+// degraded. Pre-fix the missing-key path served stale news silently.
+describe('getNewsContext — propagation when MARKETAUX_API_KEY missing', () => {
+  it('returns news_unavailable=true when MARKETAUX_API_KEY is unset', async () => {
+    vi.restoreAllMocks();
+    _resetMarketAuxRateLimitFlag();
+    _resetNewsResilienceState();
+    const original = process.env.MARKETAUX_API_KEY;
+    delete process.env.MARKETAUX_API_KEY;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await getNewsContext('EURUSD');
+      expect(result.news_unavailable).toBe(true);
+      expect(result.summary).toMatch(/UNAVAILABLE|degraded/i);
+      expect(result.items).toEqual([]);
+    } finally {
+      if (original !== undefined) process.env.MARKETAUX_API_KEY = original;
+    }
+  });
+});
