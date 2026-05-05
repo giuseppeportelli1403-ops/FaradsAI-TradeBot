@@ -1075,29 +1075,41 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // carry (or carries late) invisible. The outer try/catch already
       // fails closed on Promise.all rejection; let FF rejection propagate.
       const tradeCurrencies = instrumentToCurrencies(epic);
-      if (tradeCurrencies.length > 0) {
-        try {
-          const [finnhubCalendar, ffCalendar] = await Promise.all([
-            fetchEconomicCalendar(1),
-            fetchForexFactoryCalendar(),
-          ]);
-          const calendar = [...finnhubCalendar, ...ffCalendar];
-          const veto = shouldVetoOrderForCalendar(tradeCurrencies, calendar, Date.now());
-          if (veto.veto) {
-            return JSON.stringify({
-              error: 'CALENDAR_VETO',
-              reason: veto.reason,
-              event: veto.event,
-            });
-          }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[ICT Agent] CALENDAR FETCH FAILED for ${epic}: ${msg}. Refusing — fail closed.`);
+      if (tradeCurrencies.length === 0) {
+        // 2026-05-05 audit (A4): pre-fix this silently bypassed the calendar
+        // veto for any ticker that instrumentToCurrencies didn't recognize
+        // (typos, future universe additions). An unknown ticker now fails
+        // closed — the bot refuses the trade until the helper is updated to
+        // map the new ticker. Loud refusal is the right failure mode.
+        const msg = `Cannot derive currencies for ${epic} — calendar veto cannot run. Refusing trade until instrumentToCurrencies recognizes the ticker.`;
+        console.error(`[ICT Agent] ${msg}`);
+        alertSystemWarning(`🛑 ${msg}`).catch(() => { /* alert failure non-blocking */ });
+        return JSON.stringify({
+          error: 'INSTRUMENT_NOT_RECOGNISED',
+          reason: msg,
+        });
+      }
+      try {
+        const [finnhubCalendar, ffCalendar] = await Promise.all([
+          fetchEconomicCalendar(1),
+          fetchForexFactoryCalendar(),
+        ]);
+        const calendar = [...finnhubCalendar, ...ffCalendar];
+        const veto = shouldVetoOrderForCalendar(tradeCurrencies, calendar, Date.now());
+        if (veto.veto) {
           return JSON.stringify({
-            error: 'CALENDAR_FETCH_FAILED',
-            reason: `Calendar fetch failed (${msg}). Refusing order — risk gate fails closed.`,
+            error: 'CALENDAR_VETO',
+            reason: veto.reason,
+            event: veto.event,
           });
         }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[ICT Agent] CALENDAR FETCH FAILED for ${epic}: ${msg}. Refusing — fail closed.`);
+        return JSON.stringify({
+          error: 'CALENDAR_FETCH_FAILED',
+          reason: `Calendar fetch failed (${msg}). Refusing order — risk gate fails closed.`,
+        });
       }
 
       // (Step 5.5 — token consumption — has moved to immediately after
