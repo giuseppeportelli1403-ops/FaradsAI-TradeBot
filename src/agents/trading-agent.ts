@@ -15,7 +15,7 @@ import { runAnalystAgent, type TradeProposal } from './analyst-agent.js';
 import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
 import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument, getRealisedPnlSince } from '../database/index.js';
-import { alertTradePlaced } from '../notifications/telegram.js';
+import { alertTradePlaced, alertSystemWarning } from '../notifications/telegram.js';
 
 const anthropic = new Anthropic();
 
@@ -969,8 +969,15 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       } catch (err) {
         // Fail-CLOSED on inability to read balance/PnL. A risk gate cannot
         // be allowed to silently bypass on data-source failure.
+        // 2026-05-05 audit (A3): pre-fix this only logged to pm2-out and
+        // returned an error to the agent — Giuseppe had no idea the bot was
+        // refusing trades because of fetch failures. Now: Telegram alert.
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[ICT Agent] DAILY/WEEKLY P&L FETCH FAILED: ${msg}. Refusing place_split_trade — cannot verify kill switch.`);
+        alertSystemWarning(
+          `🛑 Kill-switch verification FAILED — refusing trade. Cause: ${msg}. ` +
+          `Bot will keep refusing place_split_trade until balance/P&L fetch recovers.`,
+        ).catch(() => { /* don't let alert failure block the trade-rejection path */ });
         return JSON.stringify({
           error: 'DAILY_PNL_FETCH_FAILED',
           reason: `Cannot verify daily/weekly kill switch: ${msg}. Refusing order — risk gate fails closed.`,
