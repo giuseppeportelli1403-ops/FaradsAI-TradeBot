@@ -133,6 +133,34 @@ const NO_VETO_PATTERNS: ReadonlyArray<RegExp> = [
   /\bBoE (Pill|Mann|Ramsden|Dhingra|Greene|Lombardelli|Taylor)\b/i,
 ];
 
+// 2026-05-05 audit (A7): Tier-1 venue phrases that REINSTATE the veto even
+// when a regional speaker name otherwise matches NO_VETO_PATTERNS. Pre-fix:
+// an event titled "Vice Chair Schmid Press Conference on PCE" would match
+// "Schmid" → bypass veto, even though "Press Conference" + "PCE" together
+// signal a Tier-1 movements event. Now: if any of these phrases appear in
+// the event name, NO_VETO is overridden and the standard veto applies.
+const NO_VETO_OVERRIDE_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bpress conference\b/i,
+  /\bpress briefing\b/i,
+  /\bFOMC\b/i,
+  /\brate (decision|announcement|statement)\b/i,
+  /\bmonetary policy (statement|report|decision)\b/i,
+  /\bminutes\b/i,
+  /\b(congressional|senate|house) (hearing|testimony)\b/i,
+  /\btestimony before\b/i,
+  /\bsemi[- ]?annual (testimony|report|monetary policy)\b/i,
+];
+
+/**
+ * Returns true if the event name matches a NO_VETO bypass pattern AND does
+ * NOT contain a Tier-1 venue override phrase. Exported for test coverage.
+ */
+export function shouldBypassVeto(eventName: string): boolean {
+  if (!NO_VETO_PATTERNS.some((p) => p.test(eventName))) return false;
+  if (NO_VETO_OVERRIDE_PATTERNS.some((p) => p.test(eventName))) return false;
+  return true;
+}
+
 /**
  * Returns the (preMs, postMs) veto window for a given economic event.
  *
@@ -227,7 +255,7 @@ export function shouldVetoOrderForCalendar(
     // Lagarde / Bailey / Ueda still match EXTRA_WIDE_PATTERNS above and
     // continue to receive the wide veto.
     const eventName = ev?.event ?? '';
-    if (NO_VETO_PATTERNS.some((p) => p.test(eventName))) continue;
+    if (shouldBypassVeto(eventName)) continue;
 
     const evCcys = eventCurrencies(ev);
     if (!evCcys.some((c) => tradeCurrencies.includes(c))) continue;

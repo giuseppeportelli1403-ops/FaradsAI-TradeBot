@@ -353,3 +353,53 @@ describe('shouldVetoOrderForCalendar — per-event window integration (CR-1)', (
     });
   });
 });
+
+// 2026-05-05 audit (A7): NO_VETO_PATTERNS could match a regional speaker
+// name even when paired with a Tier-1 venue phrase like "Press Conference".
+// shouldBypassVeto now requires (a) name match AND (b) no Tier-1 venue
+// override phrase.
+import { shouldBypassVeto } from '../src/news/calendar-veto.js';
+
+describe('shouldBypassVeto — phrase-context check (A7)', () => {
+  it('bypasses for plain regional Fed speech', () => {
+    expect(shouldBypassVeto('Fed Williams Speech')).toBe(true);
+    expect(shouldBypassVeto('Fed Bostic Speaks')).toBe(true);
+    expect(shouldBypassVeto('ECB Lane Speech')).toBe(true);
+    expect(shouldBypassVeto('BoE Pill Speech')).toBe(true);
+  });
+
+  it('does NOT bypass when a Tier-1 venue phrase is present', () => {
+    expect(shouldBypassVeto('Fed Schmid Press Conference on PCE')).toBe(false);
+    expect(shouldBypassVeto('Fed Williams Press Conference')).toBe(false);
+    expect(shouldBypassVeto('ECB Lane Press Briefing')).toBe(false);
+  });
+
+  it('does NOT bypass when "FOMC" is present (regional speaker speaking AT FOMC)', () => {
+    expect(shouldBypassVeto('Fed Goolsbee FOMC Statement')).toBe(false);
+  });
+
+  it('does NOT bypass for Congressional hearings/testimony', () => {
+    expect(shouldBypassVeto('Fed Williams Congressional Hearing')).toBe(false);
+    expect(shouldBypassVeto('Fed Bullard Senate Testimony')).toBe(false);
+    expect(shouldBypassVeto('Fed Mester Testimony Before Congress')).toBe(false);
+  });
+
+  it('does NOT bypass when "minutes" is present', () => {
+    expect(shouldBypassVeto('Fed Williams Comments on FOMC Minutes')).toBe(false);
+  });
+
+  it('does NOT bypass when "rate decision" is present', () => {
+    expect(shouldBypassVeto('Fed Goolsbee Press Briefing on Rate Decision')).toBe(false);
+  });
+
+  it('does NOT bypass random non-matching names', () => {
+    expect(shouldBypassVeto('Powell Speech')).toBe(false);
+    expect(shouldBypassVeto('NFP Release')).toBe(false);
+    expect(shouldBypassVeto('CPI YoY')).toBe(false);
+  });
+
+  it('case-insensitive on both name and override phrases', () => {
+    expect(shouldBypassVeto('FED WILLIAMS PRESS CONFERENCE')).toBe(false);
+    expect(shouldBypassVeto('fed williams speech')).toBe(true);
+  });
+});
