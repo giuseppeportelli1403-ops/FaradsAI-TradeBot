@@ -1017,17 +1017,24 @@ export async function fetchNewsContext(instrument: string): Promise<NewsItem[]> 
     return stale;
   }
 
+  // 2026-05-05 audit (Phase 2 / Round 2 / item 2.2): missing API key is a
+  // configuration failure, NOT a quota/network failure. Check OUTSIDE the
+  // try block so the throw isn't caught and degraded to stale-cache. The
+  // throw bubbles to getNewsContext's catch → marketauxFailed=true →
+  // news_unavailable=true on the returned ScoredNews. Pre-fix this path
+  // silently served stale cached news → bot traded on 4h-old bearish news
+  // the market had already priced in.
+  const apiKey = process.env.MARKETAUX_API_KEY;
+  if (!apiKey) {
+    console.error('[Market Data] MARKETAUX_API_KEY not set — throwing so news_unavailable propagates.');
+    throw new Error('MARKETAUX_API_KEY not configured');
+  }
+
   // ===== Fresh fetch path =====
   // Inline error handling (was withFallback in AV code) so we can route HTTP 402
   // responses to stale cache with a distinct log, and everything else to the
   // generic cache-fallback catch.
   try {
-    const apiKey = process.env.MARKETAUX_API_KEY;
-    if (!apiKey) {
-      console.error('[Market Data] MARKETAUX_API_KEY not set');
-      return serveStaleOrEmpty(instrument);
-    }
-
     // ===== Dual-source for commodities (P1 #7, 2026-04-28) =====
     // The bot trades spot CFDs (XAU/USD, XAG/USD, WTI/USD) but normalizeForMarketAux
     // returns the US-equity ETF proxy (GLD/SLV/USO) — that's MarketAux's strongest

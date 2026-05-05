@@ -294,6 +294,24 @@ describe('fetchCandles cache keying by mapped TD symbol', () => {
     expect(result).toEqual([]);
   });
 
+  // 2026-05-05 audit (Phase 2 / Round 2 / item 2.2): missing MARKETAUX_API_KEY
+  // is a CONFIGURATION FAILURE, not a quota / network failure. It used to
+  // silently serve stale cached news, which is dangerous — the bot would
+  // trade on 4-hour-old bearish news that the market has already priced in.
+  // Now: throw so getNewsContext's catch can set news_unavailable=true.
+  it('fetchNewsContext throws when MARKETAUX_API_KEY is missing (was: silently served stale)', async () => {
+    vi.restoreAllMocks();
+    _resetNewsResilienceState();
+    const original = process.env.MARKETAUX_API_KEY;
+    delete process.env.MARKETAUX_API_KEY;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(fetchNewsContext('EURUSD')).rejects.toThrow(/MARKETAUX_API_KEY/);
+    } finally {
+      if (original !== undefined) process.env.MARKETAUX_API_KEY = original;
+    }
+  });
+
   // ========== News-resilience layered defense (added 2026-04-23 pm) ==========
   // See market-data.ts "News-resilience layers" block for the full architecture.
   // Each layer has its own test below. All tests call `resetNewsTest()` first
