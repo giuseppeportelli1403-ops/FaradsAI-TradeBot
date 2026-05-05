@@ -824,11 +824,17 @@ export class CapitalClient {
       //
       // Status preference order (Capital uses these strings):
       //   1. OPEN (live, our typical confirmation result)
-      //   2. ACCEPTED (just placed, awaiting fill — tracked, not yet OPEN)
-      //   3. AMENDED (modified, still active)
-      //   4. PARTIALLY_CLOSED (split close — still partly OPEN)
+      //   2. OPENED (the affectedDeal-level status emitted on a fresh
+      //      placement — equivalent to OPEN at the position level; this
+      //      module's own reconcile path synthesises {status: 'OPENED'})
+      //   3. ACCEPTED (just placed, awaiting fill — tracked, not yet OPEN)
+      //   4. AMENDED (modified, still active)
+      //   5. PARTIALLY_CLOSED (split close — still partly OPEN)
       // Anything else (DELETED, CLOSED, REJECTED, CANCELLED) is skipped.
-      const ACCEPTABLE_STATUSES = new Set(['OPEN', 'ACCEPTED', 'AMENDED', 'PARTIALLY_CLOSED']);
+      // 2026-05-05 Codex review fix: OPENED was missing from this set, so a
+      // multi-deal response of [DELETED, OPENED] would have fallen back to
+      // [0] (the DELETED entry).
+      const ACCEPTABLE_STATUSES = new Set(['OPEN', 'OPENED', 'ACCEPTED', 'AMENDED', 'PARTIALLY_CLOSED']);
       if (affected.length > 1) {
         const summary = affected.map((d) => `${d.dealId}:${d.status}`).join(',');
         console.warn(

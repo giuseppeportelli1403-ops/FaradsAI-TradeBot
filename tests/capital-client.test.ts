@@ -437,6 +437,48 @@ describe('CapitalClient — openPosition deal confirmation polling', () => {
     expect(confirmation.level).toBe(2400);
   });
 
+  // 2026-05-05 audit (5.2 + Codex follow-up): when Capital returns multiple
+  // affectedDeals with mixed statuses, pick the first OPEN/OPENED/ACCEPTED/
+  // AMENDED/PARTIALLY_CLOSED entry, not [0]. The previous test fixture only
+  // had a single OPENED entry; this regression test covers the multi-status
+  // case Codex flagged.
+  it('selects the first acceptable-status affectedDeal when [0] is DELETED', async () => {
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'o_multi_status' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'WORKING-ORDER-ID',
+          dealReference: 'o_multi_status',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'OPEN',
+          direction: 'BUY',
+          epic: 'EURUSD',
+          size: 1,
+          level: 1.085,
+          stopLevel: 1.08,
+          profitLevel: 1.09,
+          affectedDeals: [
+            { dealId: 'STALE-DELETED-ID', status: 'DELETED' },
+            { dealId: 'LIVE-OPENED-ID', status: 'OPENED' },
+          ],
+        }),
+      );
+
+    const client = makeClient();
+    const confirmation = await client.openPosition({
+      direction: 'BUY',
+      epic: 'EURUSD',
+      size: 1,
+      stopLevel: 1.08,
+      profitLevel: 1.09,
+    });
+
+    // Pre-fix this would have returned STALE-DELETED-ID (the first entry).
+    expect(confirmation.dealId).toBe('LIVE-OPENED-ID');
+  });
+
   it('createWorkingOrder preserves workingOrderId as dealId when affectedDeals is empty (fallback path)', async () => {
     // Working-order creation returns a confirmation whose top-level dealId IS
     // the workingOrderId (correct — it's what updateWorkingOrder /
