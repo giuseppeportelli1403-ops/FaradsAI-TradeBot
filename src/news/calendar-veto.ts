@@ -268,7 +268,12 @@ export function shouldVetoOrderForCalendar(
     const postMs = window.postMs;
 
     const delta = ts - nowMs;
-    if (delta >= -postMs && delta <= preMs) {
+    // 2026-05-05 audit (5.1): post-edge changed from inclusive >= to exclusive >.
+    // "+30 min after" means veto until exactly 30 min after the event; at the
+    // 30:00.000 mark the window has expired and trades should be allowed.
+    // Pre-edge stays <= (5 min before exactly = still within veto window —
+    // the conservative choice when the bot decides at the exact lead time).
+    if (delta > -postMs && delta <= preMs) {
       const minutes = Math.round(delta / 60_000);
       const direction = minutes >= 0 ? `${minutes} min from now` : `${-minutes} min ago`;
       return {
