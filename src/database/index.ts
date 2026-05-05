@@ -684,6 +684,47 @@ export function getLessonWinRate(filters: {
   return { total, wins, win_rate: total > 0 ? Math.round((wins / total) * 1000) / 10 : 0 };
 }
 
+// ==================== CRITICAL-SECTION TRACKING ====================
+// 2026-05-05 audit (B3): the shutdown race. Pre-fix the SIGTERM handler
+// called saveToFile() and then setTimeout(exit, 500). If place_split_trade
+// was mid-await between leg placement and insertTrade, the shutdown
+// handler would flush the DB BEFORE the trade row was inserted, then exit
+// before the function could resume. The trade was live on Capital but the
+// DB had no record.
+//
+// This counter lets the agent flag "I'm in a critical section — don't
+// shut down until I finish or timeout". The shutdown handler in src/index.ts
+// polls getCriticalSectionDepth() and waits (up to ~1.4s, well under pm2's
+// default 1.6s SIGKILL timeout) for it to reach 0 before saveToFile+exit.
+
+let criticalSectionDepth = 0;
+
+export function enterCriticalSection(): void {
+  criticalSectionDepth++;
+}
+
+export function exitCriticalSection(): void {
+  criticalSectionDepth = Math.max(0, criticalSectionDepth - 1);
+}
+
+export function getCriticalSectionDepth(): number {
+  return criticalSectionDepth;
+}
+
+/**
+ * Convenience wrapper: run an async function inside a critical section.
+ * The counter is incremented before the function starts and decremented
+ * in `finally` so it's always cleaned up, even on throw.
+ */
+export async function withCriticalSection<T>(fn: () => Promise<T>): Promise<T> {
+  enterCriticalSection();
+  try {
+    return await fn();
+  } finally {
+    exitCriticalSection();
+  }
+}
+
 // ==================== RESEARCH BRIEFS ====================
 
 export function saveResearchBrief(brief: ResearchBrief): void {

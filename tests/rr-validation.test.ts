@@ -480,3 +480,58 @@ describe('assertUniverseSpreadConsistency', () => {
     }
   });
 });
+
+// 2026-05-05 audit (B3): critical-section tracking for shutdown drain.
+import {
+  enterCriticalSection,
+  exitCriticalSection,
+  getCriticalSectionDepth,
+  withCriticalSection,
+} from '../src/database/index.js';
+
+describe('Critical-section tracking (B3 shutdown drain)', () => {
+  // Ensure clean state — other tests in the suite may have entered without
+  // exiting (shouldn't happen, but defensive).
+  beforeEach(() => {
+    while (getCriticalSectionDepth() > 0) exitCriticalSection();
+  });
+
+  it('counter starts at 0', () => {
+    expect(getCriticalSectionDepth()).toBe(0);
+  });
+
+  it('enter/exit increments and decrements', () => {
+    enterCriticalSection();
+    expect(getCriticalSectionDepth()).toBe(1);
+    enterCriticalSection();
+    expect(getCriticalSectionDepth()).toBe(2);
+    exitCriticalSection();
+    expect(getCriticalSectionDepth()).toBe(1);
+    exitCriticalSection();
+    expect(getCriticalSectionDepth()).toBe(0);
+  });
+
+  it('exit clamps at 0 (cannot go negative)', () => {
+    exitCriticalSection();
+    exitCriticalSection();
+    expect(getCriticalSectionDepth()).toBe(0);
+  });
+
+  it('withCriticalSection wrapper increments before fn and decrements after', async () => {
+    expect(getCriticalSectionDepth()).toBe(0);
+    const promise = withCriticalSection(async () => {
+      expect(getCriticalSectionDepth()).toBe(1);
+      return 'result';
+    });
+    const r = await promise;
+    expect(r).toBe('result');
+    expect(getCriticalSectionDepth()).toBe(0);
+  });
+
+  it('withCriticalSection decrements even when fn throws', async () => {
+    await expect(
+      withCriticalSection(async () => { throw new Error('boom'); }),
+    ).rejects.toThrow('boom');
+    expect(getCriticalSectionDepth()).toBe(0);
+  });
+});

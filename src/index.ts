@@ -2,7 +2,7 @@
 // Initialises database, Telegram, starts scheduler, connects all agents
 
 import { runPreflight } from './preflight.js';
-import { initDatabaseAsync, saveToFile } from './database/index.js';
+import { initDatabaseAsync, saveToFile, getCriticalSectionDepth } from './database/index.js';
 import { initTelegram, alertSystemWarning } from './notifications/telegram.js';
 import { startScheduler } from './scheduler/index.js';
 
@@ -21,21 +21,49 @@ import { startScheduler } from './scheduler/index.js';
 // later, layer it as a separate heartbeat/uptime watchdog rather than
 // on the shutdown path.
 let shuttingDown = false;
+
+// 2026-05-05 audit (B3): drain in-flight critical sections before flushing.
+// pm2's default kill_timeout is 1600ms; we wait up to 1400ms (poll every
+// 100ms) for getCriticalSectionDepth() to reach 0, leaving a 200ms margin
+// for the DB flush + exit. Pre-fix a SIGTERM mid-place_split_trade could
+// leave a position live on Capital with no DB row.
+const SHUTDOWN_DRAIN_MAX_MS = 1400;
+const SHUTDOWN_DRAIN_POLL_MS = 100;
+
 function installShutdownHandlers(): void {
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`\n[Shutdown] Received ${signal} — flushing DB and exiting.`);
+    console.log(`\n[Shutdown] Received ${signal} — draining in-flight critical sections.`);
+
+    // Poll for criticalSectionDepth=0 with a hard timeout. If anything is
+    // still in-flight at the timeout, we proceed anyway — a partial flush
+    // is better than an empty one.
+    const drainStart = Date.now();
+    while (Date.now() - drainStart < SHUTDOWN_DRAIN_MAX_MS) {
+      if (getCriticalSectionDepth() === 0) break;
+      await new Promise((r) => setTimeout(r, SHUTDOWN_DRAIN_POLL_MS));
+    }
+    const remainingDepth = getCriticalSectionDepth();
+    if (remainingDepth > 0) {
+      console.warn(
+        `[Shutdown] ${remainingDepth} critical section(s) still in flight after ${SHUTDOWN_DRAIN_MAX_MS}ms drain timeout. Flushing anyway — risk of partial state.`,
+      );
+    } else {
+      const drainMs = Date.now() - drainStart;
+      console.log(`[Shutdown] Drain complete in ${drainMs}ms (no in-flight sections${drainMs > 0 ? ' after wait' : ''}).`);
+    }
+
     try {
       saveToFile();
       console.log('[Shutdown] DB flushed.');
     } catch (e) {
       console.error('[Shutdown] DB flush failed:', e);
     }
-    setTimeout(() => process.exit(0), 500);
+    process.exit(0);
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+  process.on('SIGINT', () => { void shutdown('SIGINT'); });
 }
 
 async function main(): Promise<void> {

@@ -556,6 +556,7 @@ import {
   createSlTpOrder, updateSlPrice, getDailyPnl, upsertDailyPnl,
   getActiveSlTpOrdersByTradeId, getTradeByDealId, markTradeClosedEarly,
   deactivateSlTpOrder,
+  enterCriticalSection, exitCriticalSection,
 } from '../database/index.js';
 import { CapitalClient } from '../mcp-server/capital-client.js';
 
@@ -1173,6 +1174,12 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         return conf.dealId;
       };
 
+      // 2026-05-05 audit (B3): mark this code path as a critical section.
+      // The shutdown handler in src/index.ts polls getCriticalSectionDepth()
+      // and waits up to ~1.4s for it to reach 0 before flushing the DB +
+      // exiting. Pre-fix a SIGTERM between leg placement and insertTrade
+      // could leave a position live on Capital with no DB row.
+      enterCriticalSection();
       try {
         const dealA = await placeLeg('A', sizeA, tp1);
         placedDeals.push({ leg: 'A', dealId: dealA });
@@ -1193,6 +1200,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
             rollbackErrors.push(`Leg ${p.leg} (deal ${p.dealId}): ${closeMsg}`);
           }
         }
+        exitCriticalSection();
         return JSON.stringify({
           error: 'PLACE_SPLIT_PARTIAL_FAILURE',
           reason: `Placement of leg ${placedDeals.length === 0 ? 'A' : placedDeals.length === 1 ? 'B' : 'C'} failed: ${errMsg}.`,
@@ -1262,6 +1270,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
             `Orphan dealIds: ${placedDeals.map((p) => `${p.leg}=${p.dealId}`).join(', ')}\n` +
             `MANUAL RECONCILE REQUIRED.`,
         );
+        exitCriticalSection();
         return JSON.stringify({
           error: 'DB_LOG_FAILED_AFTER_PLACEMENT',
           reason: `Capital placement succeeded for all 3 legs, but DB persistence failed: ${dbErr}.`,
@@ -1269,6 +1278,9 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           guidance: 'Live positions exist on Capital with no DB record. Manual reconciliation required. Do NOT retry — that would double-place.',
         });
       }
+      // DB writes successful — critical section ends here. Subsequent
+      // Telegram alert + return are non-critical (data is persisted).
+      exitCriticalSection();
 
       // Approval was consumed at step 5.5 (before placement) so we don't
       // re-delete here. (Comment kept as breadcrumb for the next reader.)
