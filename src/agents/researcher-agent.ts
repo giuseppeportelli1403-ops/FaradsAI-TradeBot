@@ -9,7 +9,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPromptWithSystemTime } from './load-prompt.js';
-import { extractText, withTimeout } from './llm-output.js';
+import { withTimeout } from './llm-output.js';
 import { fetchYieldCurve, fetchEconomicCalendar, fetchSectorStrength } from '../mcp-server/market-data.js';
 import { getRankedInstruments, INSTRUMENT_UNIVERSE } from '../scanner/index.js';
 import { saveResearchBrief } from '../database/index.js';
@@ -58,6 +58,70 @@ function classifyRegime(
 }
 
 // ==================== THEME EXTRACTION ====================
+//
+// 2026-05-05 audit (Phase 2 / Round 1 / item 1.2): replaced free-form-text
+// + regex JSON-array extract with forced submit_themes tool calling. The
+// prior pattern silently fell through to a "THEME EXTRACTION FAILED"
+// placeholder for an unknown number of cycles (per the comment that used
+// to live here, dating back to the 2026-04-29 audit P0-A1 fix that already
+// caught one variant of the same family of bugs). Returns null on missing
+// or empty themes — downstream `runResearcherAgent` saves the brief with
+// `themes: []` rather than fake themes that would poison consumers.
+
+const submitThemesTool = {
+  name: 'submit_themes',
+  description:
+    'Submit the 3-5 market themes for today/this week as a string array. Each theme should be a single-sentence ' +
+    'observation about regime, news flow, or instrument-level pressure. Call this tool exactly once.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      themes: {
+        type: 'array',
+        items: { type: 'string' },
+        minItems: 3,
+        maxItems: 5,
+        description:
+          'Themes for the trading session. Each item is a complete sentence — no fragments. Examples: ' +
+          '"USD strength on hawkish Fed pivot — favor USD longs." / "Gold extending range pre-CPI — neutral until Wednesday."',
+      },
+    },
+    required: ['themes'],
+  },
+};
+
+/**
+ * Extract themes from the Researcher's submit_themes tool_use block.
+ * Returns null on missing tool / empty themes / all-empty-after-trim
+ * (caller logs a warning and saves the brief with empty themes — no
+ * fake placeholder).
+ */
+export function extractThemesFromTool(content: unknown[]): string[] | null {
+  if (!Array.isArray(content) || content.length === 0) return null;
+
+  for (const block of content) {
+    if (
+      block &&
+      typeof block === 'object' &&
+      (block as { type?: unknown }).type === 'tool_use' &&
+      (block as { name?: unknown }).name === 'submit_themes'
+    ) {
+      const rawInput = (block as { input?: unknown }).input;
+      if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return null;
+      const themesRaw = (rawInput as { themes?: unknown }).themes;
+      if (!Array.isArray(themesRaw)) return null;
+
+      const cleaned = themesRaw
+        .map((t) => String(t).trim())
+        .filter((t) => t.length > 0)
+        .slice(0, 5);
+
+      if (cleaned.length === 0) return null;
+      return cleaned;
+    }
+  }
+  return null;
+}
 
 async function extractThemes(
   regime: RegimeData,
@@ -68,29 +132,23 @@ async function extractThemes(
   const topSectors = sectors.slice(0, 3).map((s) => s.sector);
   const bottomSectors = sectors.slice(-3).map((s) => s.sector);
 
-  // 2026-04-29 audit fix (P0-R1): use the FULL researcher-agent.md prompt,
-  // not a 1-sentence inline stub. Pre-fix the prompt file was loaded into
-  // a `_systemPrompt` variable that was never sent to Anthropic.
   const systemPrompt = loadPromptWithSystemTime('researcher-agent.md');
 
-  // Model: Haiku 4.5 — Researcher is a structured-template task. Mixed-
-  // model assignment: support roles → Haiku, decision roles → Sonnet.
-  // 2026-04-29: 30s timeout (Codex AN6 — same SDK class as Analyst).
+  // Model: Haiku 4.5. Bumped max_tokens 1000 → 4000 (Phase 2 audit) — the
+  // previous budget barely covered a 3-5-item array with any reasoning;
+  // tool calling has ~2-300 tokens of overhead so we want headroom.
   const timeoutMs = 30_000;
   let response: Awaited<ReturnType<typeof anthropic.messages.create>>;
   try {
     response = await withTimeout(
       anthropic.messages.create({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1000,
-        // 2026-04-29: thinking + output_config removed for Haiku 4.5
-        // compatibility (Sonnet-only API params). This was silently
-        // failing on every Researcher cron since the bot moved to
-        // Haiku — explains the "122h-old research brief" warning.
+        max_tokens: 4000,
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-        messages: [{
-          role: 'user',
-          content: `Today's market data:
+        messages: [
+          {
+            role: 'user',
+            content: `Today's market data — call the submit_themes tool with 3-5 themes.
 
 REGIME:
 - US 10Y yield: ${regime.yields.us10y}%
@@ -102,45 +160,30 @@ SECTOR ROTATION (1d %):
 - Bottom performers: ${bottomSectors.join(', ') || 'no data'}
 
 HIGH-IMPACT EVENTS NEXT 5 DAYS:
-${highImpactEvents.map((e) => `- ${e.date} ${e.time || ''} ${e.event} (${e.country})`).join('\n') || '- None'}
-
-Produce 3-5 themes for today/this week. Output ONLY a JSON array of strings, e.g.: ["theme 1", "theme 2", "theme 3"]`,
-        }],
-      }),
+${highImpactEvents.map((e) => `- ${e.date} ${e.time || ''} ${e.event} (${e.country})`).join('\n') || '- None'}`,
+          },
+        ],
+        tools: [submitThemesTool],
+        tool_choice: { type: 'tool', name: 'submit_themes' },
+      } as Parameters<typeof anthropic.messages.create>[0]),
       timeoutMs,
       'Researcher themes',
     );
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[Researcher] theme extraction API call failed: ${msg}.`);
-    return [`⚠️ THEME EXTRACTION FAILED — ${msg}. Treat regime/calendar inputs as raw data only.`];
+    return [];
   }
 
-  // 2026-04-29 audit fix (P0-A1): use extractText to read all blocks. Pre-
-  // fix `content[0].type === 'text'` returned '' whenever adaptive thinking
-  // placed a ThinkingBlock at index 0 — the catch block then silently
-  // returned the "theme extraction failed" stub. The researcher's brief
-  // has been a one-fake-theme document for an unknown number of cycles.
-  const text = extractText(response.content);
+  const m = response as Anthropic.Messages.Message;
+  console.log(`[Researcher] stop_reason=${m.stop_reason} content_blocks=${m.content.length}`);
 
-  // Themes come as a JSON array — use a balanced-bracket extractor.
-  // Same logic as extractJsonObject but for `[...]`.
-  const arrayMatch = text.match(/\[[\s\S]*?\]/);
-  if (!arrayMatch) {
-    console.warn('[Researcher] No JSON array found in response. Raw text:', text.slice(0, 500));
-    return ['⚠️ THEME EXTRACTION FAILED — no JSON array in LLM response. Inputs raw only.'];
+  const themes = extractThemesFromTool(m.content as unknown[]);
+  if (themes === null) {
+    console.warn('[Researcher] No themes extracted from tool_use. Brief will save with empty themes.');
+    return [];
   }
-  try {
-    const parsed = JSON.parse(arrayMatch[0]);
-    if (!Array.isArray(parsed) || parsed.length === 0) {
-      return ['⚠️ THEME EXTRACTION FAILED — empty array returned. Inputs raw only.'];
-    }
-    return parsed.map((t) => String(t)).slice(0, 5);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(`[Researcher] JSON.parse failed for themes array: ${msg}. Raw:`, arrayMatch[0]);
-    return [`⚠️ THEME EXTRACTION FAILED — invalid JSON: ${msg}. Inputs raw only.`];
-  }
+  return themes;
 }
 
 // ==================== WARNING GENERATION ====================

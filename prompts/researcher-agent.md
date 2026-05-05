@@ -22,13 +22,15 @@ Gather regime data in parallel:
 
 Note: the former VIX / DXY inputs were removed 2026-04-24 — the free-tier Twelve Data proxies were misleading. Regime classification now uses the yield curve and sector rotation as primary macro signals.
 
-### Phase 2 — Theme Extraction
+### Phase 2 — Theme Extraction (the LLM call)
 Using regime data, economic calendar, and sector strength:
-- Identify 3-5 concise, actionable themes for the day/week
+- Identify 3-5 concise, actionable themes for the day/week.
 - Each theme is one sentence. No filler. Factual.
 - Examples: "Tech earnings season driving sector rotation out of defensives."
   "2y/10y spread narrowing below 50bps suggesting late-cycle positioning."
   "NFP Friday — reduce new positions Thursday afternoon."
+
+**Output:** call the `submit_themes` tool with the themes array. Do NOT write a separate text block. The themes go in the `themes` field; nothing else is required of you. The rest of the research brief (regime classification, ict_shortlist, events_calendar, warnings) is computed by the agent code from deterministic data sources.
 
 ### Phase 3 — Instrument Shortlist
 Using the universe scanner rankings (`get_ranked_instruments`):
