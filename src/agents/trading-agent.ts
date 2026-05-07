@@ -1305,9 +1305,11 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // Every "tighten SL" action the LLM thought it executed was fake.
       //
       // Fix: discover all active legs for this trade_id, push the new
-      // stopLevel to Capital.com via updatePosition for each, AND update
-      // the DB to keep them in sync. Failures are reported per-leg so
-      // the agent sees which legs succeeded.
+      // stopLevel to Capital.com via safelyAmendPosition for each (which
+      // round-trips broker-side TP/trailing to defeat the partial-amend
+      // strip — see capital-client.safelyAmendPosition), AND update the
+      // DB to keep them in sync. Failures are reported per-leg so the
+      // agent sees which legs succeeded.
       const tradeId = String(input.trade_id);
       const newSl = Number(input.new_sl);
       if (!Number.isFinite(newSl)) {
