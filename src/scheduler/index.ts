@@ -194,13 +194,50 @@ export function classifyCloseReason(
   leg?: 'A' | 'B' | 'C',
   closePrice?: number,
 ): 'TP' | 'SL' | 'OTHER' {
-  // ----- Tier 1: activity-string match -----
   const relevant = activities.filter((a) => a.dealId === dealId);
+
+  // ----- Tier 0: Capital's `source` field -----
+  // 2026-05-07 live incident: SILVER Leg B closed via TP2 limit fill, but
+  // classifyCloseReason returned 'SL'. The activity history contained
+  // three preceding EDIT_STOP_AND_LIMIT events (SL→BE move on TP1 hit +
+  // a manual recovery PUT). Tier 1's blob match found 'STOP' inside
+  // 'EDIT_STOP_AND_LIMIT' → returned 'SL' before ever reading the actual
+  // close activity, which Capital tagged with source='TP'. Bot routed
+  // the close to handleSlOnLeg (early-return branch), Leg C's SL was
+  // never trailed to TP1, manual fix required.
+  //
+  // Capital sets `source` to 'TP' / 'SL' on close events triggered by a
+  // limit/stop fill, and to 'USER' / 'DEALER' / 'SYSTEM' / 'CLOSE_OUT'
+  // on edits, opens, manual closes, and admin actions. Reading it
+  // directly sidesteps both this bug and the STOP_LIMIT BUG-S2 case
+  // (STOP_LIMIT fills still surface source='SL').
+  //
+  // Defensive guard: ignore EDIT_* activity types even if `source` is
+  // 'TP'/'SL'. Today's live sample shows edits carry source='USER', but
+  // if Capital ever tags an amend with source='SL' (e.g. trailing-stop
+  // edit annotation), we must not promote that to a close classification.
+  // Only POSITION/WORKING_ORDER activities can represent a close.
+  // Coverage gap (deferred): trailing-stop fills, guaranteed-stop fills,
+  // and forced liquidation (source='CLOSE_OUT') are unverified — they
+  // fall through to Tier 1/2 same as before this patch.
+  const sourceMatch = relevant.find(
+    (a) =>
+      (a.source === 'TP' || a.source === 'SL') &&
+      !(a.type ?? '').toUpperCase().startsWith('EDIT'),
+  );
+  if (sourceMatch) return sourceMatch.source as 'TP' | 'SL';
+
+  // ----- Tier 1: activity-string match (back-compat for old fixtures
+  // and any close where Capital omits `source`) -----
   for (const a of relevant) {
     // 2026-04-29: include `a.type` (real Capital field) AND `a.activity`
     // (legacy / test-fixture field) so this works on both real data and
     // existing tests. STOP/SL_ takes priority over PROFIT/LIMIT/TP_ to
     // prevent the BUG-S2 STOP_LIMIT misclassification.
+    //
+    // 2026-05-07 NB: this tier is now reached only when no activity
+    // for the dealId carries source='TP'|'SL'. Tier 0 catches the
+    // EDIT_STOP_AND_LIMIT-preceded-by-TP-close case structurally.
     const blob = `${a.type ?? ''} ${a.activity ?? ''} ${a.status}`.toUpperCase();
     if (blob.includes('STOP') || blob.includes('SL_')) return 'SL';
     if (blob.includes('PROFIT') || blob.includes('LIMIT') || blob.includes('TP_')) return 'TP';

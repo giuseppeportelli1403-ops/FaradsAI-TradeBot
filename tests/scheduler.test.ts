@@ -241,6 +241,115 @@ describe('classifyCloseReason', () => {
     // closePrice would say SL (close to 1.0900) but Tier 1 PROFIT_HIT wins
     expect(classifyCloseReason(activities, 'DEAL-A', trade, 'A', 1.0905)).toBe('TP');
   });
+
+  // 2026-05-07 LIVE INCIDENT regression suite — SILVER Leg B TP2 fill was
+  // misclassified as 'SL' because Tier 1's blob match found 'STOP' inside
+  // a preceding EDIT_STOP_AND_LIMIT activity. handleSlOnLeg early-returned
+  // and Leg C's SL was never trailed to TP1. Tier 0 (source field) fixes.
+  describe("Tier 0 — Capital's `source` field on the close activity", () => {
+    it("LIVE-2026-05-07: source='TP' on close beats preceding EDIT_STOP_AND_LIMIT", () => {
+      const activities: Activity[] = [
+        // The actual TP fill — Capital tags this with source='TP'
+        { date: '2026-05-07T13:24:23', epic: 'SILVER', dealId: 'DEAL-B', type: 'POSITION', status: 'ACCEPTED', source: 'TP' },
+        // Earlier today: SL→BE move when TP1 hit (would have triggered the bug)
+        { date: '2026-05-07T09:55:00', epic: 'SILVER', dealId: 'DEAL-B', type: 'EDIT_STOP_AND_LIMIT', status: 'ACCEPTED', source: 'USER' },
+        // Earlier still: manual recovery PUT
+        { date: '2026-05-07T10:30:23', epic: 'SILVER', dealId: 'DEAL-B', type: 'EDIT_STOP_AND_LIMIT', status: 'ACCEPTED', source: 'USER' },
+        // Open
+        { date: '2026-05-07T09:02:31', epic: 'SILVER', dealId: 'DEAL-B', type: 'POSITION', status: 'ACCEPTED', source: 'USER' },
+      ];
+      expect(classifyCloseReason(activities, 'DEAL-B')).toBe('TP');
+    });
+
+    it("source='SL' on close beats preceding edits — symmetric with TP case", () => {
+      const activities: Activity[] = [
+        { date: '2026-05-07T13:24:23', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED', source: 'SL' },
+        { date: '2026-05-07T10:30:23', epic: 'EURUSD', dealId: 'DEAL-A', type: 'EDIT_STOP_AND_LIMIT', status: 'ACCEPTED', source: 'USER' },
+        { date: '2026-05-07T09:02:31', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED', source: 'USER' },
+      ];
+      expect(classifyCloseReason(activities, 'DEAL-A')).toBe('SL');
+    });
+
+    it("source='USER' (manual close) — no Tier 0 match, falls through to Tier 1/2", () => {
+      const activities: Activity[] = [
+        { date: '2026-05-07T13:24:23', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED', source: 'USER' },
+      ];
+      // No Tier 1 keyword, no Tier 2 inputs → 'OTHER' (existing behavior)
+      expect(classifyCloseReason(activities, 'DEAL-A')).toBe('OTHER');
+    });
+
+    it("source='DEALER' — unknown / non-close — falls through to Tier 1/2", () => {
+      const activities: Activity[] = [
+        { date: '2026-05-07T13:24:23', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED', source: 'DEALER' },
+      ];
+      expect(classifyCloseReason(activities, 'DEAL-A')).toBe('OTHER');
+    });
+
+    it("Tier 0 still uses Tier 2 trade input when source is absent — unchanged behavior", () => {
+      const trade = makeTrade({ entry: 1.10, sl: 1.0900, tp1: 1.1100, tp2: 1.1200, tp3: 1.1300 });
+      const activities: Activity[] = [
+        { date: '2026-04-29', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED' },
+      ];
+      expect(classifyCloseReason(activities, 'DEAL-A', trade, 'A', 1.1095)).toBe('TP');
+    });
+
+    it("BUG-S2 still fixed: source='SL' on STOP_LIMIT-style close returns 'SL' (Tier 0 path)", () => {
+      const activities: Activity[] = [
+        // Hypothetical STOP_LIMIT order fill — Capital still tags source='SL'
+        { date: '2026-05-07T13:24:23', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'ACCEPTED', source: 'SL' },
+      ];
+      expect(classifyCloseReason(activities, 'DEAL-A')).toBe('SL');
+    });
+
+    it("Tier 0 wins over Tier 2 — source='TP' overrides closePrice near SL", () => {
+      // Edge case: bid retreated below TP level by the time we polled, so
+      // Tier 2 mid-price would say SL — but Capital's source='TP' is truth.
+      const trade = makeTrade({ entry: 78.03, sl: 78.03, tp1: 79.73, tp2: 80.58, tp3: 81.43 });
+      const activities: Activity[] = [
+        { date: '2026-05-07T13:24:23', epic: 'SILVER', dealId: 'DEAL-B', type: 'POSITION', status: 'ACCEPTED', source: 'TP' },
+      ];
+      // closePrice 78.10 is closer to SL (78.03) than to TP2 (80.58) — Tier 2 would say 'SL',
+      // but Tier 0 source='TP' wins
+      expect(classifyCloseReason(activities, 'DEAL-B', trade, 'B', 78.10)).toBe('TP');
+    });
+
+    // Codex review follow-ups (2026-05-07):
+    it("Tier 0 wins over Tier 1 — source='TP' overrides a STOP_HIT keyword on the same activity", () => {
+      // Hypothetical: Capital reports both a status keyword AND source='TP'.
+      // Source is the more authoritative signal — it should win.
+      const activities: Activity[] = [
+        { date: '2026-05-07T13:24:23', epic: 'EURUSD', dealId: 'DEAL-A', type: 'POSITION', status: 'STOP_HIT', source: 'TP' },
+      ];
+      expect(classifyCloseReason(activities, 'DEAL-A')).toBe('TP');
+    });
+
+    it("activity ordering doesn't matter — close in middle of array still classifies", () => {
+      // Capital's /history/activity ordering isn't documented to be stable.
+      // Pin that find()-based Tier 0 returns the right answer regardless of
+      // where the close sits in the returned list.
+      const activities: Activity[] = [
+        { date: '2026-05-07T10:30:23', epic: 'SILVER', dealId: 'DEAL-B', type: 'EDIT_STOP_AND_LIMIT', status: 'ACCEPTED', source: 'USER' },
+        { date: '2026-05-07T13:24:23', epic: 'SILVER', dealId: 'DEAL-B', type: 'POSITION', status: 'ACCEPTED', source: 'TP' },
+        { date: '2026-05-07T09:55:00', epic: 'SILVER', dealId: 'DEAL-B', type: 'EDIT_STOP_AND_LIMIT', status: 'ACCEPTED', source: 'USER' },
+      ];
+      expect(classifyCloseReason(activities, 'DEAL-B')).toBe('TP');
+    });
+
+    it("EDIT_* activity with source='SL' is IGNORED by Tier 0 — only non-EDIT types count as closes", () => {
+      // Defensive: if Capital ever tags an amend with source='SL' (e.g. some
+      // trailing-stop edit metadata), we must not let it masquerade as a
+      // close. Tier 0 must filter EDIT_* types out, falling through to
+      // Tier 1 (which would then consume the actual close activity).
+      const activities: Activity[] = [
+        // Imaginary: an EDIT carrying source='SL' (not seen live, but guarded against)
+        { date: '2026-05-07T10:30:23', epic: 'SILVER', dealId: 'DEAL-B', type: 'EDIT_STOP_AND_LIMIT', status: 'ACCEPTED', source: 'SL' },
+        // The real TP fill
+        { date: '2026-05-07T13:24:23', epic: 'SILVER', dealId: 'DEAL-B', type: 'POSITION', status: 'ACCEPTED', source: 'TP' },
+      ];
+      // The EDIT must NOT short-circuit Tier 0; the genuine TP close must win.
+      expect(classifyCloseReason(activities, 'DEAL-B')).toBe('TP');
+    });
+  });
 });
 
 // ==================== monitorSplitPositions ====================

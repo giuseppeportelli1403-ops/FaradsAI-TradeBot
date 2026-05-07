@@ -191,7 +191,13 @@ export interface Activity {
   dateUTC?: string;
   epic: string;
   dealId: string;
-  source?: string;            // "USER" / "DEALER" / "SYSTEM"
+  source?: string;            // Capital documented enum: USER / DEALER / SYSTEM /
+                              // TP / SL / CLOSE_OUT.
+                              // Live observation (2026-05-07 SILVER probe): TP-limit
+                              // fill → source='TP'; opens and EDIT_* amends →
+                              // source='USER'. SL fills, DEALER/SYSTEM/CLOSE_OUT
+                              // close semantics unverified — classifyCloseReason's
+                              // Tier 0 only trusts 'TP'/'SL' on non-EDIT types.
   type: string;               // "POSITION" / "WORKING_ORDER"
   status: string;             // "ACCEPTED" / "EXECUTED" / "REJECTED"
   /** @deprecated Capital does not return this field. Kept optional for
