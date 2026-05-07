@@ -441,13 +441,36 @@ describe('validateRiskPct — tolerance tightened from ±0.05 to ±0.005 (audit 
 // tick-rounding behavior across the universe of tick rules we actually see
 // on Capital.com (FX majors min 1000, GOLD min 0.1, SILVER min 0.5).
 
+/**
+ * Assert that `value` is an integer multiple of `tick`, robust to IEEE 754
+ * representation error. Cannot use `value % tick === 0` because
+ * `7.4 % 0.1 = 0.09999999...` even though 7.4 IS 74 ticks of 0.1 — modulo
+ * on doubles propagates the representation error of `0.1` itself. The
+ * correct check is: ticks-as-float should round cleanly to an integer.
+ */
+function expectTickAligned(value: number, tick: number): void {
+  const ticks = value / tick;
+  const rounded = Math.round(ticks);
+  // 1e-6 tolerance: any drift larger than this means the value isn't a
+  // tick multiple (i.e. the algorithm produced something Capital would
+  // reject). Realistic IEEE 754 noise on these magnitudes is ~1e-12.
+  expect(Math.abs(ticks - rounded)).toBeLessThan(1e-6);
+}
+
 describe('computeServerSizing — tick-aware 70/30 leg split', () => {
+  // 2026-05-07 (Codex Round 2 — Finding #7 fix): integer-tick math. Both
+  // legs are exact multiples of minDealSize. Algorithm:
+  //   total_ticks  = floor(total_qty / minDealSize + 1e-9)
+  //   size_b_ticks = floor(total_ticks * 0.30)
+  //   size_a_ticks = total_ticks - size_b_ticks
+  //   size_a       = size_a_ticks * minDealSize
+  //   size_b       = size_b_ticks * minDealSize
+  // The 1e-9 epsilon absorbs IEEE 754 noise on clean inputs (e.g. 1000 ×
+  // 1% / 0.0020 produces 4999.999... arithmetically; without epsilon it
+  // would floor to 4 ticks not 5, undersizing by a full tick).
+
   describe('FX majors (minDealSize = 1000 contracts)', () => {
-    // Typical FX setup: $1000 balance, 1% risk = $10, 20-pip SL on EURUSD
-    // Total qty = 10 / 0.0020 = 5000 contracts.
-    // size_b_raw = 1500; floor to 1000 → size_b = 1000.
-    // size_a = 5000 - 1000 = 4000 (absorbs the rounding remainder).
-    it('$1000 × 1% × 0.0020 SL → total 5000, size_b=1000, size_a=4000', () => {
+    it('$1000 × 1% × 0.0020 SL → total 5000 = 5 ticks → size_a=4000, size_b=1000', () => {
       const r = computeServerSizing({
         balance: 1000,
         totalRiskPct: 1.0,
@@ -458,16 +481,22 @@ describe('computeServerSizing — tick-aware 70/30 leg split', () => {
       expect(r.ok).toBe(true);
       if (r.ok) {
         expect(r.totalQty).toBeCloseTo(5000, 6);
+        // 5 ticks total, size_b = floor(5 * 0.30) = 1 tick = 1000
         expect(r.sizeB).toBe(1000);
-        expect(r.sizeA).toBeCloseTo(4000, 6);
-        // Total preserved (modulo IEEE 754 noise)
-        expect(r.sizeA + r.sizeB).toBeCloseTo(r.totalQty, 6);
+        // size_a = 5 - 1 = 4 ticks = 4000
+        expect(r.sizeA).toBe(4000);
+        // Both legs tick-aligned (the BLOCKER fix from Round 2)
+        expectTickAligned(r.sizeA, 1000);
+        expectTickAligned(r.sizeB, 1000);
+        // Total placed (sum of legs) does not exceed totalQty — rounding loss
+        // is at most 1 tick.
+        expect(r.sizeA + r.sizeB).toBeLessThanOrEqual(r.totalQty + 1e-6);
       }
     });
 
-    it('size_b is rounded DOWN, never up — total_qty 5333 → size_b=1000 (raw 1599.9, floor 1000)', () => {
-      // Demonstrates the tick floor: raw 1599.9 must NOT round up to 2000.
-      // total_qty = (10000 * 0.01) / 0.01875 ≈ 5333.33
+    it('total_qty 5333.33 → 5 ticks → size_a=4000, size_b=1000 (rounding loss 333)', () => {
+      // total_qty = (10000 * 0.01) / 0.01875 ≈ 5333.33; floor to 5 ticks.
+      // size_b_ticks = floor(5*0.30) = 1; size_a_ticks = 4.
       const r = computeServerSizing({
         balance: 10000,
         totalRiskPct: 1.0,
@@ -477,14 +506,15 @@ describe('computeServerSizing — tick-aware 70/30 leg split', () => {
       });
       expect(r.ok).toBe(true);
       if (r.ok) {
-        // Math.floor(0.30 * 5333.33 / 1000) * 1000 = floor(1.599...) * 1000 = 1000
+        expect(r.totalQty).toBeCloseTo(5333.33, 1);
         expect(r.sizeB).toBe(1000);
-        expect(r.sizeA).toBeCloseTo(r.totalQty - 1000, 6);
+        expect(r.sizeA).toBe(4000);
+        expect(r.sizeA + r.sizeB).toBeLessThanOrEqual(r.totalQty + 1e-6);
       }
     });
 
-    it('rejects when size_b would round to 0 (account too small)', () => {
-      // $100 × 1% × 0.0020 SL → total 500. size_b_raw = 150 < 1000 → floor to 0.
+    it('rejects when total_qty floors to <2 ticks (account too small)', () => {
+      // $100 × 1% × 0.0020 SL → total 500. floor(500/1000) = 0 ticks.
       const r = computeServerSizing({
         balance: 100,
         totalRiskPct: 1.0,
@@ -495,16 +525,16 @@ describe('computeServerSizing — tick-aware 70/30 leg split', () => {
       expect(r.ok).toBe(false);
       if (!r.ok) {
         expect(r.error).toBe('BELOW_MIN_SIZE');
-        expect(r.reason).toMatch(/Leg B/);
-        expect(r.reason).toMatch(/1000/);
+        expect(r.reason).toMatch(/2 tick/);
       }
     });
   });
 
   describe('GOLD (minDealSize = 0.1)', () => {
-    it('rounds size_b to 0.1 increments', () => {
-      // $5000 × 1% × $5 SL → total qty = 50/5 = 10.0
-      // size_b_raw = 3.0 → tick floor to 3.0 (already aligned)
+    it('total_qty 10.0 → 100 ticks → size_a=7.0, size_b=3.0 (both tick-aligned)', () => {
+      // $5000 × 1% × $5 SL → total qty = 10.0. totalTicks = 100.
+      // size_b_ticks = floor(100 * 0.30) = 30 → size_b = 3.0
+      // size_a_ticks = 70 → size_a = 7.0
       const r = computeServerSizing({
         balance: 5000,
         totalRiskPct: 1.0,
@@ -517,13 +547,21 @@ describe('computeServerSizing — tick-aware 70/30 leg split', () => {
         expect(r.totalQty).toBeCloseTo(10, 6);
         expect(r.sizeB).toBeCloseTo(3.0, 6);
         expect(r.sizeA).toBeCloseTo(7.0, 6);
+        // BLOCKER regression: BOTH legs are integer multiples of 0.1.
+        // (Pre-fix Leg A absorbed the raw remainder and could land on
+        // 7.45 — a non-tick-aligned size that Capital REJECTS.)
+        expectTickAligned(r.sizeA, 0.1);
+        expectTickAligned(r.sizeB, 0.1);
       }
     });
 
-    it('non-aligned size_b is floored DOWN to nearest 0.1', () => {
-      // Total qty = 10.55 → size_b_raw = 3.165 → floor to 3.1
-      // Use balance + risk to land total exactly 10.55 (within IEEE 754).
-      // 10.55 = 0.01 * X / 5 → X = 5275
+    it('total_qty 10.55 → 105 ticks → size_a=7.4, size_b=3.1 (NOT 7.45 + 3.1, the BLOCKER case)', () => {
+      // total_qty = 10.55. totalTicks = floor(10.55 / 0.1 + 1e-9) = 105
+      // size_b_ticks = floor(105 * 0.30) = 31 → size_b = 3.1
+      // size_a_ticks = 74 → size_a = 7.4
+      // Total placed = 7.4 + 3.1 = 10.5 — rounding loss = 0.05 (acceptable)
+      // Pre-fix algorithm: sizeB=3.1, sizeA = totalQty - sizeB = 7.45 ← BLOCKER.
+      // 7.45 is NOT a multiple of 0.1 (7.45/0.1 = 74.5 ticks, not integer).
       const r = computeServerSizing({
         balance: 5275,
         totalRiskPct: 1.0,
@@ -534,18 +572,24 @@ describe('computeServerSizing — tick-aware 70/30 leg split', () => {
       expect(r.ok).toBe(true);
       if (r.ok) {
         expect(r.totalQty).toBeCloseTo(10.55, 6);
-        // floor(3.165 / 0.1) * 0.1 = floor(31.65) * 0.1 = 31 * 0.1 = 3.1
         expect(r.sizeB).toBeCloseTo(3.1, 6);
-        // Leg A absorbs the remainder
-        expect(r.sizeA).toBeCloseTo(10.55 - 3.1, 6);
+        expect(r.sizeA).toBeCloseTo(7.4, 6);
+        // The critical regression assertion — both legs MUST be tick-aligned.
+        expectTickAligned(r.sizeA, 0.1);
+        expectTickAligned(r.sizeB, 0.1);
+        // Rounding loss is acceptable: total placed ≤ totalQty.
+        expect(r.sizeA + r.sizeB).toBeLessThanOrEqual(r.totalQty + 1e-6);
+        // And it's at most 1 tick of loss.
+        expect(r.totalQty - (r.sizeA + r.sizeB)).toBeLessThan(0.1 + 1e-6);
       }
     });
   });
 
   describe('SILVER (minDealSize = 0.5)', () => {
-    it('rounds size_b DOWN to 0.5 increments', () => {
-      // $1000 × 0.5% × 0.20 SL → total = 5/0.20 = 25.0
-      // size_b_raw = 7.5 → already aligned at 0.5 step → size_b = 7.5
+    it('total_qty 25.0 → 50 ticks → size_a=17.5, size_b=7.5 (both tick-aligned)', () => {
+      // $1000 × 0.5% × 0.20 SL → total = 25.0. totalTicks = 50.
+      // size_b_ticks = floor(50*0.30) = 15 → size_b = 7.5
+      // size_a_ticks = 35 → size_a = 17.5
       const r = computeServerSizing({
         balance: 1000,
         totalRiskPct: 0.5,
@@ -558,11 +602,17 @@ describe('computeServerSizing — tick-aware 70/30 leg split', () => {
         expect(r.totalQty).toBeCloseTo(25, 6);
         expect(r.sizeB).toBeCloseTo(7.5, 6);
         expect(r.sizeA).toBeCloseTo(17.5, 6);
+        expectTickAligned(r.sizeA, 0.5);
+        expectTickAligned(r.sizeB, 0.5);
       }
     });
 
-    it('non-aligned size_b floors DOWN — raw 7.8 → 7.5 (not 8.0)', () => {
-      // total_qty = 26.0 → size_b_raw = 7.8 → floor(7.8/0.5)*0.5 = floor(15.6)*0.5 = 15*0.5 = 7.5
+    it('total_qty 26.0 → 52 ticks → size_a=18.5, size_b=7.5 (size_b floors to 15 ticks)', () => {
+      // total_qty = 26.0. totalTicks = 52. size_b_ticks = floor(52*0.30) = 15.
+      // size_a_ticks = 37 → size_a = 18.5. size_b = 7.5.
+      // Pre-fix: sizeB=7.5, sizeA=26-7.5=18.5 — happens to be tick-aligned
+      // here (18.5 / 0.5 = 37 ticks integer) so this case looked OK pre-fix.
+      // The GOLD test above is the canonical BLOCKER demonstration.
       const r = computeServerSizing({
         balance: 1040,
         totalRiskPct: 0.5,
@@ -575,8 +625,65 @@ describe('computeServerSizing — tick-aware 70/30 leg split', () => {
         expect(r.totalQty).toBeCloseTo(26, 6);
         expect(r.sizeB).toBeCloseTo(7.5, 6);
         expect(r.sizeA).toBeCloseTo(18.5, 6);
+        expectTickAligned(r.sizeA, 0.5);
+        expectTickAligned(r.sizeB, 0.5);
       }
     });
+  });
+
+  describe('tick-alignment invariant — every successful result has tick-aligned legs (BLOCKER regression guard)', () => {
+    // Codex Round 2 Finding #7 / required test #6: explicit assertion that
+    // the deploy-blocker scenario can never recur. This sweep tries a range
+    // of inputs across all three universe tick sizes and asserts both legs
+    // are integer multiples of minDealSize, AND total placed never exceeds
+    // totalQty (rounding loss only ever LOSES ticks, never gains them).
+    const cases = [
+      // FX majors (1000)
+      { balance: 1000,  riskPct: 1.0,  entry: 1.1000, sl: 1.0980,  minDealSize: 1000 },
+      { balance: 5000,  riskPct: 1.5,  entry: 1.1000, sl: 1.0950,  minDealSize: 1000 },
+      { balance: 10000, riskPct: 1.0,  entry: 1.1000, sl: 1.08125, minDealSize: 1000 },
+      // GOLD (0.1) — the canonical BLOCKER case
+      { balance: 5000,  riskPct: 1.0,  entry: 4500,   sl: 4495,    minDealSize: 0.1 },
+      { balance: 5275,  riskPct: 1.0,  entry: 4500,   sl: 4495,    minDealSize: 0.1 },
+      { balance: 8000,  riskPct: 1.5,  entry: 4500,   sl: 4493,    minDealSize: 0.1 },
+      // SILVER (0.5)
+      { balance: 1000,  riskPct: 0.5,  entry: 25.00,  sl: 24.80,   minDealSize: 0.5 },
+      { balance: 1040,  riskPct: 0.5,  entry: 25.00,  sl: 24.80,   minDealSize: 0.5 },
+      { balance: 2500,  riskPct: 0.25, entry: 25.00,  sl: 24.85,   minDealSize: 0.5 },
+      // OIL_CRUDE-shaped (also 0.5) with 0.04 stop
+      { balance: 3000,  riskPct: 1.0,  entry: 75.00,  sl: 74.96,   minDealSize: 0.5 },
+    ];
+    for (const c of cases) {
+      it(`tick-aligned: balance=${c.balance} riskPct=${c.riskPct} stop=${(Math.abs(c.entry-c.sl)).toFixed(5)} minDealSize=${c.minDealSize}`, () => {
+        const r = computeServerSizing({
+          balance: c.balance,
+          totalRiskPct: c.riskPct,
+          entry: c.entry,
+          sl: c.sl,
+          minDealSize: c.minDealSize,
+        });
+        expect(r.ok).toBe(true);
+        if (r.ok) {
+          // BOTH legs are integer multiples of minDealSize. We can't use the
+          // `%` operator directly — IEEE 754 makes `7.4 % 0.1 = 0.0999...`
+          // even though 7.4 is exactly 74 ticks of 0.1. expectTickAligned
+          // compares `value / minDealSize` to its nearest integer, which
+          // is the correct test for tick-alignment under floating-point.
+          expectTickAligned(r.sizeA, c.minDealSize);
+          expectTickAligned(r.sizeB, c.minDealSize);
+          // Total placed ≤ totalQty (rounding loss never gains ticks).
+          expect(r.sizeA + r.sizeB).toBeLessThanOrEqual(r.totalQty + 1e-6);
+          // Rounding loss bounded by 1 tick (actually less — we lose at
+          // most fractional ticks from the totalTicks floor).
+          expect(r.totalQty - (r.sizeA + r.sizeB)).toBeLessThan(c.minDealSize + 1e-6);
+          // 30% leg never exceeds 30% of totalQty.
+          expect(r.sizeB).toBeLessThanOrEqual(0.30 * r.totalQty + 1e-9);
+          // Both legs ≥ 1 tick.
+          expect(r.sizeA).toBeGreaterThanOrEqual(c.minDealSize);
+          expect(r.sizeB).toBeGreaterThanOrEqual(c.minDealSize);
+        }
+      });
+    }
   });
 
   describe('input validation', () => {
@@ -658,28 +765,6 @@ describe('computeServerSizing — tick-aware 70/30 leg split', () => {
       if (longResult.ok && shortResult.ok) {
         expect(longResult.sizeA).toBeCloseTo(shortResult.sizeA, 6);
         expect(longResult.sizeB).toBeCloseTo(shortResult.sizeB, 6);
-      }
-    });
-  });
-
-  describe('total risk preservation', () => {
-    it('total qty equals sum of legs across a sweep of inputs (Leg A absorbs rounding)', () => {
-      const cases = [
-        { balance: 1000, riskPct: 1.0,  entry: 1.10, sl: 1.098, minDealSize: 1000 },
-        { balance: 1500, riskPct: 0.5,  entry: 1.10, sl: 1.097, minDealSize: 1000 },
-        { balance: 5000, riskPct: 1.5,  entry: 4500, sl: 4495,  minDealSize: 0.1 },
-        { balance: 2500, riskPct: 0.25, entry: 25.0, sl: 24.8,  minDealSize: 0.5 },
-      ];
-      for (const c of cases) {
-        const r = computeServerSizing({
-          balance: c.balance, totalRiskPct: c.riskPct,
-          entry: c.entry, sl: c.sl, minDealSize: c.minDealSize,
-        });
-        if (!r.ok) continue;  // BELOW_MIN_SIZE cases are not the test target here
-        // Total preserved: sum of legs equals total_qty exactly (within IEEE 754 noise)
-        expect(r.sizeA + r.sizeB).toBeCloseTo(r.totalQty, 6);
-        // size_b never exceeds 30% of total_qty (the tick floor guarantee)
-        expect(r.sizeB).toBeLessThanOrEqual(0.30 * r.totalQty + 1e-9);
       }
     });
   });

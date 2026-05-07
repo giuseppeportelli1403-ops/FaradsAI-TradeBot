@@ -25,7 +25,10 @@ const anthropic = new Anthropic();
 // requires the analyst_token to match a same-cycle approval whose
 // proposal-hash matches the actual order being placed. This prevents
 // the LLM from getting an Analyst APPROVE on a clean-looking proposal
-// and then mutating size/SL/TP before placement.
+// and then mutating SL/TP/score/tier between approval and placement.
+// (Pre-2026-05-07 this list also included size_a/size_b; sizes are now
+// computed server-side from total_risk_pct + balance + minDealSize and
+// are no longer part of the hashed projection.)
 //
 // Approval entries TTL after 10 min — same-cycle matching only.
 
@@ -377,13 +380,27 @@ export type ServerSizingResult =
 /**
  * Pure function: compute tick-aware 70/30 leg sizes server-side.
  *
- * - size_b is rounded DOWN to the nearest minDealSize multiple so the runner
- *   leg never exceeds 30% of total qty.
- * - size_a absorbs the rounding remainder, preserving the total risk
- *   percentage exactly (modulo IEEE 754 floating-point precision).
- * - Both legs must individually clear minDealSize.
+ * 2026-05-07 (Codex Round 2 — Finding #7 BLOCKER fix). Pre-fix only Leg B
+ * was tick-aligned and Leg A absorbed the raw remainder, which produced
+ * non-tick-aligned sizes for Leg A on instruments where minDealSize doesn't
+ * cleanly divide totalQty (e.g. GOLD totalQty=10.55, minDealSize=0.1 →
+ * old algorithm returned sizeA=7.45, which Capital REJECTS as not a 0.1
+ * multiple). The fix: integer-tick math throughout.
  *
- * Returns BELOW_MIN_SIZE when either leg would fall below the floor — the
+ * Algorithm:
+ *   total_ticks  = floor(total_qty / minDealSize)
+ *   size_b_ticks = floor(total_ticks * 0.30)            ← always integer
+ *   size_a_ticks = total_ticks - size_b_ticks           ← always integer
+ *   size_a       = size_a_ticks * minDealSize           ← tick-aligned
+ *   size_b       = size_b_ticks * minDealSize           ← tick-aligned
+ *
+ * Both legs are integer multiples of minDealSize by construction. The total
+ * placed (size_a + size_b) is total_ticks * minDealSize, which is at most
+ * total_qty (rounding loss ≤ 1 tick). Leg A still absorbs the rounding
+ * remainder because it gets `total_ticks - size_b_ticks` rather than its
+ * own independent floor.
+ *
+ * Returns BELOW_MIN_SIZE when either leg would fall below 1 tick — the
  * caller should refuse the trade and let the agent re-propose at a higher
  * tier or skip the instrument until the account grows.
  */
@@ -418,28 +435,52 @@ export function computeServerSizing(input: ServerSizingInput): ServerSizingResul
   const riskAmount = balance * (totalRiskPct / 100);
   const totalQty = riskAmount / stopDistance;
 
-  // Tick-aware floor of the 30% leg. Math.floor avoids 30.000001 drifting up
-  // to the next tick. After the floor, size_a takes the entire remainder so
-  // total_qty is preserved exactly.
-  const sizeBRaw = 0.30 * totalQty;
-  const sizeB = Math.floor(sizeBRaw / minDealSize) * minDealSize;
-  const sizeA = totalQty - sizeB;
-
-  if (sizeB < minDealSize) {
+  // Integer-tick math: convert totalQty to ticks first, split 70/30 in tick
+  // space, multiply back out. This guarantees BOTH legs are exact integer
+  // multiples of minDealSize — Capital.com rejects non-tick-aligned sizes
+  // and Codex Round 2 (Finding #7) flagged Leg A's absorption of the raw
+  // remainder as a deploy blocker.
+  //
+  // IEEE 754 noise absorption: on clean inputs (e.g. balance=1000,
+  // riskPct=1.0, stop=0.0020) totalQty arithmetic produces 4999.999999999995
+  // instead of 5000 — Math.floor of that divided by 1000 gives 4 ticks
+  // instead of 5, undersizing by a full tick (20% risk loss on this case).
+  // Adding 1e-9 before Math.floor absorbs the noise without affecting any
+  // case that genuinely needs to round down. The epsilon is much smaller
+  // than the smallest realistic minDealSize (0.1 GOLD), and much smaller
+  // than any rounding step the algorithm actually intends to apply.
+  const TICK_EPSILON = 1e-9;
+  const totalTicks = Math.floor(totalQty / minDealSize + TICK_EPSILON);
+  if (totalTicks < 2) {
+    // Need at least 2 ticks to give 1 to each leg. Fewer than that means
+    // the trade is fundamentally too small for this instrument's tick
+    // rule given the requested risk pct + stop distance.
     return {
       ok: false,
       error: 'BELOW_MIN_SIZE',
-      reason: `Computed Leg B size (${sizeBRaw.toFixed(6)} → ${sizeB} after tick floor) is below minDealSize ${minDealSize}. Account too small for this tier × stop distance combination. Either upgrade the tier (raises total_risk_pct → larger total_qty), tighten the SL (smaller |entry−sl| → larger total_qty), or skip until the account grows.`,
+      reason: `Total qty ${totalQty.toFixed(6)} would round to ${totalTicks} tick(s) of size ${minDealSize}; need at least 2 ticks (one per leg). Account too small for this tier × stop distance combination. Either upgrade the tier (raises total_risk_pct → larger total_qty), tighten the SL (smaller |entry−sl| → larger total_qty), or skip until the account grows.`,
     };
   }
-  if (sizeA < minDealSize) {
-    // This is rare — would require minDealSize > ~70% of total_qty, i.e. a
-    // very small account on a very strict-min instrument. Reported separately
-    // so the operator can distinguish.
+  const sizeBTicks = Math.floor(totalTicks * 0.30);
+  const sizeATicks = totalTicks - sizeBTicks;
+  const sizeA = sizeATicks * minDealSize;
+  const sizeB = sizeBTicks * minDealSize;
+
+  if (sizeBTicks < 1) {
+    // 30% of fewer than ~3 ticks rounds to 0. Same remediation as above.
     return {
       ok: false,
       error: 'BELOW_MIN_SIZE',
-      reason: `Computed Leg A size (${sizeA}) is below minDealSize ${minDealSize}. Account too small for this tier × stop distance combination.`,
+      reason: `Leg B at 30% of ${totalTicks} ticks rounds to 0 (size_b=${sizeB}, below minDealSize ${minDealSize}). Account too small for this tier × stop distance combination.`,
+    };
+  }
+  if (sizeATicks < 1) {
+    // Would only happen if sizeBTicks somehow consumed all ticks — guarded
+    // by the totalTicks ≥ 2 check above, but defensive.
+    return {
+      ok: false,
+      error: 'BELOW_MIN_SIZE',
+      reason: `Leg A would receive ${sizeATicks} ticks (size_a=${sizeA}, below minDealSize ${minDealSize}). Account too small for this tier × stop distance combination.`,
     };
   }
 
@@ -1053,7 +1094,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       if (tokenStr !== hash) {
         return JSON.stringify({
           error: 'PROPOSAL_HASH_MISMATCH',
-          reason: 'analyst_token was issued for a different proposal. The trade params must match exactly what was approved (size, SL, TP, score, tier). Re-request analyst_review with the current proposal.',
+          reason: 'analyst_token was issued for a different proposal. The trade params must match exactly what was approved (entry, SL, TP1/TP2, score, tier, total_risk_pct, setup_type, kill_zone, instrument/epic). Note: size_a and size_b are NOT part of the hash post-2026-05-07 — sizing is computed server-side from total_risk_pct + balance + minDealSize. Re-request analyst_review with the current proposal.',
           expected_hash: hash,
           provided_token: input.analyst_token,
         });
