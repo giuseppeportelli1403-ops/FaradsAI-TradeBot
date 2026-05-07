@@ -17,7 +17,13 @@
 // The validator is a pure function — no side effects, no async, no DB.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { validateRRFloor, isTightSpreadTicker, validateOrderSide, validateRiskPct } from '../src/agents/trading-agent.js';
+import {
+  validateRRFloor,
+  isTightSpreadTicker,
+  validateOrderSide,
+  validateRiskPct,
+  computeServerSizing,
+} from '../src/agents/trading-agent.js';
 
 describe('isTightSpreadTicker', () => {
   it('returns true for EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD', () => {
@@ -424,6 +430,258 @@ describe('validateRiskPct — tolerance tightened from ±0.05 to ±0.005 (audit 
   it('rejects non-finite riskPct or expectedRiskPct', () => {
     expect(validateRiskPct({ riskPct: NaN, expectedRiskPct: 0.25 }).ok).toBe(false);
     expect(validateRiskPct({ riskPct: 0.25, expectedRiskPct: Infinity }).ok).toBe(false);
+  });
+});
+
+// ==================== computeServerSizing — tick-aware 70/30 (2026-05-07 Codex follow-up) ====================
+// The Phase 2 follow-up moves leg sizing to the server. The LLM no longer
+// computes size_a / size_b — the server derives them deterministically from
+// (balance, total_risk_pct, entry, sl, minDealSize). Codex flagged that as
+// the deploy blocker on commit 840fa8d. These tests pin the formula and the
+// tick-rounding behavior across the universe of tick rules we actually see
+// on Capital.com (FX majors min 1000, GOLD min 0.1, SILVER min 0.5).
+
+describe('computeServerSizing — tick-aware 70/30 leg split', () => {
+  describe('FX majors (minDealSize = 1000 contracts)', () => {
+    // Typical FX setup: $1000 balance, 1% risk = $10, 20-pip SL on EURUSD
+    // Total qty = 10 / 0.0020 = 5000 contracts.
+    // size_b_raw = 1500; floor to 1000 → size_b = 1000.
+    // size_a = 5000 - 1000 = 4000 (absorbs the rounding remainder).
+    it('$1000 × 1% × 0.0020 SL → total 5000, size_b=1000, size_a=4000', () => {
+      const r = computeServerSizing({
+        balance: 1000,
+        totalRiskPct: 1.0,
+        entry: 1.1000,
+        sl: 1.0980,
+        minDealSize: 1000,
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.totalQty).toBeCloseTo(5000, 6);
+        expect(r.sizeB).toBe(1000);
+        expect(r.sizeA).toBeCloseTo(4000, 6);
+        // Total preserved (modulo IEEE 754 noise)
+        expect(r.sizeA + r.sizeB).toBeCloseTo(r.totalQty, 6);
+      }
+    });
+
+    it('size_b is rounded DOWN, never up — total_qty 5333 → size_b=1000 (raw 1599.9, floor 1000)', () => {
+      // Demonstrates the tick floor: raw 1599.9 must NOT round up to 2000.
+      // total_qty = (10000 * 0.01) / 0.01875 ≈ 5333.33
+      const r = computeServerSizing({
+        balance: 10000,
+        totalRiskPct: 1.0,
+        entry: 1.1000,
+        sl: 1.08125,
+        minDealSize: 1000,
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        // Math.floor(0.30 * 5333.33 / 1000) * 1000 = floor(1.599...) * 1000 = 1000
+        expect(r.sizeB).toBe(1000);
+        expect(r.sizeA).toBeCloseTo(r.totalQty - 1000, 6);
+      }
+    });
+
+    it('rejects when size_b would round to 0 (account too small)', () => {
+      // $100 × 1% × 0.0020 SL → total 500. size_b_raw = 150 < 1000 → floor to 0.
+      const r = computeServerSizing({
+        balance: 100,
+        totalRiskPct: 1.0,
+        entry: 1.1000,
+        sl: 1.0980,
+        minDealSize: 1000,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toBe('BELOW_MIN_SIZE');
+        expect(r.reason).toMatch(/Leg B/);
+        expect(r.reason).toMatch(/1000/);
+      }
+    });
+  });
+
+  describe('GOLD (minDealSize = 0.1)', () => {
+    it('rounds size_b to 0.1 increments', () => {
+      // $5000 × 1% × $5 SL → total qty = 50/5 = 10.0
+      // size_b_raw = 3.0 → tick floor to 3.0 (already aligned)
+      const r = computeServerSizing({
+        balance: 5000,
+        totalRiskPct: 1.0,
+        entry: 4500,
+        sl: 4495,
+        minDealSize: 0.1,
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.totalQty).toBeCloseTo(10, 6);
+        expect(r.sizeB).toBeCloseTo(3.0, 6);
+        expect(r.sizeA).toBeCloseTo(7.0, 6);
+      }
+    });
+
+    it('non-aligned size_b is floored DOWN to nearest 0.1', () => {
+      // Total qty = 10.55 → size_b_raw = 3.165 → floor to 3.1
+      // Use balance + risk to land total exactly 10.55 (within IEEE 754).
+      // 10.55 = 0.01 * X / 5 → X = 5275
+      const r = computeServerSizing({
+        balance: 5275,
+        totalRiskPct: 1.0,
+        entry: 4500,
+        sl: 4495,
+        minDealSize: 0.1,
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.totalQty).toBeCloseTo(10.55, 6);
+        // floor(3.165 / 0.1) * 0.1 = floor(31.65) * 0.1 = 31 * 0.1 = 3.1
+        expect(r.sizeB).toBeCloseTo(3.1, 6);
+        // Leg A absorbs the remainder
+        expect(r.sizeA).toBeCloseTo(10.55 - 3.1, 6);
+      }
+    });
+  });
+
+  describe('SILVER (minDealSize = 0.5)', () => {
+    it('rounds size_b DOWN to 0.5 increments', () => {
+      // $1000 × 0.5% × 0.20 SL → total = 5/0.20 = 25.0
+      // size_b_raw = 7.5 → already aligned at 0.5 step → size_b = 7.5
+      const r = computeServerSizing({
+        balance: 1000,
+        totalRiskPct: 0.5,
+        entry: 25.00,
+        sl: 24.80,
+        minDealSize: 0.5,
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.totalQty).toBeCloseTo(25, 6);
+        expect(r.sizeB).toBeCloseTo(7.5, 6);
+        expect(r.sizeA).toBeCloseTo(17.5, 6);
+      }
+    });
+
+    it('non-aligned size_b floors DOWN — raw 7.8 → 7.5 (not 8.0)', () => {
+      // total_qty = 26.0 → size_b_raw = 7.8 → floor(7.8/0.5)*0.5 = floor(15.6)*0.5 = 15*0.5 = 7.5
+      const r = computeServerSizing({
+        balance: 1040,
+        totalRiskPct: 0.5,
+        entry: 25.00,
+        sl: 24.80,
+        minDealSize: 0.5,
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        expect(r.totalQty).toBeCloseTo(26, 6);
+        expect(r.sizeB).toBeCloseTo(7.5, 6);
+        expect(r.sizeA).toBeCloseTo(18.5, 6);
+      }
+    });
+  });
+
+  describe('input validation', () => {
+    it('rejects non-finite balance', () => {
+      const r = computeServerSizing({
+        balance: NaN,
+        totalRiskPct: 1.0,
+        entry: 1.1,
+        sl: 1.098,
+        minDealSize: 1000,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toBe('INVALID_INPUT');
+    });
+
+    it('rejects non-finite totalRiskPct', () => {
+      const r = computeServerSizing({
+        balance: 1000,
+        totalRiskPct: Infinity,
+        entry: 1.1,
+        sl: 1.098,
+        minDealSize: 1000,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toBe('INVALID_INPUT');
+    });
+
+    it('rejects zero / negative balance', () => {
+      const r = computeServerSizing({
+        balance: 0,
+        totalRiskPct: 1.0,
+        entry: 1.1,
+        sl: 1.098,
+        minDealSize: 1000,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toBe('INVALID_INPUT');
+    });
+
+    it('rejects entry == sl (zero stop distance)', () => {
+      const r = computeServerSizing({
+        balance: 1000,
+        totalRiskPct: 1.0,
+        entry: 1.1,
+        sl: 1.1,
+        minDealSize: 1000,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.error).toBe('INVALID_INPUT');
+        expect(r.reason).toMatch(/stop distance/i);
+      }
+    });
+
+    it('rejects non-positive minDealSize', () => {
+      const r = computeServerSizing({
+        balance: 1000,
+        totalRiskPct: 1.0,
+        entry: 1.1,
+        sl: 1.098,
+        minDealSize: 0,
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toBe('INVALID_INPUT');
+    });
+
+    it('shorts and longs produce identical sizes — direction does not matter', () => {
+      // sizing depends only on |entry − sl|, not direction
+      const longResult = computeServerSizing({
+        balance: 1000, totalRiskPct: 1.0,
+        entry: 1.1000, sl: 1.0980, minDealSize: 1000,
+      });
+      const shortResult = computeServerSizing({
+        balance: 1000, totalRiskPct: 1.0,
+        entry: 1.1000, sl: 1.1020, minDealSize: 1000,
+      });
+      expect(longResult.ok).toBe(true);
+      expect(shortResult.ok).toBe(true);
+      if (longResult.ok && shortResult.ok) {
+        expect(longResult.sizeA).toBeCloseTo(shortResult.sizeA, 6);
+        expect(longResult.sizeB).toBeCloseTo(shortResult.sizeB, 6);
+      }
+    });
+  });
+
+  describe('total risk preservation', () => {
+    it('total qty equals sum of legs across a sweep of inputs (Leg A absorbs rounding)', () => {
+      const cases = [
+        { balance: 1000, riskPct: 1.0,  entry: 1.10, sl: 1.098, minDealSize: 1000 },
+        { balance: 1500, riskPct: 0.5,  entry: 1.10, sl: 1.097, minDealSize: 1000 },
+        { balance: 5000, riskPct: 1.5,  entry: 4500, sl: 4495,  minDealSize: 0.1 },
+        { balance: 2500, riskPct: 0.25, entry: 25.0, sl: 24.8,  minDealSize: 0.5 },
+      ];
+      for (const c of cases) {
+        const r = computeServerSizing({
+          balance: c.balance, totalRiskPct: c.riskPct,
+          entry: c.entry, sl: c.sl, minDealSize: c.minDealSize,
+        });
+        if (!r.ok) continue;  // BELOW_MIN_SIZE cases are not the test target here
+        // Total preserved: sum of legs equals total_qty exactly (within IEEE 754 noise)
+        expect(r.sizeA + r.sizeB).toBeCloseTo(r.totalQty, 6);
+        // size_b never exceeds 30% of total_qty (the tick floor guarantee)
+        expect(r.sizeB).toBeLessThanOrEqual(0.30 * r.totalQty + 1e-9);
+      }
+    });
   });
 });
 

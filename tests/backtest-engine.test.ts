@@ -18,7 +18,11 @@ import {
   computeScore,
   assignTier,
   getKillZone,
+  _internalsForTest,
 } from '../src/backtest/engine.js';
+import type { Candle } from '../src/types.js';
+
+const { resolveOutcome } = _internalsForTest;
 
 describe('computeScore — post-2026-04-29 rebalanced rubric', () => {
   it('clean bullish bias (clarity 20→25) on tight-spread instrument: 25 + 25 + 0 + 0 + 5 = 55', () => {
@@ -172,5 +176,170 @@ describe('getKillZone — post-2026-04-29 overlap fix', () => {
     expect(getKillZone('2026-05-04T10:00:00Z').inKillZone).toBe(false);
     expect(getKillZone('2026-05-04T11:30:00Z').inKillZone).toBe(false);
     expect(getKillZone('2026-05-04T12:59:00Z').inKillZone).toBe(false);
+  });
+});
+
+// ==================== resolveOutcome — 2-leg P&L (post-2026-05-07) ====================
+// Pin gross AND net pnl_r values for each outcome of the new 2-leg model:
+//   tp2    → +1.09R gross  (Leg A +1R × 0.70 + Leg B +1.3R × 0.30)
+//   tp1_be → +0.7R  gross  (Leg A +1R × 0.70 + Leg B 0R × 0.30 — runner BE-stop)
+//   sl     → -1R    gross  (both legs at SL)
+// `executionCost` is subtracted from the gross to produce `pnl_r`. Tests
+// below pin both gross (unknown ticker → cost=0) and net (known ticker → cost > 0).
+
+/** Helper: build a candle with explicit OHLC. Volume is irrelevant to
+ *  resolveOutcome (it inspects only high/low/datetime). */
+function makeCandle(datetime: string, open: number, high: number, low: number, close: number): Candle {
+  return { datetime, open, high, low, close, volume: 0 };
+}
+
+describe('resolveOutcome — gross P&L (executionCost = 0 via unknown ticker)', () => {
+  // Use 'GROSS_TEST_TICKER' — not in EXECUTION_COSTS, so computeExecutionCost
+  // returns 0. This isolates the gross R math from the realism subtraction.
+  const ticker = 'GROSS_TEST_TICKER';
+
+  it('LONG sl outcome → -1R gross (no TP1 hit, then SL hit)', () => {
+    // entry=100, sl=98, tp1=102, tp2=102.6 (1.3R)
+    // Candle 0: low touches sl → SL fires before any TP
+    const candles = [makeCandle('2026-05-04T08:00:00Z', 100, 100.5, 97.5, 99)];
+    const r = resolveOutcome(ticker, candles, 0, 'long', 100, 98, 102, 102.6);
+    expect(r.outcome).toBe('sl');
+    expect(r.pnl_r).toBe(-1);
+    expect(r.exit_time).toBe('2026-05-04T08:00:00Z');
+  });
+
+  it('LONG tp1_be outcome → +0.7R gross (TP1 hit, then runner stopped at entry)', () => {
+    // Candle 0: high reaches tp1 (102) → tp1Hit=true. Effective stop now = entry (100).
+    // Candle 1: low drops to 100 (entry) → tp1_be fires.
+    const candles = [
+      makeCandle('2026-05-04T08:00:00Z', 100, 102, 99.5, 101),
+      makeCandle('2026-05-04T09:00:00Z', 101, 101.5, 99.9, 100),
+    ];
+    const r = resolveOutcome(ticker, candles, 0, 'long', 100, 98, 102, 102.6);
+    expect(r.outcome).toBe('tp1_be');
+    expect(r.pnl_r).toBe(0.7);
+    expect(r.exit_time).toBe('2026-05-04T09:00:00Z');
+  });
+
+  it('LONG tp2 outcome → +1.09R gross (TP1 hit, then TP2 hit on a later candle)', () => {
+    // Candle 0: hits tp1 (102) only.
+    // Candle 1: hits tp2 (102.6) → full win.
+    const candles = [
+      makeCandle('2026-05-04T08:00:00Z', 100, 102, 99.5, 101.5),
+      makeCandle('2026-05-04T09:00:00Z', 101.5, 102.7, 101, 102.6),
+    ];
+    const r = resolveOutcome(ticker, candles, 0, 'long', 100, 98, 102, 102.6);
+    expect(r.outcome).toBe('tp2');
+    // Exact 1.09 — IEEE 754 is well-behaved for 1 + 0.09 here.
+    expect(r.pnl_r).toBeCloseTo(1.09, 10);
+    expect(r.exit_time).toBe('2026-05-04T09:00:00Z');
+  });
+
+  it('SHORT sl outcome → -1R gross', () => {
+    // entry=100, sl=102, tp1=98, tp2=97.4
+    // Candle 0: high reaches sl (102) before any TP.
+    const candles = [makeCandle('2026-05-04T08:00:00Z', 100, 102.5, 99.5, 101.5)];
+    const r = resolveOutcome(ticker, candles, 0, 'short', 100, 102, 98, 97.4);
+    expect(r.outcome).toBe('sl');
+    expect(r.pnl_r).toBe(-1);
+  });
+
+  it('SHORT tp1_be outcome → +0.7R gross', () => {
+    // Candle 0: low touches tp1 (98). Candle 1: high recovers to entry (100).
+    const candles = [
+      makeCandle('2026-05-04T08:00:00Z', 100, 100.5, 98, 98.5),
+      makeCandle('2026-05-04T09:00:00Z', 98.5, 100, 98.5, 100),
+    ];
+    const r = resolveOutcome(ticker, candles, 0, 'short', 100, 102, 98, 97.4);
+    expect(r.outcome).toBe('tp1_be');
+    expect(r.pnl_r).toBe(0.7);
+  });
+
+  it('SHORT tp2 outcome → +1.09R gross', () => {
+    // Candle 0: low touches tp1 (98). Candle 1: low touches tp2 (97.4).
+    const candles = [
+      makeCandle('2026-05-04T08:00:00Z', 100, 100.5, 98, 99),
+      makeCandle('2026-05-04T09:00:00Z', 99, 99.5, 97.3, 97.4),
+    ];
+    const r = resolveOutcome(ticker, candles, 0, 'short', 100, 102, 98, 97.4);
+    expect(r.outcome).toBe('tp2');
+    expect(r.pnl_r).toBeCloseTo(1.09, 10);
+  });
+
+  it('runs out of candles after TP1 → tp1_be (defensive fallback)', () => {
+    // Candle 0: hits tp1 only. No further candles → fall through to the
+    // out-of-candles branch which uses tp1Hit to pick tp1_be vs sl.
+    const candles = [makeCandle('2026-05-04T08:00:00Z', 100, 102, 99.5, 101)];
+    const r = resolveOutcome(ticker, candles, 0, 'long', 100, 98, 102, 102.6);
+    expect(r.outcome).toBe('tp1_be');
+    expect(r.pnl_r).toBe(0.7);
+  });
+
+  it('runs out of candles before any TP → sl (defensive fallback)', () => {
+    // Candle 0: never reaches tp1, never reaches sl. tp1Hit stays false.
+    const candles = [makeCandle('2026-05-04T08:00:00Z', 100, 101, 99.5, 100.5)];
+    const r = resolveOutcome(ticker, candles, 0, 'long', 100, 98, 102, 102.6);
+    expect(r.outcome).toBe('sl');
+    expect(r.pnl_r).toBe(-1);
+  });
+});
+
+describe('resolveOutcome — net P&L (executionCost > 0 via known ticker)', () => {
+  // EURUSD has spread+entry+exit slippage = 0.00008 + 0.00007 + 0.00004
+  // = 0.00019 native. With stopDistance = 0.0020, executionCost = 0.0950 R.
+  // Gross ± 0.0950 must equal net.
+  const ticker = 'EURUSD';
+  const stopDistance = 0.0020;
+  const expectedCost = 0.0950;     // (0.00008 + 0.00007 + 0.00004) / 0.0020
+
+  it('LONG tp2 outcome → +1.09R gross − cost = net', () => {
+    const candles = [
+      makeCandle('2026-05-04T08:00:00Z', 1.1000, 1.1020, 1.0995, 1.1015),
+      makeCandle('2026-05-04T09:00:00Z', 1.1015, 1.1027, 1.1010, 1.1026),
+    ];
+    const r = resolveOutcome(ticker, candles, 0, 'long', 1.1000, 1.0980, 1.1020, 1.1026);
+    expect(r.outcome).toBe('tp2');
+    expect(r.pnl_r).toBeCloseTo(1.09 - expectedCost, 4);
+  });
+
+  it('LONG tp1_be outcome → +0.7R gross − cost = net', () => {
+    const candles = [
+      makeCandle('2026-05-04T08:00:00Z', 1.1000, 1.1020, 1.0995, 1.1010),
+      makeCandle('2026-05-04T09:00:00Z', 1.1010, 1.1015, 1.0999, 1.1000),
+    ];
+    const r = resolveOutcome(ticker, candles, 0, 'long', 1.1000, 1.0980, 1.1020, 1.1026);
+    expect(r.outcome).toBe('tp1_be');
+    expect(r.pnl_r).toBeCloseTo(0.7 - expectedCost, 4);
+  });
+
+  it('LONG sl outcome → -1R gross − cost = net', () => {
+    const candles = [
+      makeCandle('2026-05-04T08:00:00Z', 1.1000, 1.1005, 1.0975, 1.0980),
+    ];
+    const r = resolveOutcome(ticker, candles, 0, 'long', 1.1000, 1.0980, 1.1020, 1.1026);
+    expect(r.outcome).toBe('sl');
+    expect(r.pnl_r).toBeCloseTo(-1 - expectedCost, 4);
+  });
+
+  it('execution cost is consistently subtracted across all outcomes (regression guard)', () => {
+    // Same setup as above, all three outcomes — verify the subtraction is
+    // uniform (no outcome accidentally skipping the cost).
+    const slCandles = [makeCandle('s', 1.1000, 1.1005, 1.0975, 1.0980)];
+    const beCandles = [
+      makeCandle('a', 1.1000, 1.1020, 1.0995, 1.1010),
+      makeCandle('b', 1.1010, 1.1015, 1.0999, 1.1000),
+    ];
+    const tp2Candles = [
+      makeCandle('a', 1.1000, 1.1020, 1.0995, 1.1015),
+      makeCandle('b', 1.1015, 1.1027, 1.1010, 1.1026),
+    ];
+    const sl = resolveOutcome(ticker, slCandles, 0, 'long', 1.1000, 1.0980, 1.1020, 1.1026);
+    const be = resolveOutcome(ticker, beCandles, 0, 'long', 1.1000, 1.0980, 1.1020, 1.1026);
+    const tp2 = resolveOutcome(ticker, tp2Candles, 0, 'long', 1.1000, 1.0980, 1.1020, 1.1026);
+
+    // gross_sl - net_sl == gross_be - net_be == gross_tp2 - net_tp2 == executionCost
+    expect((-1) - sl.pnl_r).toBeCloseTo(expectedCost, 4);
+    expect(0.7 - be.pnl_r).toBeCloseTo(expectedCost, 4);
+    expect(1.09 - tp2.pnl_r).toBeCloseTo(expectedCost, 4);
   });
 });

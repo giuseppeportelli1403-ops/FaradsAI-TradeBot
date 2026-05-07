@@ -356,3 +356,14 @@ export function runBacktest(
     trades,
   };
 }
+
+/**
+ * Test-only re-export of `resolveOutcome` so tests can pin gross + net P&L
+ * for each outcome of the new 2-leg model (post-2026-05-07 restructure).
+ * Keeping this at the bottom of the module so it's visually obvious it's
+ * not part of the public runtime surface — same pattern as
+ * src/backtest/realism.ts `_internalsForTest`.
+ */
+export const _internalsForTest = {
+  resolveOutcome,
+};
