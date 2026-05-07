@@ -64,7 +64,10 @@ const capital = new CapitalClient({
 export interface MonitorDeps {
   // 2026-04-29 audit-3 r6: added 'getMarketDetails' for price-proximity
   // close-reason classification.
-  capital: Pick<CapitalClient, 'getOpenPositions' | 'getActivityHistory' | 'updatePosition' | 'getMarketDetails'>;
+  capital: Pick<
+    CapitalClient,
+    'getOpenPositions' | 'getActivityHistory' | 'updatePosition' | 'safelyAmendPosition' | 'getMarketDetails'
+  >;
   getActiveSlTpOrders: typeof realGetActiveSlTpOrders;
   getTradeById: typeof realGetTradeById;
   deactivateSlTpOrder: typeof realDeactivateSlTpOrder;
@@ -430,37 +433,26 @@ export async function handleTp1Hit(
   d.updateTradeStatus(tradeId, 'tp1_hit');
   d.deactivateSlTpOrder(tradeId, 'A');
 
-  // Move Position B's SL to break-even (the entry price). The profitLevel
-  // (TP2) is re-supplied to defeat Capital.com's PUT-amend semantics: omitting
-  // a field on amend nulls it out broker-side. Observed live on 2026-05-07:
-  // SILVER trade had B's TP stripped after this handler fired, leaving the
-  // runner uncapped. Re-supplying trade.tp2 keeps the existing TP intact.
+  // Move Position B's SL to break-even (the entry price). safelyAmendPosition
+  // round-trips broker-side stopLevel/profitLevel/trailingStop so the SL change
+  // doesn't strip the existing TP. Observed live 2026-05-07 on a SILVER 3-leg
+  // trade: a partial-body amend ({ stopLevel: x }) here had nulled both
+  // runners' TPs server-side, leaving them uncapped on the upside.
   if (trade.position_b_id) {
     try {
-      await d.capital.updatePosition(trade.position_b_id, {
-        stopLevel: trade.entry,
-        profitLevel: trade.tp2,
-      });
-      console.log(
-        `[TP1] ${trade.instrument} — Position B SL→BE (${trade.entry}), TP preserved at ${trade.tp2}`,
-      );
+      await d.capital.safelyAmendPosition(trade.position_b_id, { stopLevel: trade.entry });
+      console.log(`[TP1] ${trade.instrument} — Position B SL→BE (${trade.entry})`);
     } catch (error) {
       console.error(`[TP1] Failed to move Position B SL to BE for ${tradeId}: ${summarizeError(error)}`);
     }
   }
 
   // Move Position C's SL to break-even too (3-leg). Legacy 2-leg trades
-  // without position_c_id skip this step silently. Same TP-preservation
-  // applies — re-supply tp3 (which is non-null whenever position_c_id is set).
+  // without position_c_id skip this step silently.
   if (trade.position_c_id) {
     try {
-      await d.capital.updatePosition(trade.position_c_id, {
-        stopLevel: trade.entry,
-        ...(trade.tp3 != null ? { profitLevel: trade.tp3 } : {}),
-      });
-      console.log(
-        `[TP1] ${trade.instrument} — Position C SL→BE (${trade.entry}), TP preserved at ${trade.tp3}`,
-      );
+      await d.capital.safelyAmendPosition(trade.position_c_id, { stopLevel: trade.entry });
+      console.log(`[TP1] ${trade.instrument} — Position C SL→BE (${trade.entry})`);
     } catch (error) {
       console.error(`[TP1] Failed to move Position C SL to BE for ${tradeId}: ${summarizeError(error)}`);
     }
@@ -499,17 +491,12 @@ export async function handleTp2Hit(
   }
 
   // 3-leg path — intermediate milestone. C still running with trailing SL.
-  // Same TP-preservation as TP1 handler: re-supply profitLevel so the amend
-  // doesn't null out C's TP3.
+  // safelyAmendPosition round-trips broker-side TP3 so trailing the SL doesn't
+  // null it out (same partial-amend hazard as the TP1 handler above).
   d.updateTradeStatus(tradeId, 'tp2_hit');
   try {
-    await d.capital.updatePosition(trade.position_c_id, {
-      stopLevel: trade.tp1,
-      ...(trade.tp3 != null ? { profitLevel: trade.tp3 } : {}),
-    });
-    console.log(
-      `[TP2] ${trade.instrument} — Position C SL→TP1 trailing (${trade.tp1}), TP preserved at ${trade.tp3}`,
-    );
+    await d.capital.safelyAmendPosition(trade.position_c_id, { stopLevel: trade.tp1 });
+    console.log(`[TP2] ${trade.instrument} — Position C SL→TP1 trailing (${trade.tp1})`);
   } catch (error) {
     console.error(`[TP2] Failed to trail Position C SL to TP1 for ${tradeId}: ${summarizeError(error)}`);
   }

@@ -592,6 +592,150 @@ describe('CapitalClient — openPosition deal confirmation polling', () => {
   });
 });
 
+describe('CapitalClient — safelyAmendPosition (TP-preservation helper)', () => {
+  beforeEach(() => {
+    resetAxiosMock();
+  });
+
+  // Regression context: live SILVER bug 2026-05-07. The scheduler's SL→BE
+  // handler sent { stopLevel: x } via updatePosition; Capital.com's PUT amend
+  // semantics treat omitted fields as "remove", so both runner-leg TPs were
+  // nulled server-side. safelyAmendPosition fetches current state, merges
+  // changes onto it, and PUTs the full payload — making partial-amend strips
+  // structurally impossible.
+
+  it('GET → merge → PUT: SL change preserves existing profitLevel server-side', async () => {
+    // 1) session
+    // 2) GET /positions/DEAL-1 → { stopLevel: 1.0830, profitLevel: 1.0876, trailingStop: false }
+    // 3) PUT /positions/DEAL-1 → { dealReference: 'REF' }
+    // 4) GET /confirms/REF → ACCEPTED
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(
+        okJson({
+          position: {
+            dealId: 'DEAL-1',
+            dealReference: 'p_DEAL-1',
+            direction: 'BUY',
+            size: 0.5,
+            openLevel: 1.0853,
+            stopLevel: 1.0830,
+            profitLevel: 1.0876,
+            trailingStop: false,
+            trailingStopDistance: null,
+            guaranteedStop: false,
+            createdDateUTC: '2026-05-07T07:02:31Z',
+            controlledRisk: false,
+          },
+          market: { instrumentName: 'EUR/USD', epic: 'EURUSD', bid: 1.0860, offer: 1.0861, marketStatus: 'TRADEABLE' },
+        }),
+      )
+      .mockResolvedValueOnce(okJson({ dealReference: 'REF-AMEND' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'DEAL-1',
+          dealReference: 'REF-AMEND',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'AMENDED',
+          direction: 'BUY',
+          epic: 'EURUSD',
+          size: 0.5,
+          level: 1.0853,
+          stopLevel: 1.0853,
+          profitLevel: 1.0876,
+          affectedDeals: [{ dealId: 'DEAL-1', status: 'AMENDED' }],
+        }),
+      );
+
+    const client = makeClient();
+    const result = await client.safelyAmendPosition('DEAL-1', { stopLevel: 1.0853 });
+
+    expect(result.dealStatus).toBe('ACCEPTED');
+
+    // Verify the PUT body — it MUST include profitLevel even though the caller
+    // only asked to change stopLevel. This is the bug-defeating invariant.
+    const putCall = requestMock.mock.calls[2][0];
+    expect(putCall.method).toBe('PUT');
+    expect(putCall.url).toBe('/api/v1/positions/DEAL-1');
+    expect(putCall.data).toEqual({
+      stopLevel: 1.0853, // caller's change wins
+      profitLevel: 1.0876, // round-tripped from current state
+    });
+  });
+
+  it('round-trips trailingStop + stopDistance when the position has a trailing stop', async () => {
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(
+        okJson({
+          position: {
+            dealId: 'DEAL-2',
+            dealReference: 'p_DEAL-2',
+            direction: 'BUY',
+            size: 0.5,
+            openLevel: 1.0853,
+            stopLevel: null,
+            profitLevel: 1.0876,
+            trailingStop: true,
+            trailingStopDistance: 0.0030,
+            guaranteedStop: false,
+            createdDateUTC: '2026-05-07T07:02:31Z',
+            controlledRisk: false,
+          },
+          market: { instrumentName: 'EUR/USD', epic: 'EURUSD', bid: 1.0860, offer: 1.0861, marketStatus: 'TRADEABLE' },
+        }),
+      )
+      .mockResolvedValueOnce(okJson({ dealReference: 'REF-TRAIL' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'DEAL-2',
+          dealReference: 'REF-TRAIL',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'AMENDED',
+          direction: 'BUY',
+          epic: 'EURUSD',
+          size: 0.5,
+          level: 1.0853,
+          stopLevel: null,
+          profitLevel: 1.0900,
+          affectedDeals: [{ dealId: 'DEAL-2', status: 'AMENDED' }],
+        }),
+      );
+
+    const client = makeClient();
+    await client.safelyAmendPosition('DEAL-2', { profitLevel: 1.0900 });
+
+    const putCall = requestMock.mock.calls[2][0];
+    expect(putCall.data).toEqual({
+      profitLevel: 1.0900, // caller's change wins
+      trailingStop: true, // round-tripped
+      stopDistance: 0.0030, // round-tripped from trailingStopDistance
+      // No stopLevel — current was null
+    });
+  });
+
+  it('returns synthetic ALREADY_CLOSED if the position closed before GET (race)', async () => {
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce({
+        status: 404,
+        data: { errorCode: 'error.position.not-found' },
+        headers: {},
+      });
+
+    const client = makeClient();
+    const result = await client.safelyAmendPosition('DEAL-GONE', { stopLevel: 1.0900 });
+
+    expect(result.dealStatus).toBe('ACCEPTED');
+    expect(result.status).toBe('FULLY_CLOSED');
+    expect(result.reason).toBe('POSITION_ALREADY_CLOSED_BY_BROKER');
+    // Crucially: no PUT was attempted — only the session + the failed GET.
+    expect(requestMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('CapitalClient — partialClosePosition', () => {
   beforeEach(() => {
     resetAxiosMock();

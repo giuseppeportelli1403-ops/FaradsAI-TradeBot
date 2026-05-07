@@ -1327,7 +1327,9 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           continue;
         }
         try {
-          await capital.updatePosition(order.deal_id, { stopLevel: newSl });
+          // safelyAmendPosition preserves existing profitLevel + trailingStop
+          // on each leg — Capital.com strips omitted fields on PUT amend.
+          await capital.safelyAmendPosition(order.deal_id, { stopLevel: newSl });
           updateSlPrice(tradeId, order.leg, newSl);
           results.push({ leg: order.leg, deal_id: order.deal_id, ok: true });
         } catch (err) {

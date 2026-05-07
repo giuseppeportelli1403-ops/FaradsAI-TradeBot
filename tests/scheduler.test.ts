@@ -334,6 +334,7 @@ function makeDeps(overrides: Partial<MonitorDeps> = {}): MonitorDeps & {
     getOpenPositions: ReturnType<typeof vi.fn>;
     getActivityHistory: ReturnType<typeof vi.fn>;
     updatePosition: ReturnType<typeof vi.fn>;
+    safelyAmendPosition: ReturnType<typeof vi.fn>;
     getActiveSlTpOrders: ReturnType<typeof vi.fn>;
     getTradeById: ReturnType<typeof vi.fn>;
     deactivateSlTpOrder: ReturnType<typeof vi.fn>;
@@ -346,6 +347,24 @@ function makeDeps(overrides: Partial<MonitorDeps> = {}): MonitorDeps & {
   const getOpenPositions = vi.fn(async () => [] as CapitalPosition[]);
   const getActivityHistory = vi.fn(async () => [] as Activity[]);
   const updatePosition = vi.fn(async () => ({
+    dealId: 'X',
+    dealReference: 'Y',
+    dealStatus: 'ACCEPTED',
+    reason: '',
+    status: 'AMENDED',
+    direction: 'BUY',
+    epic: 'EURUSD',
+    size: 0.5,
+    level: 1.0853,
+    stopLevel: 1.0853,
+    profitLevel: 1.0876,
+    affectedDeals: [],
+  }));
+  // safelyAmendPosition is the preferred amend method — fetches current state
+  // and merges before PUTting, so callers don't need to know existing TP/SL
+  // values. Tests assert against THIS, not updatePosition. (The 2026-05-07
+  // SL→BE bug came from a partial PUT — see capital-client.ts.)
+  const safelyAmendPosition = vi.fn(async () => ({
     dealId: 'X',
     dealReference: 'Y',
     dealStatus: 'ACCEPTED',
@@ -373,6 +392,8 @@ function makeDeps(overrides: Partial<MonitorDeps> = {}): MonitorDeps & {
       getActivityHistory:
         getActivityHistory as unknown as MonitorDeps['capital']['getActivityHistory'],
       updatePosition: updatePosition as unknown as MonitorDeps['capital']['updatePosition'],
+      safelyAmendPosition:
+        safelyAmendPosition as unknown as MonitorDeps['capital']['safelyAmendPosition'],
     },
     getActiveSlTpOrders:
       getActiveSlTpOrders as unknown as MonitorDeps['getActiveSlTpOrders'],
@@ -391,6 +412,7 @@ function makeDeps(overrides: Partial<MonitorDeps> = {}): MonitorDeps & {
       getOpenPositions,
       getActivityHistory,
       updatePosition,
+      safelyAmendPosition,
       getActiveSlTpOrders,
       getTradeById,
       deactivateSlTpOrder,
@@ -427,7 +449,7 @@ describe('monitorSplitPositions', () => {
     expect(deps._mocks.getActiveSlTpOrders).toHaveBeenCalledTimes(1);
     expect(deps._mocks.getOpenPositions).not.toHaveBeenCalled();
     expect(deps._mocks.getActivityHistory).not.toHaveBeenCalled();
-    expect(deps._mocks.updatePosition).not.toHaveBeenCalled();
+    expect(deps._mocks.safelyAmendPosition).not.toHaveBeenCalled();
     expect(deps._mocks.updateTradeStatus).not.toHaveBeenCalled();
     expect(deps._mocks.deactivateSlTpOrder).not.toHaveBeenCalled();
   });
@@ -442,7 +464,7 @@ describe('monitorSplitPositions', () => {
     await monitorSplitPositions(deps);
 
     expect(deps._mocks.getOpenPositions).toHaveBeenCalledTimes(1);
-    expect(deps._mocks.updatePosition).not.toHaveBeenCalled();
+    expect(deps._mocks.safelyAmendPosition).not.toHaveBeenCalled();
     expect(deps._mocks.updateTradeStatus).not.toHaveBeenCalled();
     expect(deps._mocks.deactivateSlTpOrder).not.toHaveBeenCalled();
     expect(deps._mocks.alertTp1Hit).not.toHaveBeenCalled();
@@ -474,14 +496,13 @@ describe('monitorSplitPositions', () => {
 
     await monitorSplitPositions(deps);
 
-    // Break-even move: exact numeric match on entry. profitLevel is re-supplied
-    // (Leg B targets tp2 = 1.0899 per makeTrade defaults) because Capital.com
-    // nulls omitted fields on PUT amend (regression guard for the 2026-05-07
-    // SILVER bug — see fix/sl-be-preserve-tp commit).
-    expect(deps._mocks.updatePosition).toHaveBeenCalledTimes(1);
-    expect(deps._mocks.updatePosition).toHaveBeenCalledWith('DEAL-B-1', {
+    // Break-even move: scheduler calls safelyAmendPosition with just the SL change;
+    // the helper round-trips the existing profitLevel/trailingStop server-side so
+    // Capital.com doesn't strip them. Regression guard for the 2026-05-07 SILVER
+    // bug — see fix/sl-be-preserve-tp commit.
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledTimes(1);
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-B-1', {
       stopLevel: 1.0853,
-      profitLevel: 1.0899,
     });
 
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-1', 'tp1_hit');
@@ -517,7 +538,7 @@ describe('monitorSplitPositions', () => {
 
     await monitorSplitPositions(deps);
 
-    expect(deps._mocks.updatePosition).not.toHaveBeenCalled();
+    expect(deps._mocks.safelyAmendPosition).not.toHaveBeenCalled();
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-1', 'sl_hit');
     expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('trade-1', 'A');
     expect(deps._mocks.alertSlHit).toHaveBeenCalledTimes(1);
@@ -546,7 +567,7 @@ describe('monitorSplitPositions', () => {
 
     await monitorSplitPositions(deps);
 
-    expect(deps._mocks.updatePosition).not.toHaveBeenCalled();
+    expect(deps._mocks.safelyAmendPosition).not.toHaveBeenCalled();
     expect(deps._mocks.updateTradeStatus).not.toHaveBeenCalled();
     expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('trade-1', 'A');
     expect(deps._mocks.alertTp1Hit).not.toHaveBeenCalled();
@@ -564,13 +585,13 @@ describe('monitorSplitPositions', () => {
 
     await expect(monitorSplitPositions(deps)).resolves.toBeUndefined();
 
-    expect(deps._mocks.updatePosition).not.toHaveBeenCalled();
+    expect(deps._mocks.safelyAmendPosition).not.toHaveBeenCalled();
     expect(deps._mocks.updateTradeStatus).not.toHaveBeenCalled();
     expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('missing', 'A');
     expect(warnSpy).toHaveBeenCalled();
   });
 
-  it('capital.updatePosition throws (Capital rejects BE move) → error caught, DB still updated, alert still attempted', async () => {
+  it('capital.safelyAmendPosition throws (Capital rejects BE move) → error caught, DB still updated, alert still attempted', async () => {
     const trade = makeTrade({ id: 'trade-1', entry: 1.0853, position_b_id: 'DEAL-B-1' });
     const deps = makeDeps();
     deps._mocks.getActiveSlTpOrders
@@ -590,15 +611,14 @@ describe('monitorSplitPositions', () => {
       },
     ]);
     deps._mocks.getTradeById.mockReturnValue(trade);
-    deps._mocks.updatePosition.mockRejectedValueOnce(new Error('Capital API 500'));
+    deps._mocks.safelyAmendPosition.mockRejectedValueOnce(new Error('Capital API 500'));
 
     // Should resolve (not throw) despite the Capital failure.
     await expect(monitorSplitPositions(deps)).resolves.toBeUndefined();
 
     // BE move was attempted with the right args, even though it failed.
-    expect(deps._mocks.updatePosition).toHaveBeenCalledWith('DEAL-B-1', {
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-B-1', {
       stopLevel: 1.0853,
-      profitLevel: 1.0899,
     });
     // DB still updated — the monitor does NOT roll back on Capital failure.
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-1', 'tp1_hit');
@@ -715,17 +735,16 @@ describe('monitorSplitPositions', () => {
 
     await monitorSplitPositions(deps);
 
-    // BE moves fired on BOTH B and C. profitLevel re-supplied per leg's TP target
-    // so Capital.com doesn't strip the existing TPs (regression guard for the
-    // 2026-05-07 SILVER bug — see fix/sl-be-preserve-tp commit).
-    expect(deps._mocks.updatePosition).toHaveBeenCalledTimes(2);
-    expect(deps._mocks.updatePosition).toHaveBeenCalledWith('DEAL-B-1', {
+    // BE moves fired on BOTH B and C via safelyAmendPosition — the helper
+    // round-trips broker-side stopLevel/profitLevel/trailingStop so Capital.com
+    // doesn't strip the existing TPs (regression guard for the 2026-05-07 SILVER
+    // bug — see fix/sl-be-preserve-tp commit).
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledTimes(2);
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-B-1', {
       stopLevel: 1.0853,
-      profitLevel: 1.0899, // tp2 (default from makeTrade)
     });
-    expect(deps._mocks.updatePosition).toHaveBeenCalledWith('DEAL-C-1', {
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-C-1', {
       stopLevel: 1.0853,
-      profitLevel: 1.0922, // tp3 (override)
     });
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-3leg', 'tp1_hit');
     expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('trade-3leg', 'A');
@@ -759,12 +778,11 @@ describe('monitorSplitPositions', () => {
 
     await monitorSplitPositions(deps);
 
-    // Key 3-leg behaviour: C SL now trails to TP1 (1.0876), not entry. profitLevel
-    // is re-supplied (TP3) so Capital.com doesn't strip C's TP on amend.
-    expect(deps._mocks.updatePosition).toHaveBeenCalledTimes(1);
-    expect(deps._mocks.updatePosition).toHaveBeenCalledWith('DEAL-C-1', {
+    // Key 3-leg behaviour: C SL now trails to TP1 (1.0876), not entry. The helper
+    // preserves broker-side TP3 automatically — scheduler just sends the SL change.
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledTimes(1);
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-C-1', {
       stopLevel: 1.0876,
-      profitLevel: 1.0922,
     });
     // Status is the intermediate 'tp2_hit' — trade still running on Leg C.
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-3leg', 'tp2_hit');

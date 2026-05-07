@@ -225,7 +225,11 @@ export function registerTradingTools(server: McpServer): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('set_trailing_stop', async ({ dealId, distance, trade_id }) => {
-      const confirmation = await capital.updatePosition(dealId, {
+      // safelyAmendPosition fetches current SL/TP state and round-trips them
+      // alongside the trailing-stop change, so adding a trailing stop doesn't
+      // strip the existing stopLevel / profitLevel server-side. (See the
+      // 2026-05-07 SL→BE bug for context.)
+      const confirmation = await capital.safelyAmendPosition(dealId, {
         trailingStop: true,
         stopDistance: distance,
       });
@@ -262,7 +266,9 @@ export function registerTradingTools(server: McpServer): void {
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('update_sl', async ({ dealId, new_sl, trade_id, leg }) => {
-      const confirmation = await capital.updatePosition(dealId, { stopLevel: new_sl });
+      // safelyAmendPosition preserves existing profitLevel / trailingStop on
+      // SL changes — Capital.com PUT semantics strip omitted fields.
+      const confirmation = await capital.safelyAmendPosition(dealId, { stopLevel: new_sl });
       if (trade_id) {
         if (leg) {
           updateSlPrice(trade_id, leg, new_sl);

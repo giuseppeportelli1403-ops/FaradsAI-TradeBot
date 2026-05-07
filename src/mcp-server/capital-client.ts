@@ -373,6 +373,78 @@ export class CapitalClient {
     return this.pollDealConfirmation(ref.dealReference);
   }
 
+  /**
+   * Safe amend that preserves all server-side protections (stopLevel,
+   * profitLevel, trailingStop+distance) when changing one of them.
+   *
+   * Capital.com's PUT /positions/{dealId} treats omitted fields as "remove
+   * this protection" — so a `{ stopLevel: x }` amend silently nulls the TP.
+   * Observed live 2026-05-07 on a SILVER 3-leg trade where SL→BE stripped
+   * the TPs from both runner legs.
+   *
+   * This helper:
+   *   1. GETs the current position state.
+   *   2. Builds a payload from the current protection fields.
+   *   3. Overlays the caller's `changes`.
+   *   4. PUTs the merged payload — no field is implicitly omitted.
+   *
+   * If the position is already closed at GET time, returns the same
+   * synthetic ALREADY_CLOSED confirmation that updatePosition emits.
+   *
+   * Cost: one extra GET per amend. Amends are rare (a few per day in
+   * production), so the latency is negligible compared to the destructive
+   * partial-amend hazard the helper eliminates.
+   */
+  async safelyAmendPosition(
+    dealId: string,
+    changes: UpdatePositionParams,
+  ): Promise<DealConfirmation> {
+    let currentWrapper: CapitalPosition;
+    try {
+      currentWrapper = await this.getPosition(dealId);
+    } catch (e) {
+      if (this.isAlreadyClosed(e)) {
+        console.warn(
+          `[Capital] safelyAmendPosition ${dealId} skipped — position already closed before GET (race against SL/TP fill).`,
+        );
+        const synthetic: DealConfirmation = {
+          dealId,
+          dealReference: `synthetic-amend-skipped-${dealId}`,
+          dealStatus: 'ACCEPTED',
+          reason: 'POSITION_ALREADY_CLOSED_BY_BROKER',
+          status: 'FULLY_CLOSED',
+          direction: 'BUY',
+          epic: '',
+          size: 0,
+          level: 0,
+          stopLevel: null,
+          profitLevel: null,
+          affectedDeals: [{ dealId, status: 'DELETED' }],
+        };
+        return synthetic;
+      }
+      throw e;
+    }
+
+    const pos = currentWrapper.position;
+    const merged: UpdatePositionParams = {};
+
+    // Preserve current protections.
+    if (pos.stopLevel != null) merged.stopLevel = pos.stopLevel;
+    if (pos.profitLevel != null) merged.profitLevel = pos.profitLevel;
+    if (pos.trailingStop) {
+      merged.trailingStop = true;
+      if (pos.trailingStopDistance != null) {
+        merged.stopDistance = pos.trailingStopDistance;
+      }
+    }
+
+    // Apply caller's changes — these win over current state.
+    Object.assign(merged, changes);
+
+    return this.updatePosition(dealId, merged);
+  }
+
   async updatePosition(
     dealId: string,
     params: UpdatePositionParams
