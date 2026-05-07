@@ -258,7 +258,7 @@ If anything else in the checklist fails before submitting to the analyst: do not
 
 Call `get_portfolio()` and compare to the open trades in your DB (you can pull recent trade IDs via `get_lessons` filter, or just inspect what `get_portfolio` returns).
 
-The scheduler handles TP1→BE, TP2→TP1-trail, and final-TP closure automatically. Your job is to react to STRUCTURAL invalidations:
+The scheduler handles the 2-leg lifecycle automatically: when Leg A's TP1 fills, it moves Leg B's SL to entry (break-even); when Leg B's TP2 fills (or its BE-stop is hit) the trade finalises. Your job is to react to STRUCTURAL invalidations:
 
 - **1H bias has flipped against you** → call `close_position(dealId)` on each remaining leg. Document in the next reflection.
 - **High-impact news hit while we were in the trade** (NFP/CPI/FOMC/rate decision against your bias) → if R:R is now compromised, exit early via `close_position`.

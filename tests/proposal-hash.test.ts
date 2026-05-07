@@ -1,14 +1,21 @@
-// Tests for proposalHash — the canonical 14-field projection used as the
-// analyst_token. The 2026-04-29 audit added instrument + instrument_category
-// + kill_zone to the canonical projection (P0-TA2): pre-fix the hash anchored
-// only on `epic`, but downstream code used `instrument` for the coordination
-// lock + DB key. If they ever diverged, the LLM could swap them between
-// approval and placement undetectably.
+// Tests for proposalHash — the canonical projection used as the analyst_token.
+// History:
+//   - 2026-04-29 audit (P0-TA2): added instrument + instrument_category +
+//     kill_zone. Pre-fix the hash anchored only on `epic`, but downstream code
+//     used `instrument` for the coordination lock + DB key.
+//   - 2026-05-07 (Phase 2 — 2-TP restructure): tp3 + size_c removed.
+//   - 2026-05-07 (Codex follow-up): size_a + size_b ALSO removed. Sizing is
+//     now server-computed from total_risk_pct + balance + minDealSize; the
+//     LLM-supplied size_a/size_b values are ignored on the placement path,
+//     so they MUST NOT affect hash identity.
 import { describe, it, expect } from 'vitest';
 import { proposalHash } from '../src/agents/trading-agent.js';
 import type { TradeProposal } from '../src/agents/analyst-agent.js';
 
 function mkProposal(overrides: Partial<TradeProposal> = {}): Omit<TradeProposal, 'trade_id'> {
+  // 2026-05-07: tp3 / size_c are nullable on the new TradeProposal type and
+  // size_a / size_b are no longer part of the canonical hash. The values
+  // below are placeholders — see the 'IGNORED fields' test for proof.
   return {
     strategy_tag: 'ICT_INTRADAY',
     instrument: 'EURUSD',
@@ -19,10 +26,10 @@ function mkProposal(overrides: Partial<TradeProposal> = {}): Omit<TradeProposal,
     sl: 1.0830,
     tp1: 1.0890,
     tp2: 1.0920,
-    tp3: 1.0960,
-    size_a: 0.34,
-    size_b: 0.33,
-    size_c: 0.33,
+    tp3: null,
+    size_a: 0.7,
+    size_b: 0.3,
+    size_c: null,
     total_risk_pct: 1.0,
     composite_score: 65,
     tier: 2,
@@ -51,8 +58,33 @@ describe('proposalHash', () => {
     expect(proposalHash(mkProposal())).not.toBe(proposalHash(mkProposal({ sl: 1.0829 })));
   });
 
-  it('changes when any size changes', () => {
-    expect(proposalHash(mkProposal())).not.toBe(proposalHash(mkProposal({ size_a: 0.35 })));
+  it('does NOT change when size_a or size_b changes (sizing is server-computed post-Codex-follow-up)', () => {
+    // 2026-05-07 Codex follow-up: sizing is server-computed from
+    // total_risk_pct + balance + minDealSize. The LLM's size_a/size_b inputs
+    // are IGNORED on the placement path, so they must not affect hash
+    // identity — otherwise the server-side override at place_split_trade
+    // would always trip PROPOSAL_HASH_MISMATCH against the LLM-hashed values
+    // from request_analyst_review.
+    const base = proposalHash(mkProposal());
+    expect(proposalHash(mkProposal({ size_a: 0.35 }))).toBe(base);
+    expect(proposalHash(mkProposal({ size_b: 999 }))).toBe(base);
+    expect(proposalHash(mkProposal({ size_a: 1, size_b: 1 }))).toBe(base);
+  });
+
+  it('does NOT change when tp3 or size_c changes (post-2026-05-07 2-TP restructure ignores legacy 3-leg fields)', () => {
+    // 2026-05-07 (Phase 2): the 3-leg ladder collapsed to 2 legs. The hash
+    // canonical projection drops tp3 + size_c so any value in those fields
+    // (null, 0, a stale 3-leg number from a hand-typed request) hashes the
+    // same. Defensive guard for back-compat with proposal payloads that
+    // still carry legacy fields.
+    const base = proposalHash(mkProposal());
+    expect(proposalHash(mkProposal({ tp3: 999 }))).toBe(base);
+    expect(proposalHash(mkProposal({ size_c: 999 }))).toBe(base);
+    expect(proposalHash(mkProposal({ tp3: 1.0960, size_c: 0.33 }))).toBe(base);
+    // null vs number on tp3/size_c also doesn't matter (the canonical
+    // projection ignores them entirely).
+    expect(proposalHash(mkProposal({ tp3: null }))).toBe(base);
+    expect(proposalHash(mkProposal({ tp3: 1.0960 }))).toBe(base);
   });
 
   it('changes when composite_score changes', () => {

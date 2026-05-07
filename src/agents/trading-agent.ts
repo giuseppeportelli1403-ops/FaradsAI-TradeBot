@@ -66,6 +66,22 @@ export function proposalHash(proposal: Omit<TradeProposal, 'trade_id'>): string 
   // canonical projection. Proposals are 2-leg only (TP1 70% + TP2 30%);
   // any in-flight approval entries from the old 3-leg path will simply
   // hash differently and TTL out of approvedProposals naturally.
+  //
+  // 2026-05-07 — Codex follow-up. size_a + size_b also removed from the
+  // canonical projection. Sizing is now SERVER-COMPUTED from
+  // (total_risk_pct + entry + sl + epic + balance + minDealSize); the LLM's
+  // size_a/size_b inputs are ignored on the placement path. Including the
+  // LLM-supplied sizes in the hash would either:
+  //   (a) break hash verification at place_split_trade — request_analyst_review
+  //       hashes LLM sizes, place_split_trade overrides them server-side then
+  //       re-hashes with server sizes → mismatch, or
+  //   (b) force the LLM to predict server-computed sizes, which defeats the
+  //       point of moving sizing server-side.
+  // The hashed fields (entry, sl, total_risk_pct, instrument/epic) plus
+  // server-side state (balance, minDealSize) determine sizing deterministically,
+  // so the post-hash sizing override is fully reproducible and the analyst
+  // approval still gates the only LLM-controlled levers (price levels, score,
+  // tier, risk pct).
   const canonical = {
     instrument: proposal.instrument.toUpperCase(),
     instrument_category: proposal.instrument_category.toLowerCase(),
@@ -75,8 +91,6 @@ export function proposalHash(proposal: Omit<TradeProposal, 'trade_id'>): string 
     sl: Number(proposal.sl.toFixed(5)),
     tp1: Number(proposal.tp1.toFixed(5)),
     tp2: Number(proposal.tp2.toFixed(5)),
-    size_a: Number(proposal.size_a.toFixed(6)),
-    size_b: Number(proposal.size_b.toFixed(6)),
     composite_score: Math.round(proposal.composite_score),
     tier: proposal.tier,
     total_risk_pct: Number(proposal.total_risk_pct.toFixed(4)),
@@ -309,6 +323,129 @@ export function validateOrderSide(input: OrderSideInput): OrderSideResult {
   return { ok: true };
 }
 
+// ==================== SERVER-SIDE 70/30 SIZING ====================
+// 2026-05-07 (Phase 2 / Codex follow-up). Pre-fix `place_split_trade` trusted
+// LLM-supplied size_a/size_b values. Codex flagged this as a deploy blocker:
+// the LLM's arithmetic is non-deterministic across runs, the broker tick rule
+// can be violated (Capital.com requires size to be a multiple of minDealSize),
+// and even a "correct" LLM size can drift from the intended 70/30 by enough
+// to push the runner leg above the 30% target.
+//
+// Solution: server computes size_a + size_b deterministically from
+// (total_risk_pct, balance, entry, sl, minDealSize). The LLM's size_a/size_b
+// values are IGNORED on the placement path — the LLM still emits them for
+// proposal-shape compatibility but they don't reach Capital.com.
+//
+// Algorithm (pure):
+//   total_qty   = (balance * total_risk_pct/100) / |entry − sl|
+//   size_b_raw  = 0.30 × total_qty
+//   size_b      = floor(size_b_raw / minDealSize) × minDealSize    ← tick-aware DOWN
+//   size_a      = total_qty − size_b                                ← absorbs remainder
+//
+// Floor case: if size_b rounds to 0 (i.e. raw < minDealSize) the trade is
+// undersized at the 30% leg even though the 70% leg would clear the floor.
+// We refuse rather than silently re-allocate. The LLM can re-propose at a
+// higher tier or skip.
+//
+// Note re hash compatibility: proposalHash (pre-Codex follow-up) included
+// size_a + size_b in the canonical projection. Including them after the
+// server overrides the LLM's values would break hash verification at
+// place_split_trade Step 1, because request_analyst_review would have hashed
+// the LLM's sizes and place_split_trade would re-hash with the server-
+// computed sizes. The follow-up removes size_a/size_b from the canonical
+// projection (sizing is now derived deterministically from the other hashed
+// fields + balance + market details, both of which are server-side state).
+
+export interface ServerSizingInput {
+  /** Account balance in account currency. */
+  balance: number;
+  /** Total risk percent for this trade (1.5 / 1.0 / 0.5 / 0.25). */
+  totalRiskPct: number;
+  /** Order entry price (working-order request price). */
+  entry: number;
+  /** Stop-loss price. */
+  sl: number;
+  /** Capital.com minimum deal size for this instrument. Doubles as the size
+   *  step (Capital quantises position sizes in multiples of this value). */
+  minDealSize: number;
+}
+
+export type ServerSizingResult =
+  | { ok: true; sizeA: number; sizeB: number; totalQty: number }
+  | { ok: false; error: 'INVALID_INPUT' | 'BELOW_MIN_SIZE'; reason: string };
+
+/**
+ * Pure function: compute tick-aware 70/30 leg sizes server-side.
+ *
+ * - size_b is rounded DOWN to the nearest minDealSize multiple so the runner
+ *   leg never exceeds 30% of total qty.
+ * - size_a absorbs the rounding remainder, preserving the total risk
+ *   percentage exactly (modulo IEEE 754 floating-point precision).
+ * - Both legs must individually clear minDealSize.
+ *
+ * Returns BELOW_MIN_SIZE when either leg would fall below the floor — the
+ * caller should refuse the trade and let the agent re-propose at a higher
+ * tier or skip the instrument until the account grows.
+ */
+export function computeServerSizing(input: ServerSizingInput): ServerSizingResult {
+  const { balance, totalRiskPct, entry, sl, minDealSize } = input;
+
+  if (!Number.isFinite(balance) || !Number.isFinite(totalRiskPct) ||
+      !Number.isFinite(entry) || !Number.isFinite(sl) ||
+      !Number.isFinite(minDealSize)) {
+    return {
+      ok: false,
+      error: 'INVALID_INPUT',
+      reason: `Non-finite input: balance=${balance}, totalRiskPct=${totalRiskPct}, entry=${entry}, sl=${sl}, minDealSize=${minDealSize}`,
+    };
+  }
+  if (balance <= 0 || totalRiskPct <= 0 || minDealSize <= 0) {
+    return {
+      ok: false,
+      error: 'INVALID_INPUT',
+      reason: `Non-positive input: balance=${balance}, totalRiskPct=${totalRiskPct}, minDealSize=${minDealSize}`,
+    };
+  }
+  const stopDistance = Math.abs(entry - sl);
+  if (stopDistance <= 0) {
+    return {
+      ok: false,
+      error: 'INVALID_INPUT',
+      reason: `Zero or negative stop distance: |entry − sl| = ${stopDistance}`,
+    };
+  }
+
+  const riskAmount = balance * (totalRiskPct / 100);
+  const totalQty = riskAmount / stopDistance;
+
+  // Tick-aware floor of the 30% leg. Math.floor avoids 30.000001 drifting up
+  // to the next tick. After the floor, size_a takes the entire remainder so
+  // total_qty is preserved exactly.
+  const sizeBRaw = 0.30 * totalQty;
+  const sizeB = Math.floor(sizeBRaw / minDealSize) * minDealSize;
+  const sizeA = totalQty - sizeB;
+
+  if (sizeB < minDealSize) {
+    return {
+      ok: false,
+      error: 'BELOW_MIN_SIZE',
+      reason: `Computed Leg B size (${sizeBRaw.toFixed(6)} → ${sizeB} after tick floor) is below minDealSize ${minDealSize}. Account too small for this tier × stop distance combination. Either upgrade the tier (raises total_risk_pct → larger total_qty), tighten the SL (smaller |entry−sl| → larger total_qty), or skip until the account grows.`,
+    };
+  }
+  if (sizeA < minDealSize) {
+    // This is rare — would require minDealSize > ~70% of total_qty, i.e. a
+    // very small account on a very strict-min instrument. Reported separately
+    // so the operator can distinguish.
+    return {
+      ok: false,
+      error: 'BELOW_MIN_SIZE',
+      reason: `Computed Leg A size (${sizeA}) is below minDealSize ${minDealSize}. Account too small for this tier × stop distance combination.`,
+    };
+  }
+
+  return { ok: true, sizeA, sizeB, totalQty };
+}
+
 // ==================== WEEKLY KILL SWITCH ====================
 // 2026-05-04 (Phase A3, audit Finding #6): pre-fix, strategy.md Section 7.2
 // said "Weekly loss limit: 10% of account equity. Non-negotiable. When
@@ -457,7 +594,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   {
     name: 'request_analyst_review',
     description:
-      'MANDATORY before place_split_trade. Submits the full 2-leg trade proposal to the Trade Analyst Agent. Returns { decision: APPROVE|REJECT|MODIFY, reason, analyst_token, proposal_hash }. The analyst_token is a hash of the canonicalised proposal — place_split_trade rejects unless the supplied token matches a same-cycle approval AND the proposal hash matches. You CANNOT mutate size/SL/TP/score between approval and placement.',
+      'MANDATORY before place_split_trade. Submits the full 2-leg trade proposal to the Trade Analyst Agent. Returns { decision: APPROVE|REJECT|MODIFY, reason, analyst_token, proposal_hash, computed_sizes }. The analyst_token is a hash of the canonicalised proposal — place_split_trade rejects unless the supplied token matches a same-cycle approval AND the proposal hash matches. You CANNOT mutate SL/TP/score/risk_pct between approval and placement. **Sizing (size_a / size_b) is COMPUTED SERVER-SIDE** from total_risk_pct, balance, and the broker tick rule — any size_a/size_b you supply is IGNORED and replaced with the server values. Inspect computed_sizes in the response if you need them for logging.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -469,22 +606,22 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         sl: { type: 'number' },
         tp1: { type: 'number' },
         tp2: { type: 'number' },
-        size_a: { type: 'number', description: '70% of total (Leg A — closer TP1 target)' },
-        size_b: { type: 'number', description: '30% of total (Leg B — runner targeting TP2 ≥ 1.3R)' },
+        size_a: { type: 'number', description: 'IGNORED — computed server-side. Field kept for back-compat with the LLM proposal shape; supply any positive number (e.g. 1) or omit.' },
+        size_b: { type: 'number', description: 'IGNORED — computed server-side. Field kept for back-compat with the LLM proposal shape; supply any positive number (e.g. 1) or omit.' },
         composite_score: { type: 'number' },
         tier: { type: 'number', enum: [1, 2, 3] },
-        total_risk_pct: { type: 'number', description: '1.5 / 1.0 / 0.5 per tier' },
+        total_risk_pct: { type: 'number', description: '1.5 / 1.0 / 0.5 per tier (0.25 for range-mode). This drives the server-side sizing computation.' },
         setup_type: { type: 'string' },
         kill_zone: { type: 'string' },
         reasoning: { type: 'string' },
       },
-      required: ['instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'size_a', 'size_b', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
+      required: ['instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
     },
   },
   {
     name: 'place_split_trade',
     description:
-      'Atomically place a 2-leg split-position ICT trade after analyst approval. Validates score/tier/risk/coordination/calendar, places legs A→B, persists to DB, compensates on partial failure. REQUIRES analyst_token from request_analyst_review whose proposal_hash matches THIS proposal exactly. Returns dealIds + trade_id on success, or a structured error otherwise.',
+      'Atomically place a 2-leg split-position ICT trade after analyst approval. Validates score/tier/risk/coordination/calendar, places legs A→B, persists to DB, compensates on partial failure. REQUIRES analyst_token from request_analyst_review whose proposal_hash matches THIS proposal exactly. Returns dealIds + trade_id on success, or a structured error otherwise. **Sizing (size_a / size_b) is computed server-side** from total_risk_pct + balance + broker tick rule — supply the same proposal fields you sent to request_analyst_review and the server will derive the correct sizes.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -497,8 +634,8 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         sl: { type: 'number' },
         tp1: { type: 'number' },
         tp2: { type: 'number' },
-        size_a: { type: 'number', description: '70% of total (Leg A — closer TP1 target)' },
-        size_b: { type: 'number', description: '30% of total (Leg B — runner targeting TP2 ≥ 1.3R)' },
+        size_a: { type: 'number', description: 'IGNORED — computed server-side from total_risk_pct.' },
+        size_b: { type: 'number', description: 'IGNORED — computed server-side from total_risk_pct.' },
         composite_score: { type: 'number' },
         tier: { type: 'number', enum: [1, 2, 3] },
         total_risk_pct: { type: 'number' },
@@ -506,7 +643,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         kill_zone: { type: 'string' },
         reasoning: { type: 'string' },
       },
-      required: ['analyst_token', 'instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'size_a', 'size_b', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
+      required: ['analyst_token', 'instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
     },
   },
   {
@@ -635,23 +772,94 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // 2026-05-07 — 2-TP restructure (Phase 2): tp3 / size_c dropped from
       // the proposal contract. Set to null on the draft so any persisted
       // downstream object (TradeRecord cols are nullable) carries NULL.
+      //
+      // 2026-05-07 — Codex follow-up: size_a / size_b are computed server-side
+      // (see computeServerSizing). The LLM-supplied values are ignored. We
+      // still need numeric placeholders on the draft because the analyst's
+      // openTradesProjection inspects them and downstream logging carries
+      // them — but the placeholders are SERVER values, never the LLM's.
+      const reqEpic = String(input.epic ?? input.instrument);
+      const reqDirection = input.direction as 'long' | 'short';
+      const reqEntry = Number(input.entry);
+      const reqSl = Number(input.sl);
+      const reqTotalRiskPct = Number(input.total_risk_pct);
+
+      // Server-side sizing — pull balance + market details, refuse on either
+      // fetch failure (sizing is mandatory for placement; without these
+      // numbers the analyst would be evaluating a fictional proposal).
+      let serverSizing: ServerSizingResult;
+      try {
+        const balance = await getPreferredAccountBalance();
+        const md = await capital.getMarketDetails(reqEpic);
+        const minRule = md?.dealingRules?.minDealSize;
+        const minSize = typeof minRule?.value === 'number' && Number.isFinite(minRule.value)
+          ? minRule.value
+          : null;
+        if (minSize === null) {
+          // Fail-CLOSED. Without the broker's tick rule we cannot guarantee a
+          // tick-aligned size, and Capital would reject the order anyway.
+          return JSON.stringify({
+            decision: 'REJECT',
+            reason: `Cannot determine minDealSize for ${reqEpic} — refusing analyst review until Capital.com market details respond with a numeric minDealSize.`,
+            analyst_token: '',
+            proposal_hash: '',
+            trade_id: '',
+            confidence: 0,
+            modifications: {},
+          });
+        }
+        serverSizing = computeServerSizing({
+          balance: balance.balance,
+          totalRiskPct: reqTotalRiskPct,
+          entry: reqEntry,
+          sl: reqSl,
+          minDealSize: minSize,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[Analyst Pre-Check] Sizing fetch failed for ${reqEpic}: ${msg}`);
+        return JSON.stringify({
+          decision: 'REJECT',
+          reason: `Server-side sizing failed (balance/market-details fetch): ${msg}. Refusing analyst review.`,
+          analyst_token: '',
+          proposal_hash: '',
+          trade_id: '',
+          confidence: 0,
+          modifications: {},
+        });
+      }
+      if (!serverSizing.ok) {
+        console.log(`[Analyst Pre-Check] ${reqInstrument} ${reqDirection}: server-sizing ${serverSizing.error} — skipping analyst call.`);
+        return JSON.stringify({
+          decision: 'REJECT',
+          reason: `Pre-analyst sizing rejection (${serverSizing.error}): ${serverSizing.reason}`,
+          analyst_token: '',
+          proposal_hash: '',
+          trade_id: '',
+          confidence: 0,
+          modifications: {},
+        });
+      }
+      const { sizeA: serverSizeA, sizeB: serverSizeB } = serverSizing;
+
       const proposalDraft = {
         // trade_id placeholder — overwritten below with a unique id.
         trade_id: '',
         strategy_tag: 'ICT_INTRADAY' as const,
         instrument: reqInstrument,
-        epic: String(input.epic ?? input.instrument),
+        epic: reqEpic,
         instrument_category: reqCategory,
-        direction: input.direction as 'long' | 'short',
-        entry: Number(input.entry),
-        sl: Number(input.sl),
+        direction: reqDirection,
+        entry: reqEntry,
+        sl: reqSl,
         tp1: Number(input.tp1),
         tp2: Number(input.tp2),
         tp3: null,
-        size_a: Number(input.size_a),
-        size_b: Number(input.size_b),
+        // Sizes are server-computed; LLM input is ignored.
+        size_a: serverSizeA,
+        size_b: serverSizeB,
         size_c: null,
-        total_risk_pct: Number(input.total_risk_pct),
+        total_risk_pct: reqTotalRiskPct,
         composite_score: Number(input.composite_score),
         tier: input.tier as 1 | 2 | 3,
         setup_type: String(input.setup_type),
@@ -756,15 +964,21 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         trade_id: proposal.trade_id,
         confidence: decision.confidence,
         modifications: decision.modifications,
+        // 2026-05-07 — Codex follow-up: surface server-computed sizes so the
+        // LLM can log them in its decision-cycle output. Any size_a/size_b
+        // values the LLM supplied to this tool were ignored and replaced
+        // with these.
+        computed_sizes: { size_a: serverSizeA, size_b: serverSizeB },
       });
     }
 
     case 'place_split_trade': {
-      // Unified atomic 3-leg placement with full validation cascade.
+      // Unified atomic 2-leg placement with full validation cascade.
       // Replaces bare place_order + log_trade. Codex P0+P1 fixes
       // (2026-04-28): #1 (analyst gate), #2 (atomic order+log), #8 (score
       // contract), #9 (coordination lock), plus order-side, finite, and
-      // calendar checks.
+      // calendar checks. (Was 3-leg pre-2026-05-07; collapsed to 2-leg in
+      // the Phase 2 restructure.)
       const epic = String(input.epic);
       const direction = input.direction as 'long' | 'short';
 
@@ -785,6 +999,12 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // 2026-05-07 — 2-TP restructure (Phase 2): tp3 / size_c removed from
       // the placement contract. Set to null so the persisted TradeRecord
       // carries NULL on the legacy columns.
+      //
+      // 2026-05-07 — Codex follow-up: size_a / size_b are NOT part of the
+      // canonical hash anymore (sizing is server-computed). We pass 0
+      // placeholders into proposalForVerify here purely to satisfy the
+      // TradeProposal type — the actual placement sizes are computed below
+      // at Step 3.5 from balance + market details.
       const proposalForVerify: TradeProposal = {
         trade_id: '<placeholder — not part of hash>',
         strategy_tag: 'ICT_INTRADAY',
@@ -797,8 +1017,9 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         tp1: Number(input.tp1),
         tp2: Number(input.tp2),
         tp3: null,
-        size_a: Number(input.size_a),
-        size_b: Number(input.size_b),
+        // proposalHash ignores these post-Codex-follow-up. 0 is a safe sentinel.
+        size_a: 0,
+        size_b: 0,
         size_c: null,
         total_risk_pct: Number(input.total_risk_pct),
         composite_score: Number(input.composite_score),
@@ -891,23 +1112,18 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
 
       // === Step 3: order-side + finite-numbers
       // 2026-05-07 — 2-TP restructure (Phase 2): tp3 / sizeC dropped.
+      // 2026-05-07 — Codex follow-up: sizeA / sizeB no longer read from input.
+      // They are computed server-side at Step 3.5 below from balance + market
+      // details. The LLM-supplied size_a/size_b values are discarded.
       const entry = Number(input.entry);
       const sl = Number(input.sl);
       const tp1 = Number(input.tp1);
       const tp2 = Number(input.tp2);
-      const sizeA = Number(input.size_a);
-      const sizeB = Number(input.size_b);
-      const allFinite = [entry, sl, tp1, tp2, sizeA, sizeB].every((n) => Number.isFinite(n));
+      const allFinite = [entry, sl, tp1, tp2].every((n) => Number.isFinite(n));
       if (!allFinite) {
         return JSON.stringify({
           error: 'INVALID_NUMERICS',
-          reason: `Non-finite numeric in proposal: entry=${entry}, sl=${sl}, tps=[${tp1},${tp2}], sizes=[${sizeA},${sizeB}]`,
-        });
-      }
-      if (sizeA <= 0 || sizeB <= 0) {
-        return JSON.stringify({
-          error: 'INVALID_SIZES',
-          reason: `All leg sizes must be > 0. Got A=${sizeA} B=${sizeB}.`,
+          reason: `Non-finite numeric in proposal: entry=${entry}, sl=${sl}, tps=[${tp1},${tp2}]`,
         });
       }
       const sideOk = direction === 'long'
@@ -1008,55 +1224,63 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         });
       }
 
-      // === Step 3.7: minimum-size guardrail (2026-04-29 structural fix #7)
-      // Capital.com instruments have per-instrument minimum deal sizes
-      // exposed via getMarketDetails().dealingRules.minDealSize. On a
-      // small demo account (e.g. $500), the smaller leg's size can fall
-      // BELOW the FX major minimum of typically 1000 contracts (post-2026-
-      // 05-07 split: Leg B is 30% of total, so it hits the floor first).
-      // Pre-fix the order would reach Capital, get rejected with a min-
-      // size error, and the executor would silently compensation-rollback
-      // — wasting the full validation cascade. Now we fail fast with a
-      // structured error the agent can act on (skip the trade or
-      // restructure to larger size on the next cycle).
+      // === Step 3.7: server-side tick-aware 70/30 sizing
+      // 2026-05-07 (Codex follow-up). Pre-fix this step was a defensive min-
+      // size guardrail that VALIDATED the LLM's size_a/size_b against the
+      // broker's minDealSize. Codex flagged that as insufficient — the LLM
+      // can produce sizes that pass the minimum check but violate the broker
+      // tick rule (sizes must be multiples of minDealSize) or drift from the
+      // intended 70/30 split. The fix: compute size_a + size_b SERVER-SIDE
+      // here from balance + total_risk_pct + minDealSize, ignoring whatever
+      // the LLM submitted in input.size_a / input.size_b.
+      //
+      // Fail-CLOSED on getMarketDetails / balance fetch failure: without a
+      // numeric minDealSize we cannot guarantee a tick-aligned size, and
+      // Capital.com would reject the placement anyway. The earlier permissive
+      // "log-and-continue" stance only worked when sizing came from the LLM;
+      // server-side sizing requires the broker tick rule as a HARD input.
+      let sizeA: number;
+      let sizeB: number;
       try {
+        const balance = await getPreferredAccountBalance();
         const md = await capital.getMarketDetails(epic);
         const minRule = md?.dealingRules?.minDealSize;
         const minSize = typeof minRule?.value === 'number' && Number.isFinite(minRule.value)
           ? minRule.value
           : null;
-        if (minSize !== null) {
-          // 2026-05-07 — 2-TP restructure: only Leg A + Leg B remain.
-          const undersized: Array<{ leg: 'A' | 'B'; size: number }> = [];
-          if (sizeA < minSize) undersized.push({ leg: 'A', size: sizeA });
-          if (sizeB < minSize) undersized.push({ leg: 'B', size: sizeB });
-          if (undersized.length > 0) {
-            return JSON.stringify({
-              error: 'BELOW_MIN_SIZE',
-              // 2026-04-29 codex-review fix: corrected the guidance — sizing
-              // formula is `total_size = risk / (entry - SL)`, then split
-              // 70/30 (post-2026-05-07 restructure) into Leg A and Leg B.
-              // A WIDER SL produces SMALLER sizes (larger denominator), not
-              // larger. Real ways to lift size above the floor: upgrade the
-              // tier (raises total_risk_pct → numerator), TIGHTEN the SL
-              // (shrinks denominator), or skip until account balance grows.
-              reason: `Capital.com minimum deal size for ${epic} is ${minSize} ${minRule?.unit ?? ''}. Legs ${undersized.map((u) => `${u.leg}=${u.size}`).join(', ')} are below the floor. Either upgrade the tier (raises total_risk_pct → larger sizes), tighten the SL (smaller (entry−SL) → larger sizes), or skip this instrument until account balance grows.`,
-              min_deal_size: minSize,
-              undersized_legs: undersized,
-            });
-          }
+        if (minSize === null) {
+          return JSON.stringify({
+            error: 'MIN_DEAL_SIZE_UNAVAILABLE',
+            reason: `Capital.com market details for ${epic} did not include a numeric minDealSize. Cannot tick-align position size — refusing placement.`,
+          });
         }
-        // If minDealSize is missing/non-numeric on the market details
-        // response, we deliberately allow the trade — Capital itself will
-        // reject below-min orders with a clear error, and the executor's
-        // existing compensation-rollback path handles it. The guardrail
-        // is best-effort signal, not load-bearing.
+        const sizing = computeServerSizing({
+          balance: balance.balance,
+          totalRiskPct: riskPct,
+          entry,
+          sl,
+          minDealSize: minSize,
+        });
+        if (!sizing.ok) {
+          return JSON.stringify({
+            error: sizing.error,
+            reason: sizing.reason,
+            min_deal_size: minSize,
+          });
+        }
+        sizeA = sizing.sizeA;
+        sizeB = sizing.sizeB;
+        console.log(
+          `[ICT Agent] Server-computed sizes for ${epic}: total_qty=${(sizing.totalQty).toFixed(4)}, ` +
+          `size_a=${sizeA} (~70%), size_b=${sizeB} (~30%, tick-aligned to ${minSize})`,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        // Don't fail-closed on getMarketDetails failure — that would gate
-        // every trade on a Capital read. Log and continue; if Capital is
-        // genuinely down, the placement will fail anyway and rollback.
-        console.warn(`[ICT Agent] min-size check skipped for ${epic} (getMarketDetails failed: ${msg}). Continuing — Capital will reject below-min orders.`);
+        console.error(`[ICT Agent] Server-sizing fetch failed for ${epic}: ${msg}`);
+        return JSON.stringify({
+          error: 'SIZING_FETCH_FAILED',
+          reason: `Cannot compute server-side sizing (balance/market-details fetch): ${msg}. Refusing order — sizing gate fails closed.`,
+        });
       }
 
       // === Step 4: code-enforced coordination lock
@@ -1264,7 +1488,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         exitCriticalSection();
         return JSON.stringify({
           error: 'DB_LOG_FAILED_AFTER_PLACEMENT',
-          reason: `Capital placement succeeded for all 3 legs, but DB persistence failed: ${dbErr}.`,
+          reason: `Capital placement succeeded for both legs, but DB persistence failed: ${dbErr}.`,
           orphan_deals: placedDeals,
           guidance: 'Live positions exist on Capital with no DB record. Manual reconciliation required. Do NOT retry — that would double-place.',
         });
