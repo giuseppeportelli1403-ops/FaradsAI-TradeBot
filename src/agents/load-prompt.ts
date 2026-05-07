@@ -81,9 +81,11 @@ The rule overrides below apply ONLY during the 2-week demo evaluation window
 (2026-04-20 → 2026-05-04). They TEMPORARILY supersede the stricter defaults
 documented above. Every other rule remains in force.
 
-1. **R:R minimum — tight-spread symbols.** For trades on ${TIGHT_SPREAD_TICKERS},
-   an R:R to TP2 of **>= 1.5:1** is acceptable (previously 2:1 for ICT).
-   All other symbols keep their original R:R minima.
+1. **R:R minimum — universal floors (2026-05-07 2-TP restructure).** TP1 ≥ 1.0R
+   and TP2 ≥ 1.3R apply to ALL modes (trend / range) and ALL tiers (T1 / T2 / T3).
+   The earlier per-mode / per-tier floors (TP2 ≥ 2:1 trend T1/T2, ≥ 1.5:1 T3
+   tight-spread, ≥ 1.5:1 range, plus the now-removed TP3 ≥ 3:1 / ≥ 2:1) have
+   been superseded.
 
 2. **Tier 3 bracket — spread-aware floor.** The scanner tags an
    instrument \`tier: 3\` when its composite score is at-or-above its
@@ -109,8 +111,9 @@ documented above. Every other rule remains in force.
 **NOT relaxed under any circumstance:**
 - Daily 6% loss kill switch — still fires, still halts new trades.
 - Weekly 10% loss kill switch — unchanged. Code-enforced 2026-05-04 (Phase A3).
-- Split-position method — every trade is THREE legs (Position A + B + C)
-  with TP1 triggering Positions B AND C SL-to-break-even moves.
+- Split-position method — every trade is TWO legs (Position A 70% + Position B 30%)
+  with TP1 triggering Position B's SL→entry move (Leg B then trades risk-free
+  toward TP2). Updated 2026-05-07 — was 3 legs pre-restructure.
 - Max concurrent positions — unchanged.
 - Live-trading opt-in gate — unchanged.
 

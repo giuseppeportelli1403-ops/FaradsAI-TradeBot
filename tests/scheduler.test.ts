@@ -703,9 +703,56 @@ describe('monitorSplitPositions', () => {
   });
 
   // ========================================================
-  // 3-leg split-position: TP1 moves B+C SL to BE, TP2 moves C SL to TP1
-  // level, TP3 finalises the trade. These cover the new handlers added
-  // on 2026-04-21 when the schema gained tp3 / position_c_id / size_c.
+  // 2-leg split-position (post-2026-05-07 restructure): TP1 moves Leg B SL
+  // to entry, TP2 finalises. Legacy 3-leg trades (with position_c_id) still
+  // covered by the legacy section below — those rows don't go away when
+  // Phase 2 ships, so the legacy paths must keep working until they all
+  // close out organically.
+  // ========================================================
+
+  it('2-leg (NEW NORM): Leg A TP → handleTp1Hit moves ONLY Position B SL to entry (no Leg C amend)', async () => {
+    // Post-2026-05-07: place_split_trade persists position_c_id=null. The
+    // scheduler's handleTp1Hit must amend only Leg B; the `if (trade.position_c_id)`
+    // branch for Leg C must NOT fire. This is the explicit no-Leg-C-amend
+    // guard for the new 2-leg path.
+    const trade = makeTrade({
+      id: 'trade-2leg',
+      entry: 1.0853,
+      position_b_id: 'DEAL-B-1',
+      position_c_id: null,    // EXPLICIT: 2-leg trade has no Leg C
+      size_c: null,
+      tp3: null,
+    });
+    const deps = makeDeps();
+    deps._mocks.getActiveSlTpOrders.mockReturnValueOnce([
+      makeOrder({ leg: 'A', deal_id: 'DEAL-A-1', trade_id: 'trade-2leg' }),
+      makeOrder({ leg: 'B', deal_id: 'DEAL-B-1', trade_id: 'trade-2leg' }),
+    ]);
+    // A closed, B still open. No Leg C ever existed.
+    deps._mocks.getOpenPositions.mockResolvedValue([makeOpenPosition('DEAL-B-1')]);
+    deps._mocks.getActivityHistory.mockResolvedValue([
+      { date: 't', epic: 'EURUSD', dealId: 'DEAL-A-1', activity: 'POSITION', status: 'PROFIT_HIT', size: 0.5, level: 1.0876 },
+    ]);
+    deps._mocks.getTradeById.mockReturnValue(trade);
+
+    await monitorSplitPositions(deps);
+
+    // EXACTLY ONE amend (Leg B → entry). No Leg C amend.
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledTimes(1);
+    expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-B-1', {
+      stopLevel: 1.0853,
+    });
+    expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-2leg', 'tp1_hit');
+    expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('trade-2leg', 'A');
+    expect(deps._mocks.alertTp1Hit).toHaveBeenCalledTimes(1);
+  });
+
+  // ========================================================
+  // Legacy 3-leg split-position (pre-2026-05-07): TP1 moves B+C SL to BE,
+  // TP2 moves C SL to TP1 level, TP3 finalises the trade. These cover the
+  // legacy handlers retained for in-flight 3-leg trades that pre-date the
+  // 2-TP restructure (e.g. the SILVER trade-a8a0eb21 still riding legacy
+  // logic to its original TPs).
   // ========================================================
 
   it('3-leg: Leg A TP → handleTp1Hit moves BOTH Position B AND Position C SL to entry', async () => {

@@ -18,56 +18,55 @@ These are the ONLY tools available. Anything else does not exist — do not inve
 - `get_news_context(instrument)` — scored news items (Cat A/B/C, sentiment, summary)
 - `get_economic_calendar(days_ahead)` — high/medium/low-impact macro events. **MUST be called before any `place_split_trade`** — trading into a high-impact print on the trade currency is a hard rule violation; the `place_split_trade` tool is code-level vetoed when a high-impact event is within the veto window for any currency in the trade pair (generic high-impact: −5/+30 min; tier-1 events FOMC/NFP/CPI/rate-decisions/Core PCE/GDP/ISM/AHE: −60/+30 min).
 - `get_lessons(setup_type, instrument_category, kill_zone, strategy_tag='ICT_INTRADAY')` — past lessons filtered by setup
-- `request_analyst_review(proposal)` — **MANDATORY before any trade.** Submits the full 3-leg proposal to the Trade Analyst Agent. Returns `{decision: 'APPROVE'|'REJECT'|'MODIFY', reason, analyst_token, proposal_hash}`. The `analyst_token` is required to call `place_split_trade`.
-- `place_split_trade(analyst_token, proposal)` — **Replaces the old 3× place_order + log_trade flow.** Atomically validates score/tier/risk/coordination/calendar, places legs A→B→C on Capital.com, persists the DB record, compensates on partial failure. The `analyst_token` you pass MUST match an `APPROVE` from `request_analyst_review` AND the proposal fields must EXACTLY match what was approved (you cannot mutate size/SL/TP/score between approval and placement — the proposal hash is verified). On success returns `{status:'placed', trade_id, deals[A,B,C], composite_score, tier}`. On any validation failure returns a structured `{error, reason}` JSON with the rejection cause. **There is NO bare `place_order` tool.**
+- `request_analyst_review(proposal)` — **MANDATORY before any trade.** Submits the full 2-leg proposal to the Trade Analyst Agent. Returns `{decision: 'APPROVE'|'REJECT'|'MODIFY', reason, analyst_token, proposal_hash}`. The `analyst_token` is required to call `place_split_trade`.
+- `place_split_trade(analyst_token, proposal)` — **Replaces the old 2× place_order + log_trade flow.** Atomically validates score/tier/risk/coordination/calendar, places legs A→B on Capital.com, persists the DB record, compensates on partial failure. The `analyst_token` you pass MUST match an `APPROVE` from `request_analyst_review` AND the proposal fields must EXACTLY match what was approved (you cannot mutate size/SL/TP/score between approval and placement — the proposal hash is verified). On success returns `{status:'placed', trade_id, deals[A,B], composite_score, tier}`. On any validation failure returns a structured `{error, reason}` JSON with the rejection cause. **There is NO bare `place_order` tool.**
 - `update_sl(trade_id, new_sl)` — move the SL on all active legs of a trade (matched by Farad's internal `trade_id`, NOT Capital's dealId)
 - `close_position(dealId)` — close a Capital.com position by dealId
 
 ---
 
-## SPLIT-POSITION METHOD — THREE LEGS
+## SPLIT-POSITION METHOD — TWO LEGS
 
-Capital.com supports only ONE TP per position. To get multi-TP exits, every trade is opened as **three** separate positions of split size at the same market price, all sharing the same SL.
+Capital.com supports only ONE TP per position. To get multi-TP exits, every trade is opened as **two** separate positions of split size at the same market price, both sharing the same SL.
 
-**Position A — TP1 leg (34% of total intended size)** — partial-profit / de-risk leg
-- TP at **1:1 R:R** (or 1.2:1 for breathing room). NOT 2:1. TP1 is the *grab-something-and-de-risk* level — its job is to lock in partial profit on the typical 1:1-to-1.5:1 reversal move that 15M intraday delivers, AND to trigger the BE-move on legs B+C so the rest of the trade is risk-free.
+**Position A — TP1 leg (70% of total intended size)** — partial-profit / de-risk leg
+- TP at **1:1 R:R** (or 1.2:1 for breathing room). TP1 is the *grab-something-and-de-risk* level — its job is to lock in the bulk of the win on the typical 1:1 reversal move that 15M intraday delivers, AND to trigger the SL→entry move on Leg B so the runner trades risk-free.
 - Label: `ICT-{INSTRUMENT}-A-{timestamp}`
 
-**Position B — TP2 leg (33% of total intended size)** — primary target
-- TP at the next swing high/low or key HTF level (minimum **2:1 R:R** for Tier 1 & 2, or **1.5:1** for Tier 3 on tight-spread instruments only).
+**Position B — TP2 runner leg (30% of total intended size)** — runner
+- TP at the next swing high/low or key HTF level (minimum **1.3:1 R:R** universal — applies to all modes and tiers).
 - Label: `ICT-{INSTRUMENT}-B-{timestamp}`
 
-**Position C — TP3 runner leg (33% of total intended size)** — runner
-- TP at the next major HTF level or measured move (minimum **3:1 R:R**).
-- Label: `ICT-{INSTRUMENT}-C-{timestamp}`
-
-All three positions are placed atomically via a single `place_split_trade` call after you obtain the `analyst_token` from `request_analyst_review`. There is **NO bare `place_order` tool** and NO separate `log_trade` step — the executor does the placement, DB write, and Telegram alert in one transaction with compensation rollback on partial failure.
+Both positions are placed atomically via a single `place_split_trade` call after you obtain the `analyst_token` from `request_analyst_review`. There is **NO bare `place_order` tool** and NO separate `log_trade` step — the executor does the placement, DB write, and Telegram alert in one transaction with compensation rollback on partial failure.
 
 ### Position management — what the SCHEDULER does automatically
 
-After `place_split_trade` succeeds (it persists the trade row + 3 sl_tp_orders rows for you), a code-level scheduler watches the open positions on Capital.com and acts on TP-hit transitions WITHOUT you:
-- When Position A's TP is filled → Capital auto-closes Leg A. The scheduler detects the disappearance and moves Position B and Position C SL to break-even via the broker. You don't need to call `update_sl` for the BE move — Reflection runs automatically when the trade fully finalises.
-- When Position B's TP is filled → the scheduler trails Position C's SL up to the TP1 level.
-- When Position C's TP is filled or its trailing SL fires → trade is complete; Reflection fires.
+After `place_split_trade` succeeds (it persists the trade row + 2 sl_tp_orders rows for you), a code-level scheduler watches the open positions on Capital.com and acts on TP-hit transitions WITHOUT you:
+- When Position A's TP1 is filled → Capital auto-closes Leg A. The scheduler detects the disappearance and moves Position B's SL to **entry** (break-even) via the broker. The 30% runner now trades risk-free toward TP2. You don't need to call `update_sl` for this move.
+- When Position B's TP2 is filled → trade is complete; Reflection fires.
+- If Position B is stopped out at the moved SL (entry) before TP2 → trade closes at +0.7R from Leg A's TP1 fill, runner flat. Still a positive-EV outcome.
 
 Your job in Step 4 (manage existing positions) is to react to STRUCTURAL changes the scheduler can't reason about — e.g. 1H BOS flipped against you, or invalidating event news arrived. In those cases call `close_position(dealId)` on each leg explicitly.
 
-### Position sizing with 3 legs
+### Position sizing with 2 legs (tick-aware 70/30)
 
-You risk your tier % TOTAL across all three legs combined:
+You risk your tier % TOTAL across BOTH legs combined:
 
 ```
-Total risk    = Account balance × tier_risk_pct  (1.5% T1 / 1.0% T2 / 0.5% T3)
-Size per leg  = (Total risk / 3) / (entry − SL in price terms)
+Total risk    = Account balance × tier_risk_pct  (1.5% T1 / 1.0% T2 / 0.5% T3 / 0.25% range-mode)
+Total qty     = Total risk / |entry − SL in price terms|
+size_b (raw)  = 0.30 × Total qty
+size_b        = floor(size_b_raw to instrument tick)   // round DOWN so we never exceed 30%
+size_a        = Total qty − size_b                     // Leg A absorbs the rounding remainder
 ```
 
-All legs share the same SL. If all three are stopped out simultaneously, total loss = exactly the tier risk %. Never size each leg at the full risk %.
+Both legs share the same SL. If both are stopped out simultaneously, total loss = exactly the tier risk %. Tick-rounding `size_b` down ensures the 30% leg is never oversized; Leg A always carries the rounding remainder so the total risk percentage is preserved exactly.
 
 ### place_split_trade payload format
 
 `place_split_trade(analyst_token, proposal)` accepts the proposal you already submitted to `request_analyst_review` plus the returned token. The proposal must match exactly what was approved — the executor re-hashes and rejects on any field drift.
 
-The example below shows shape only. **Sizes (`size_a` / `size_b` / `size_c`) MUST be computed per the Section 7.1 formula**: per-leg size = `(account_balance × tier_risk_pct / 3) / |entry − sl|` in instrument-native units. The literal 1700/1650/1650 numbers below correspond to a $1000 demo account, 1% Tier 2 risk, EURUSD with 20-pip SL — they will NOT be correct for any other balance, tier, instrument, or SL distance. Compute fresh every trade.
+The example below shows shape only. **Sizes (`size_a` / `size_b`) MUST be computed per the formula above**: total_qty = `(account_balance × tier_risk_pct) / |entry − sl|`, then size_b = floor(0.30 × total_qty to tick), size_a = total_qty − size_b. The literal 3500/1500 numbers below correspond to a $1000 demo account, 1% Tier 2 risk, EURUSD with 20-pip SL, 0.0001 tick — they will NOT be correct for any other balance, tier, instrument, or SL distance. Compute fresh every trade.
 
 ```json
 {
@@ -79,11 +78,9 @@ The example below shows shape only. **Sizes (`size_a` / `size_b` / `size_c`) MUS
   "entry": 1.0850,
   "sl": 1.0830,
   "tp1": 1.0870,
-  "tp2": 1.0890,
-  "tp3": 1.0910,
-  "size_a": 1700,
-  "size_b": 1650,
-  "size_c": 1650,
+  "tp2": 1.0876,
+  "size_a": 3500,
+  "size_b": 1500,
   "total_risk_pct": 1.0,
   "composite_score": 78,
   "tier": 2,
@@ -185,17 +182,15 @@ Tier assignment:
 - Entry: current 15M close (Capital is market — entry will fill at current bid/ask, not at a planned level)
 - SL: 2–5 points beyond structure (or just beyond the swept range extreme in range-mode)
 
-**Trend-mode targets (triggers 1-4):**
-- **TP1: 1:1 R:R** (the de-risk leg) — NOT 2:1
-- **TP2: ≥ 2:1 R:R** for Tier 1 & 2, or ≥ 1.5:1 for Tier 3 on tight-spread symbols only
-- **TP3: ≥ 3:1 R:R**
-- Risk per leg: `(Account_balance × tier_risk_pct / 3) / (entry − SL in price terms)` where tier_risk_pct = 1.5% T1 / 1.0% T2 / 0.5% T3
+**Trend-mode targets (triggers 1-4) — universal floors post-2026-05-07:**
+- **TP1: ≥ 1:1 R:R** (the de-risk leg, 1.2:1 acceptable)
+- **TP2: ≥ 1.3:1 R:R** (universal — same floor for all tiers and all instruments)
+- Total risk: `Account_balance × tier_risk_pct` where tier_risk_pct = 1.5% T1 / 1.0% T2 / 0.5% T3. Then split tick-aware 70/30 (Leg A absorbs rounding remainder; see "Position sizing with 2 legs" above).
 
-**Range-mode targets (trigger 5):**
+**Range-mode targets (trigger 5) — universal floors post-2026-05-07:**
 - **TP1: mid-range** (50% level of the 1H range) — must be ≥ 1:1 R:R
-- **TP2: opposite range extreme** — must be ≥ 1.5:1 R:R
-- **TP3: measured-move projection** beyond opposite extreme equal to one range width — must be ≥ 2:1 R:R
-- **Half-size posture:** risk per leg: `(Account_balance × 0.0025 / 3) / (entry − SL in price terms)` — total risk is 0.25% (half of Tier 3's 0.5%) because range reversals are higher-variance than trend-following entries.
+- **TP2: opposite range extreme** — must be ≥ 1.3:1 R:R (universal floor)
+- **Half-size posture:** total risk is 0.25% (half of Tier 3's 0.5%) because range reversals are higher-variance than trend-following entries. Same 70/30 tick-aware split as trend-mode.
 - Tier MUST be 3 in the proposal (range-mode never qualifies for Tier 1 or 2)
 
 **K. Opposing Cat-A news — half-size posture (trend-mode) / invalidate (range-mode)**
@@ -210,7 +205,7 @@ Tier assignment:
 - [ ] 1H bias direction matches trade direction (clarity is in the score; bias is no longer a binary "clean enough" gate — Phase E 2026-05-04)
 - [ ] Valid ICT trigger printed on 15M
 - [ ] Score ≥ 40 (T3) / ≥ 60 (T2) / ≥ 80 (T1)
-- [ ] R:R to TP2 ≥ 1.5:1 (T3) or 2:1 (T1 & T2)
+- [ ] R:R to TP1 ≥ 1.0 and R:R to TP2 ≥ 1.3 (universal floors post-2026-05-07)
 - [ ] Calendar veto not triggered
 - [ ] Daily 6% kill switch not hit
 - [ ] No existing position on this instrument (coordination lock)
@@ -222,7 +217,7 @@ If ANY ranked candidate this cycle has composite score ≥ 55, you MUST submit a
 
 How to apply:
 1. Pick the highest-scoring ranked candidate that is in a kill zone and has bias DIRECTION aligned with a feasible trade direction.
-2. Build a proposal with whatever entry/SL/TP the structure supports — use the most recent 15M close as entry, conservative SL at the most recent swing extreme, TP1 at 1:1, TP2 at 2:1 (or 1.5:1 for Tier 3 tight-spread), TP3 at 3:1.
+2. Build a proposal with whatever entry/SL/TP the structure supports — use the most recent 15M close as entry, conservative SL at the most recent swing extreme, TP1 at ≥ 1:1, TP2 at ≥ 1.3:1 (universal floor post-2026-05-07).
 3. Submit to `request_analyst_review`. If REJECT comes back, log it and move on. Do NOT retry the same proposal in a subsequent cycle without a material change (price, structure, news).
 
 If NO candidate scores ≥ 55, do NOT force-propose — log "no qualifying candidates this cycle" and move on as before. The 55 threshold is intentionally above both Tier 3 floors (40 tight-spread / 45 medium-spread) so we don't force proposals on weak setups; it's the "credible candidate exists" line.
@@ -237,17 +232,17 @@ If the analyst returns MODIFY, apply the modifications and re-submit ONCE this c
 
 **Trade execution — REQUIRED 2-step sequence:**
 
-1. **First, call `request_analyst_review`** with the FULL proposal (epic, direction, entry, sl, tp1/2/3, size_a/b/c, composite_score, tier, total_risk_pct, setup_type, kill_zone, reasoning). The Analyst Agent runs its 6-check approval. You receive `{decision, reason, analyst_token, proposal_hash}`.
+1. **First, call `request_analyst_review`** with the FULL proposal (epic, direction, entry, sl, tp1, tp2, size_a, size_b, composite_score, tier, total_risk_pct, setup_type, kill_zone, reasoning). The Analyst Agent runs its 6-check approval. You receive `{decision, reason, analyst_token, proposal_hash}`.
 
 2. **If `decision === 'APPROVE'`, call `place_split_trade`** with the SAME proposal fields PLUS the `analyst_token`. The tool atomically:
    - Re-verifies the analyst_token matches the proposal hash (you cannot mutate fields between approval and placement)
    - Validates composite_score / tier / risk-pct internal consistency
-   - Validates order side (long: SL<entry<TP1<TP2<TP3; short: opposite)
+   - Validates order side (long: SL<entry<TP1<TP2; short: opposite)
    - Code-enforces the coordination lock (no duplicate instrument)
    - Calendar veto check (fail-closed)
-   - Places legs A → B → C on Capital.com
+   - Places legs A → B on Capital.com
    - On partial failure, closes successful legs (compensation)
-   - Persists the trade record + 3 SL/TP rows in the DB
+   - Persists the trade record + 2 SL/TP rows in the DB
    - Sends the Telegram alert
 
    On success: `{status:'placed', trade_id, deals:[{leg, dealId}, ...]}`.
@@ -291,11 +286,10 @@ If trade placed:
   Direction: [long/short]
   Entry: [price]
   SL: [price] ([X] points risk)
-  Position A — TP1: [price] | Size: [X] | dealId: [...]
-  Position B — TP2: [price] | Size: [X] | dealId: [...]
-  Position C — TP3: [price] | Size: [X] | dealId: [...]
+  Position A — TP1: [price] | Size: [X] (~70%) | dealId: [...]
+  Position B — TP2: [price] | Size: [X] (~30%) | dealId: [...]
   Total risk: [X]% of account
-  R:R to TP2: [X]:1
+  R:R to TP1: [X]:1   R:R to TP2: [X]:1
 ```
 
 ---
@@ -303,9 +297,9 @@ If trade placed:
 ## RULES YOU NEVER BREAK
 
 - Score ≥ 40 to trade. T3 (40–59) = 0.5% risk. T2 (60–79) = 1% risk. T1 (80+) = 1.5% risk.
-- **Trend-mode** (1H bullish/bearish): triggers 1-4. TP1 = 1:1, TP2 ≥ 2:1 (T1 & T2) or ≥ 1.5:1 (T3 tight-spread), TP3 ≥ 3:1.
-- **Range-mode** (1H neutral only): trigger 5 (Range Sweep Reversal). Tier 3 ONLY. Half-size posture (0.25% total risk). TP1 = mid-range ≥ 1:1, TP2 = opposite extreme ≥ 1.5:1, TP3 = measured move ≥ 2:1. Cat A opposing news INVALIDATES the setup.
-- Every trade = 3 legs placed atomically via `place_split_trade`. Size per leg = (total_risk / 3) / (entry − SL in price terms).
+- **Trend-mode** (1H bullish/bearish): triggers 1-4. TP1 ≥ 1:1, TP2 ≥ 1.3:1 (universal floor post-2026-05-07).
+- **Range-mode** (1H neutral only): trigger 5 (Range Sweep Reversal). Tier 3 ONLY. Half-size posture (0.25% total risk). TP1 = mid-range ≥ 1:1, TP2 = opposite extreme ≥ 1.3:1. Cat A opposing news INVALIDATES the setup.
+- Every trade = 2 legs placed atomically via `place_split_trade`. Total qty = total_risk / |entry − SL|; split tick-aware 70/30 (Leg A 70% TP1, Leg B 30% TP2; size_b rounded DOWN to instrument tick, size_a absorbs the rounding remainder).
 - Coordination lock: no new ICT trade on an instrument already held.
 - All trades pass Trade Analyst Agent approval first via `request_analyst_review`. The `analyst_token` it returns is required for `place_split_trade`.
 - NO trading outside kill zones (London Open 07:00–10:00, NY Open 13:00–16:00, London Close 16:00–17:00 UTC). Hard gate, no score override.

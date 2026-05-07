@@ -1,28 +1,22 @@
 // Tests for the R:R floor validator added 2026-05-04 (Phase A1, doc-vs-code
-// audit Finding #2).
+// audit Finding #2) and refactored 2026-05-07 (Phase 2 — 2-TP restructure).
 //
-// Pre-fix, place_split_trade only validated order-side (sl<entry<tp1<tp2<tp3
-// for longs, opposite for shorts) — there was NO check that the magnitudes
-// of TPs respected the strategy's R:R minimums. A hallucinated proposal with
-// TP1 1 pip past entry could pass every code gate. Strategy.md Section 7.3
-// specifies:
+// Pre-Phase-2 floors (per-mode / per-tier):
+//   Trend-mode: TP1 ≥ 1, TP2 ≥ 2 (T1/T2) or ≥ 1.5 (T3 tight-spread), TP3 ≥ 3
+//   Range-mode: TP1 ≥ 1, TP2 ≥ 1.5, TP3 ≥ 2
 //
-//   Trend-mode (triggers 1-4):
-//     TP1 ≥ 1:1 (de-risk leg, 1.2:1 acceptable)
-//     TP2 ≥ 2:1 for Tier 1 & 2; ≥ 1.5:1 for Tier 3 on tight-spread only
-//     TP3 ≥ 3:1
+// Post-Phase-2 floors (universal across all modes/tiers/spread classes):
+//   TP1 ≥ 1.0R   — same as before
+//   TP2 ≥ 1.3R   — UNIVERSAL (lowered from 1.5R / 2.0R per-mode)
+//   TP3 — REMOVED (the 3-leg ladder collapsed to 2 legs)
 //
-//   Range-mode (trigger 5):
-//     TP1 ≥ 1:1, TP2 ≥ 1.5:1, TP3 ≥ 2:1
-//
-// Tight-spread instruments per memory/strategy.md Section 4:
-//   EURUSD, GBPUSD, USDJPY, AUDUSD, GOLD
-// Medium-spread:
-//   SILVER, OIL_CRUDE
+// `tier`, `ticker`, `isRangeMode` are kept on the input shape for forward-
+// compatibility with future per-mode rules and to keep the proposal contract
+// stable, but they no longer affect the floors.
 //
 // The validator is a pure function — no side effects, no async, no DB.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { validateRRFloor, isTightSpreadTicker, validateOrderSide, validateRiskPct } from '../src/agents/trading-agent.js';
 
 describe('isTightSpreadTicker', () => {
@@ -50,20 +44,19 @@ describe('isTightSpreadTicker', () => {
   });
 });
 
-describe('validateRRFloor — trend-mode (triggers 1-4)', () => {
+describe('validateRRFloor — universal floors (post-2026-05-07 2-TP restructure)', () => {
   // Long EURUSD example: entry 1.1000, SL 1.0980 (20-pip risk)
-  // TP1 at 1:1 = 1.1020, TP2 at 2:1 = 1.1040, TP3 at 3:1 = 1.1060
+  // TP1 at 1:1 = 1.1020, TP2 at 1.3:1 = 1.1026
   const longBase = {
     direction: 'long' as const,
     entry: 1.1000,
     sl: 1.0980,
-    tp1: 1.1020,
-    tp2: 1.1040,
-    tp3: 1.1060,
+    tp1: 1.1020,    // 1.0R — exactly at TP1 floor
+    tp2: 1.1026,    // 1.3R — exactly at TP2 floor
     isRangeMode: false,
   };
 
-  it('accepts a clean Tier 1 trade with R:R 1/2/3 on tight-spread instrument', () => {
+  it('accepts a clean Tier 1 trade with R:R 1.0/1.3 on tight-spread instrument', () => {
     const result = validateRRFloor({
       ...longBase,
       tier: 1,
@@ -72,7 +65,7 @@ describe('validateRRFloor — trend-mode (triggers 1-4)', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('accepts a clean Tier 2 trade with R:R 1/2/3 on tight-spread instrument', () => {
+  it('accepts a clean Tier 2 trade with R:R 1.0/1.3 on tight-spread instrument', () => {
     const result = validateRRFloor({
       ...longBase,
       tier: 2,
@@ -81,11 +74,59 @@ describe('validateRRFloor — trend-mode (triggers 1-4)', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('rejects Tier 1 if TP2 R:R is 1.8 (below 2.0 floor)', () => {
-    // TP2 at 1.8R = 1.1036 (instead of 1.1040 for 2.0R)
+  it('accepts a Tier 3 trade with R:R 1.0/1.3 on medium-spread instrument', () => {
+    // Pre-restructure this would have required TP2 ≥ 2.0 on SILVER T3.
+    // Post-restructure: universal 1.3R floor across all spread classes.
     const result = validateRRFloor({
       ...longBase,
-      tp2: 1.1036,
+      tier: 3,
+      ticker: 'SILVER',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts TP1 just at the 1.0R floor (boundary case)', () => {
+    // TP1 at exactly 1.0R = 1.1020
+    const result = validateRRFloor({
+      ...longBase,
+      tp1: 1.1020,
+      tier: 1,
+      ticker: 'EURUSD',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects TP1 just below the 1.0R floor (boundary case, R:R 0.95)', () => {
+    // TP1 at 0.95R = 1.1019
+    const result = validateRRFloor({
+      ...longBase,
+      tp1: 1.1019,
+      tier: 1,
+      ticker: 'EURUSD',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('RR_FLOOR_VIOLATION');
+      expect(result.reason).toMatch(/TP1/);
+    }
+  });
+
+  it('accepts TP2 just at the 1.3R floor (boundary case)', () => {
+    // TP2 at exactly 1.3R = 1.1026
+    const result = validateRRFloor({
+      ...longBase,
+      tp2: 1.1026,
+      tier: 1,
+      ticker: 'EURUSD',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects TP2 just below the 1.3R floor (boundary case, R:R ~1.2)', () => {
+    // TP2 at 1.2R = 1.1024
+    const result = validateRRFloor({
+      ...longBase,
+      tp2: 1.1024,
       tier: 1,
       ticker: 'EURUSD',
     });
@@ -93,36 +134,33 @@ describe('validateRRFloor — trend-mode (triggers 1-4)', () => {
     if (!result.ok) {
       expect(result.error).toBe('RR_FLOOR_VIOLATION');
       expect(result.reason).toMatch(/TP2/);
-      expect(result.reason).toMatch(/2/);
     }
   });
 
-  it('accepts Tier 3 on tight-spread with TP2 R:R 1.5 (allowed for tight-spread T3)', () => {
-    // TP2 at 1.5R = 1.1030
+  it('accepts TP1 at 1.2:1 (the "breathing room" case from strategy.md)', () => {
+    // TP1 at 1.2R = 1.1024
     const result = validateRRFloor({
       ...longBase,
-      tp2: 1.1030,
-      tier: 3,
+      tp1: 1.1024,
+      tp2: 1.1030,    // bump TP2 to ~1.5R so it stays above floor
+      tier: 1,
       ticker: 'EURUSD',
     });
     expect(result.ok).toBe(true);
   });
 
-  it('rejects Tier 3 on MEDIUM-spread (SILVER) with TP2 R:R 1.5 (T3 medium needs 2.0)', () => {
+  it('accepts TP2 above the floor (R:R 2.0 — was the old trend-mode floor)', () => {
+    // Demonstrates that proposals built under the OLD floors still pass.
     const result = validateRRFloor({
       ...longBase,
-      tp2: 1.1030,
-      tier: 3,
-      ticker: 'SILVER',
+      tp2: 1.1040,    // 2.0R
+      tier: 1,
+      ticker: 'EURUSD',
     });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe('RR_FLOOR_VIOLATION');
-      expect(result.reason).toMatch(/TP2/);
-    }
+    expect(result.ok).toBe(true);
   });
 
-  it('rejects Tier 1 if TP1 R:R is 0.8 (below 1.0 floor)', () => {
+  it('rejects TP1 R:R 0.8 (clearly below floor)', () => {
     // TP1 at 0.8R = 1.1016
     const result = validateRRFloor({
       ...longBase,
@@ -137,61 +175,31 @@ describe('validateRRFloor — trend-mode (triggers 1-4)', () => {
     }
   });
 
-  it('rejects Tier 1 if TP3 R:R is 2.5 (below 3.0 floor)', () => {
-    // TP3 at 2.5R = 1.1050
-    const result = validateRRFloor({
-      ...longBase,
-      tp3: 1.1050,
-      tier: 1,
-      ticker: 'EURUSD',
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe('RR_FLOOR_VIOLATION');
-      expect(result.reason).toMatch(/TP3/);
-    }
-  });
-
-  it('accepts TP1 at 1.2:1 (the "breathing room" case from strategy.md)', () => {
-    // TP1 at 1.2R = 1.1024
-    const result = validateRRFloor({
-      ...longBase,
-      tp1: 1.1024,
-      tier: 1,
-      ticker: 'EURUSD',
-    });
-    expect(result.ok).toBe(true);
-  });
-
   it('handles short trades correctly (mirrored math)', () => {
     // Short EURUSD: entry 1.1000, SL 1.1020 (20-pip risk above)
-    // TP1 at 1:1 = 1.0980, TP2 at 2:1 = 1.0960, TP3 at 3:1 = 1.0940
+    // TP1 at 1:1 = 1.0980, TP2 at 1.3:1 = 1.0974
     const result = validateRRFloor({
       direction: 'short',
       entry: 1.1000,
       sl: 1.1020,
       tp1: 1.0980,
-      tp2: 1.0960,
-      tp3: 1.0940,
+      tp2: 1.0974,
       tier: 1,
       ticker: 'EURUSD',
       isRangeMode: false,
     });
     expect(result.ok).toBe(true);
   });
-});
 
-describe('validateRRFloor — range-mode (trigger 5)', () => {
-  // Range-mode floors: TP1 ≥ 1, TP2 ≥ 1.5, TP3 ≥ 2
-
-  it('accepts range-mode with R:R 1/1.5/2', () => {
+  it('range-mode uses the same universal 1.3R floor (no per-mode variation post-restructure)', () => {
+    // Same R:R as trend-mode case — pre-restructure range-mode TP2 floor was
+    // 1.5R, now it's 1.3R like everything else.
     const result = validateRRFloor({
       direction: 'long',
       entry: 1.1000,
       sl: 1.0980,
       tp1: 1.1020,    // 1:1
-      tp2: 1.1030,    // 1.5:1
-      tp3: 1.1040,    // 2:1
+      tp2: 1.1026,    // 1.3:1
       tier: 3,
       ticker: 'EURUSD',
       isRangeMode: true,
@@ -199,35 +207,14 @@ describe('validateRRFloor — range-mode (trigger 5)', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('rejects range-mode if TP3 R:R is 1.8 (below 2.0 floor)', () => {
-    // TP3 at 1.8R = 1.1036 (instead of 1.1040 for 2.0R)
+  it('range-mode also rejects TP2 below the universal 1.3R floor', () => {
+    // TP2 at 1.2R = 1.1024 — below the universal floor
     const result = validateRRFloor({
       direction: 'long',
       entry: 1.1000,
       sl: 1.0980,
       tp1: 1.1020,
-      tp2: 1.1030,
-      tp3: 1.1036,
-      tier: 3,
-      ticker: 'EURUSD',
-      isRangeMode: true,
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error).toBe('RR_FLOOR_VIOLATION');
-      expect(result.reason).toMatch(/TP3/);
-    }
-  });
-
-  it('rejects range-mode if TP2 R:R is 1.3 (below 1.5 floor)', () => {
-    // TP2 at 1.3R = 1.1026
-    const result = validateRRFloor({
-      direction: 'long',
-      entry: 1.1000,
-      sl: 1.0980,
-      tp1: 1.1020,
-      tp2: 1.1026,
-      tp3: 1.1040,
+      tp2: 1.1024,
       tier: 3,
       ticker: 'EURUSD',
       isRangeMode: true,
@@ -239,17 +226,15 @@ describe('validateRRFloor — range-mode (trigger 5)', () => {
     }
   });
 
-  it('range-mode does NOT apply tight-spread T3 carve-out (always uses range floors)', () => {
-    // SILVER (medium spread) range-mode trade — same R:R requirements as
-    // EURUSD range-mode. The tight-spread carve-out is a TREND-mode T3
-    // concept; range-mode has its own floors that apply uniformly.
+  it('SILVER (medium-spread) range-mode trade — same universal floor applies', () => {
+    // Pre-restructure tight-spread carve-out is gone; SILVER and EURUSD
+    // both use the 1.3R floor on TP2.
     const result = validateRRFloor({
       direction: 'long',
       entry: 25.00,
       sl: 24.80,
       tp1: 25.20,    // 1:1
-      tp2: 25.30,    // 1.5:1
-      tp3: 25.40,    // 2:1
+      tp2: 25.26,    // 1.3:1
       tier: 3,
       ticker: 'SILVER',
       isRangeMode: true,
@@ -265,8 +250,24 @@ describe('validateRRFloor — edge cases', () => {
       entry: 1.1000,
       sl: 1.1000,
       tp1: 1.1020,
-      tp2: 1.1040,
-      tp3: 1.1060,
+      tp2: 1.1026,
+      tier: 1,
+      ticker: 'EURUSD',
+      isRangeMode: false,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('INVALID_RISK');
+    }
+  });
+
+  it('returns INVALID_RISK on non-finite risk (NaN entry/sl)', () => {
+    const result = validateRRFloor({
+      direction: 'long',
+      entry: NaN,
+      sl: 1.0980,
+      tp1: 1.1020,
+      tp2: 1.1026,
       tier: 1,
       ticker: 'EURUSD',
       isRangeMode: false,
@@ -278,15 +279,14 @@ describe('validateRRFloor — edge cases', () => {
   });
 
   it('reports the violating leg in the reason field', () => {
-    // All three TPs below floor — the validator should report at least
-    // one of them, and the reason should be human-readable.
+    // Both TPs below floor — reason should be human-readable and mention TP1
+    // (the first failing leg).
     const result = validateRRFloor({
       direction: 'long',
       entry: 1.1000,
       sl: 1.0980,
       tp1: 1.1010,    // 0.5R, below 1.0
-      tp2: 1.1015,    // 0.75R, below 2.0
-      tp3: 1.1020,    // 1R, below 3.0
+      tp2: 1.1015,    // 0.75R, below 1.3
       tier: 1,
       ticker: 'EURUSD',
       isRangeMode: false,
@@ -300,7 +300,7 @@ describe('validateRRFloor — edge cases', () => {
   });
 });
 
-describe('validateOrderSide — pre-analyst geometric sanity (2026-05-05)', () => {
+describe('validateOrderSide — pre-analyst geometric sanity (2026-05-05, post-2026-05-07 2-TP)', () => {
   // Background: the 2026-05-04 08:31 UTC live failure was a GOLD SHORT
   // proposal with SL=4575 < entry=4576.29 and TPs above entry — geometrically
   // impossible. The analyst rightly rejected it but its long rejection prose
@@ -308,16 +308,18 @@ describe('validateOrderSide — pre-analyst geometric sanity (2026-05-05)', () =
   // for ~6 days. This validator catches the malformed proposal BEFORE the
   // analyst LLM call so neither the wasted API spend nor the truncation-
   // by-verbose-rejection cascade can happen.
+  //
+  // 2026-05-07: tp3 dropped from the input shape (2-TP restructure).
 
   it('long with correct ordering passes', () => {
     expect(validateOrderSide({
-      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.11, tp2: 1.12, tp3: 1.13,
+      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.11, tp2: 1.12,
     }).ok).toBe(true);
   });
 
   it('long with SL above entry fails', () => {
     const r = validateOrderSide({
-      direction: 'long', entry: 1.10, sl: 1.11, tp1: 1.12, tp2: 1.13, tp3: 1.14,
+      direction: 'long', entry: 1.10, sl: 1.11, tp1: 1.12, tp2: 1.13,
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/long.*sl<entry/i);
@@ -325,27 +327,27 @@ describe('validateOrderSide — pre-analyst geometric sanity (2026-05-05)', () =
 
   it('long with TPs below entry fails', () => {
     const r = validateOrderSide({
-      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.08, tp2: 1.07, tp3: 1.06,
+      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.08, tp2: 1.07,
     });
     expect(r.ok).toBe(false);
   });
 
   it('long with TPs out of order fails (tp2 < tp1)', () => {
     const r = validateOrderSide({
-      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.13, tp2: 1.12, tp3: 1.14,
+      direction: 'long', entry: 1.10, sl: 1.09, tp1: 1.13, tp2: 1.12,
     });
     expect(r.ok).toBe(false);
   });
 
   it('short with correct ordering passes', () => {
     expect(validateOrderSide({
-      direction: 'short', entry: 1.10, sl: 1.11, tp1: 1.09, tp2: 1.08, tp3: 1.07,
+      direction: 'short', entry: 1.10, sl: 1.11, tp1: 1.09, tp2: 1.08,
     }).ok).toBe(true);
   });
 
   it('short with inverted geometry fails (the 2026-05-04 GOLD case)', () => {
     const r = validateOrderSide({
-      direction: 'short', entry: 4576.29, sl: 4575.00, tp1: 4577.58, tp2: 4578.87, tp3: 4580.16,
+      direction: 'short', entry: 4576.29, sl: 4575.00, tp1: 4577.58, tp2: 4578.87,
     });
     expect(r.ok).toBe(false);
     if (!r.ok) {
@@ -356,14 +358,14 @@ describe('validateOrderSide — pre-analyst geometric sanity (2026-05-05)', () =
 
   it('rejects equal levels (degenerate)', () => {
     const r = validateOrderSide({
-      direction: 'long', entry: 1.10, sl: 1.10, tp1: 1.11, tp2: 1.12, tp3: 1.13,
+      direction: 'long', entry: 1.10, sl: 1.10, tp1: 1.11, tp2: 1.12,
     });
     expect(r.ok).toBe(false);
   });
 
   it('rejects non-finite numbers', () => {
     const r = validateOrderSide({
-      direction: 'long', entry: NaN, sl: 1.09, tp1: 1.11, tp2: 1.12, tp3: 1.13,
+      direction: 'long', entry: NaN, sl: 1.09, tp1: 1.11, tp2: 1.12,
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toMatch(/finite/i);
@@ -371,7 +373,7 @@ describe('validateOrderSide — pre-analyst geometric sanity (2026-05-05)', () =
 
   it('rejects non-finite TP', () => {
     const r = validateOrderSide({
-      direction: 'short', entry: 1.10, sl: 1.11, tp1: 1.09, tp2: Infinity, tp3: 1.07,
+      direction: 'short', entry: 1.10, sl: 1.11, tp1: 1.09, tp2: Infinity,
     });
     expect(r.ok).toBe(false);
   });

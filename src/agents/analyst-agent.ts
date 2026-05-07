@@ -146,12 +146,16 @@ export interface TradeProposal {
   sl: number;
   tp1: number;
   tp2: number;
-  // Added 2026-04-28: 3-leg split-position. tp3 is required for new
-  // ICT trades since the 3-leg upgrade on 2026-04-21.
-  tp3: number;
+  // 2026-05-07 — 2-TP restructure (Phase 2). The 3-leg ladder collapsed
+  // to a 2-leg ladder; tp3 / size_c are no longer part of the ICT proposal.
+  // Kept optional/null on the type for back-compat with any in-flight
+  // legacy 3-leg proposal still referenced by long-running APIs (none on
+  // the normal request_analyst_review → place_split_trade path), and
+  // because TradeRecord rows persist them as nullable columns.
+  tp3?: number | null;
   size_a: number;
   size_b: number;
-  size_c: number;
+  size_c?: number | null;
   total_risk_pct: number;
   composite_score: number;
   tier: 1 | 2 | 3;
@@ -276,7 +280,7 @@ Run your 6-check sequence and respond with your decision JSON.`;
         modifications: {
           type: 'object',
           description:
-            'Required only when decision=MODIFY. Keys: sl, tp1, tp2, tp3, total_risk_pct (numeric overrides). Empty object {} otherwise.',
+            'Required only when decision=MODIFY. Keys: sl, tp1, tp2, total_risk_pct (numeric overrides). Empty object {} otherwise.',
           additionalProperties: true,
         },
       },

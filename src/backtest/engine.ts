@@ -7,6 +7,12 @@
 // backtest result from the prior version measured a fictional strategy
 // that never matched live behavior.
 //
+// 2026-05-07 (Phase 2 — 2-TP restructure). Engine collapsed from 3 legs
+// (TP1/TP2/TP3, 34/33/33%) to 2 legs (TP1=70%, TP2=30%, no TP3). New R:R
+// floor on TP2 is 1.3R universal (was 1.5R / 2.0R per-mode). The old
+// `tp3` outcome is gone; remaining outcomes are `tp2` (full win),
+// `tp1_be` (TP1 hit + runner stopped at entry), and `sl`.
+//
 // Methodology (current):
 //   - 1H candles for bias detection (same as live scanner)
 //   - Kill zone is a HARD GATE (no score contribution) — trades only fire
@@ -25,13 +31,12 @@
 //   - Tier assignment: T1 80+ (1.5% risk), T2 60-79 (1.0%), T3 40-59 (0.5%),
 //     below 40 = skip (no trade). T3 floor lowered 45 → 40 in Phase E
 //     (2026-05-04) strategy loosening.
-//   - TPs: TP1 = entry + 1R (de-risk leg), TP2 = entry + 2R (primary),
-//     TP3 = entry + 3R (runner). Matches strategy.md Section 7.3.
-//   - 3-leg sizing: ~34/33/33% per leg. P&L outcomes per strategy.md:
-//       sl: -1R total
-//       tp1_be: +0.34R (Leg A profit, B+C BE-stop)
-//       tp2: +1.0R (A profit + B profit, C trails to TP1 stop)
-//       tp3: +1.99R (all three legs hit)
+//   - TPs: TP1 = entry + 1R (de-risk leg), TP2 = entry + 1.3R (runner —
+//     universal floor post-2026-05-07, was 2R/3R per-mode pre-restructure).
+//   - 2-leg sizing: 70% / 30% (post-2026-05-07). P&L outcomes:
+//       sl: -1R total (both legs at SL → 1× tier risk lost)
+//       tp1_be: +0.7R (Leg A locked at +1R × 0.70, Leg B stopped at entry × 0.30)
+//       tp2: +1.09R (Leg A +1R × 0.70 + Leg B +1.3R × 0.30)
 //   - Range-mode (trigger 5) NOT modeled in backtest. Trigger 5 needs 15M
 //     data + spread/ATR floors which the engine doesn't have. Neutral-bias
 //     candles are still skipped. Live behavior will produce more trades
@@ -49,17 +54,14 @@ export interface BacktestTrade {
   sl: number;
   tp1: number;
   tp2: number;
-  tp3: number;
   entry_time: string;
   exit_time: string;
-  outcome: 'tp3' | 'tp2' | 'tp1_be' | 'sl';
+  outcome: 'tp2' | 'tp1_be' | 'sl';
   // P&L in R units (1R = 1× total trade risk, NOT per-leg).
-  // Per strategy.md Section 7.1 with split-position 34/33/33% and
-  // TP1=1R/TP2=2R/TP3=3R per-leg multipliers:
-  //   tp3 → +0.34 + 0.66 + 0.99 = +1.99R
-  //   tp2 → +0.34 + 0.66 + ~0R (C trails to TP1) ≈ +1.0R
-  //   tp1_be → +0.34R (A profit, B+C BE-stop)
-  //   sl → -1R total
+  // Post-2026-05-07 2-TP restructure: 70% TP1 + 30% TP2 with TP1=1R, TP2=1.3R:
+  //   tp2 → +1R × 0.70 + +1.3R × 0.30 = +1.09R
+  //   tp1_be → +1R × 0.70 + 0R × 0.30 = +0.7R
+  //   sl → -1R × 0.70 + -1R × 0.30 = -1R total
   pnl_r: number;
   score: number;
   tier: 1 | 2 | 3;
@@ -146,9 +148,9 @@ export function assignTier(score: number, ticker: string): 1 | 2 | 3 | null {
 }
 
 // Walk forward through candles to find the first TP or SL hit. Returns the
-// outcome and the time it occurred. Models the 3-leg split-position
-// behavior: TP1 hit → B+C move to BE; TP2 hit → C trails to TP1 level;
-// TP3 hit → all legs closed.
+// outcome and the time it occurred. Models the 2-leg split-position
+// behavior (post-2026-05-07): TP1 hit → Leg B SL moves to entry (BE); TP2
+// hit → trade complete. The 3rd leg / TP3 path is gone.
 function resolveOutcome(
   ticker: string,
   candles: Candle[],
@@ -158,7 +160,6 @@ function resolveOutcome(
   sl: number,
   tp1: number,
   tp2: number,
-  tp3: number,
 ): { outcome: BacktestTrade['outcome']; exit_time: string; pnl_r: number } {
   // Execution cost (spread + slippage) applied to every trade outcome,
   // win or lose. stopDistance is the absolute price distance from entry
@@ -172,42 +173,39 @@ function resolveOutcome(
     const c = candles[i];
 
     if (direction === 'long') {
-      if (c.low <= sl) {
+      // Once TP1 is hit, Leg B's effective stop is `entry` (break-even),
+      // not the original `sl`. So we test against `entry` after tp1Hit.
+      const stopLevel = tp1Hit ? entry : sl;
+      if (c.low <= stopLevel) {
         return {
           outcome: tp1Hit ? 'tp1_be' : 'sl',
           exit_time: c.datetime,
-          // tp1_be: A profit locked at +1R × 0.34, B+C BE-stop at 0
-          // sl: all 3 legs stopped, total = -1R
-          pnl_r: (tp1Hit ? 0.34 : -1.0) - executionCost,
+          // tp1_be: A locked at +1R × 0.70, B at entry × 0.30 = +0.7R
+          // sl: both legs stopped, total = -1R
+          pnl_r: (tp1Hit ? 0.7 : -1.0) - executionCost,
         };
       }
       if (!tp1Hit && c.high >= tp1) {
         tp1Hit = true;
       }
-      if (tp1Hit && c.high >= tp3) {
-        // All 3 TPs: A=+0.34, B=+0.66, C=+0.99 = +1.99R
-        return { outcome: 'tp3', exit_time: c.datetime, pnl_r: 1.99 - executionCost };
-      }
       if (tp1Hit && c.high >= tp2) {
-        // A+B profit, C trails to TP1 level. Per strategy.md ≈ +1.0R total.
-        return { outcome: 'tp2', exit_time: c.datetime, pnl_r: 1.0 - executionCost };
+        // A=+1R × 0.70, B=+1.3R × 0.30 = +1.09R
+        return { outcome: 'tp2', exit_time: c.datetime, pnl_r: 1.09 - executionCost };
       }
     } else {
-      if (c.high >= sl) {
+      const stopLevel = tp1Hit ? entry : sl;
+      if (c.high >= stopLevel) {
         return {
           outcome: tp1Hit ? 'tp1_be' : 'sl',
           exit_time: c.datetime,
-          pnl_r: (tp1Hit ? 0.34 : -1.0) - executionCost,
+          pnl_r: (tp1Hit ? 0.7 : -1.0) - executionCost,
         };
       }
       if (!tp1Hit && c.low <= tp1) {
         tp1Hit = true;
       }
-      if (tp1Hit && c.low <= tp3) {
-        return { outcome: 'tp3', exit_time: c.datetime, pnl_r: 1.99 - executionCost };
-      }
       if (tp1Hit && c.low <= tp2) {
-        return { outcome: 'tp2', exit_time: c.datetime, pnl_r: 1.0 - executionCost };
+        return { outcome: 'tp2', exit_time: c.datetime, pnl_r: 1.09 - executionCost };
       }
     }
   }
@@ -215,7 +213,7 @@ function resolveOutcome(
   // Ran out of candles without resolution — treat as tp1_be if TP1 was hit, else sl
   const lastCandle = candles[candles.length - 1];
   return tp1Hit
-    ? { outcome: 'tp1_be', exit_time: lastCandle.datetime, pnl_r: 0.34 - executionCost }
+    ? { outcome: 'tp1_be', exit_time: lastCandle.datetime, pnl_r: 0.7 - executionCost }
     : { outcome: 'sl', exit_time: lastCandle.datetime, pnl_r: -1.0 - executionCost };
 }
 
@@ -258,32 +256,33 @@ export function runBacktest(
     const atr = bias.atr;
     if (atr <= 0) continue;
 
-    let sl: number, tp1: number, tp2: number, tp3: number;
+    // 2026-05-07 (Phase 2 — 2-TP restructure): TP3 dropped. TP2 lowered
+    // from 2R/3R per-mode to 1.3R universal across all tiers / modes /
+    // spread classes.
+    let sl: number, tp1: number, tp2: number;
 
     if (bias.bias === 'bullish') {
       sl = bias.recent_low - atr * 0.5;
       const risk = entry - sl;
       if (risk <= 0) continue;
-      tp1 = entry + risk * 1;   // 1:1 (de-risk leg)
-      tp2 = entry + risk * 2;   // 2:1 (primary)
-      tp3 = entry + risk * 3;   // 3:1 (runner)
+      tp1 = entry + risk * 1;     // 1:1 (de-risk leg)
+      tp2 = entry + risk * 1.3;   // 1.3:1 (runner — universal floor)
     } else {
       sl = bias.recent_high + atr * 0.5;
       const risk = sl - entry;
       if (risk <= 0) continue;
       tp1 = entry - risk * 1;
-      tp2 = entry - risk * 2;
-      tp3 = entry - risk * 3;
+      tp2 = entry - risk * 1.3;
     }
 
-    // R:R floors per strategy.md Section 7.3. With TPs fixed at 1R/2R/3R,
-    // these are always satisfied — but the check is left in defensively
-    // for future engine variations that might use looser TP placement.
-    // T3 tight-spread accepts TP2 ≥ 1.5; everyone else ≥ 2.0. TP2 is
-    // structurally always 2.0 here so the check is a no-op currently.
+    // R:R floors post-2026-05-07: TP1 ≥ 1.0R, TP2 ≥ 1.3R universal. With
+    // TPs fixed at 1R/1.3R here, these are always satisfied — but the
+    // check is left in defensively for future engine variations that
+    // might use looser TP placement.
+    const tp1RR = Math.abs(tp1 - entry) / Math.abs(sl - entry);
     const tp2RR = Math.abs(tp2 - entry) / Math.abs(sl - entry);
-    const tp2Floor = (tier === 3 && spreadTight) ? 1.5 : 2.0;
-    if (tp2RR < tp2Floor) continue;
+    if (tp1RR < 1.0) continue;
+    if (tp2RR < 1.3) continue;
 
     const { outcome, exit_time, pnl_r } = resolveOutcome(
       ticker,
@@ -291,7 +290,7 @@ export function runBacktest(
       i + 2,
       bias.bias === 'bullish' ? 'long' : 'short',
       entry,
-      sl, tp1, tp2, tp3,
+      sl, tp1, tp2,
     );
 
     const riskPct = tier === 1 ? 1.5 : tier === 2 ? 1.0 : 0.5;
@@ -303,7 +302,6 @@ export function runBacktest(
       sl,
       tp1,
       tp2,
-      tp3,
       entry_time: entryCandle.datetime,
       exit_time,
       outcome,

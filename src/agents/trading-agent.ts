@@ -61,6 +61,11 @@ export function proposalHash(proposal: Omit<TradeProposal, 'trade_id'>): string 
   // Canonicalise: explicit field order, fixed precision on numbers, lower-
   // case strings where applicable. Drop fields that don't affect the trade
   // identity (trade_id is generated FROM this hash; reasoning is free-text).
+  //
+  // 2026-05-07 — 2-TP restructure (Phase 2). tp3 + size_c removed from
+  // canonical projection. Proposals are 2-leg only (TP1 70% + TP2 30%);
+  // any in-flight approval entries from the old 3-leg path will simply
+  // hash differently and TTL out of approvedProposals naturally.
   const canonical = {
     instrument: proposal.instrument.toUpperCase(),
     instrument_category: proposal.instrument_category.toLowerCase(),
@@ -70,10 +75,8 @@ export function proposalHash(proposal: Omit<TradeProposal, 'trade_id'>): string 
     sl: Number(proposal.sl.toFixed(5)),
     tp1: Number(proposal.tp1.toFixed(5)),
     tp2: Number(proposal.tp2.toFixed(5)),
-    tp3: Number(proposal.tp3.toFixed(5)),
     size_a: Number(proposal.size_a.toFixed(6)),
     size_b: Number(proposal.size_b.toFixed(6)),
-    size_c: Number(proposal.size_c.toFixed(6)),
     composite_score: Math.round(proposal.composite_score),
     tier: proposal.tier,
     total_risk_pct: Number(proposal.total_risk_pct.toFixed(4)),
@@ -125,7 +128,6 @@ export interface RRValidationInput {
   sl: number;
   tp1: number;
   tp2: number;
-  tp3: number;
   tier: 1 | 2 | 3;
   ticker: string;
   isRangeMode: boolean;
@@ -134,6 +136,21 @@ export interface RRValidationInput {
 export type RRValidationResult =
   | { ok: true }
   | { ok: false; error: 'INVALID_RISK' | 'RR_FLOOR_VIOLATION'; reason: string };
+
+// 2026-05-07 — 2-TP restructure (Phase 2). The 3-leg ladder (TP1/TP2/TP3 with
+// per-mode/per-tier floors) is replaced by a 2-leg ladder with universal
+// floors:
+//   TP1 ≥ 1.0R   — same as before
+//   TP2 ≥ 1.3R   — UNIVERSAL across all modes/tiers (lowered from 1.5R/2.0R)
+//
+// This is a deliberate strategy loosening per Giuseppe's request 2026-05-07.
+// The `tier` and `isRangeMode` fields are kept on RRValidationInput for
+// future use and to keep the ICT prompt/proposal contract stable, but they
+// no longer affect the floors. The ticker-specific tight-spread carve-out
+// also no longer applies (the new universal floor is below all of the old
+// per-mode floors anyway).
+const TP1_FLOOR_R = 1.0;
+const TP2_FLOOR_R = 1.3;
 
 /**
  * Validate that the proposal's TPs respect the strategy R:R floors.
@@ -148,7 +165,7 @@ export type RRValidationResult =
  * violated and the actual ratio so the LLM can fix and retry.
  */
 export function validateRRFloor(input: RRValidationInput): RRValidationResult {
-  const { entry, sl, tp1, tp2, tp3, tier, ticker, isRangeMode } = input;
+  const { entry, sl, tp1, tp2 } = input;
   const risk = Math.abs(entry - sl);
   if (risk === 0 || !Number.isFinite(risk)) {
     return {
@@ -161,56 +178,24 @@ export function validateRRFloor(input: RRValidationInput): RRValidationResult {
   const rr = (tp: number) => Math.abs(tp - entry) / risk;
   const rr1 = rr(tp1);
   const rr2 = rr(tp2);
-  const rr3 = rr(tp3);
-
-  // Floors per strategy.md Section 7.3.
-  let tp1Floor: number;
-  let tp2Floor: number;
-  let tp3Floor: number;
-  let mode: string;
-
-  if (isRangeMode) {
-    tp1Floor = 1.0;
-    tp2Floor = 1.5;
-    tp3Floor = 2.0;
-    mode = 'range-mode';
-  } else {
-    tp1Floor = 1.0;
-    tp3Floor = 3.0;
-    if (tier === 3 && isTightSpreadTicker(ticker)) {
-      tp2Floor = 1.5;  // T3 tight-spread carve-out
-      mode = 'trend-mode T3 tight-spread';
-    } else {
-      tp2Floor = 2.0;
-      mode = `trend-mode T${tier}`;
-    }
-  }
 
   // Tolerance: allow tiny floating-point overshoot (0.001 R) so e.g. an
   // exactly-at-floor proposal isn't rejected on rounding.
   const tol = 0.001;
-  if (rr1 + tol < tp1Floor) {
+  if (rr1 + tol < TP1_FLOOR_R) {
     return {
       ok: false,
       error: 'RR_FLOOR_VIOLATION',
-      reason: `TP1 R:R is ${rr1.toFixed(2)}, below ${mode} floor of ${tp1Floor}. ` +
+      reason: `TP1 R:R is ${rr1.toFixed(2)}, below universal floor of ${TP1_FLOOR_R}. ` +
               `Re-compute: entry=${entry}, sl=${sl}, tp1=${tp1}.`,
     };
   }
-  if (rr2 + tol < tp2Floor) {
+  if (rr2 + tol < TP2_FLOOR_R) {
     return {
       ok: false,
       error: 'RR_FLOOR_VIOLATION',
-      reason: `TP2 R:R is ${rr2.toFixed(2)}, below ${mode} floor of ${tp2Floor}. ` +
+      reason: `TP2 R:R is ${rr2.toFixed(2)}, below universal floor of ${TP2_FLOOR_R}. ` +
               `Re-compute: entry=${entry}, sl=${sl}, tp2=${tp2}.`,
-    };
-  }
-  if (rr3 + tol < tp3Floor) {
-    return {
-      ok: false,
-      error: 'RR_FLOOR_VIOLATION',
-      reason: `TP3 R:R is ${rr3.toFixed(2)}, below ${mode} floor of ${tp3Floor}. ` +
-              `Re-compute: entry=${entry}, sl=${sl}, tp3=${tp3}.`,
     };
   }
 
@@ -282,7 +267,6 @@ export interface OrderSideInput {
   sl: number;
   tp1: number;
   tp2: number;
-  tp3: number;
 }
 
 export type OrderSideResult = { ok: true } | { ok: false; reason: string };
@@ -292,30 +276,33 @@ export type OrderSideResult = { ok: true } | { ok: false; reason: string };
  * network. Cheap pre-check called BEFORE the analyst LLM call, mirroring
  * the same defense in place_split_trade.
  *
- * Long invariant:  sl < entry < tp1 < tp2 < tp3
- * Short invariant: tp3 < tp2 < tp1 < entry < sl
+ * 2026-05-07 — 2-TP restructure (Phase 2). TP3 dropped; the new invariant
+ * uses only the two retained legs.
+ *
+ * Long invariant:  sl < entry < tp1 < tp2
+ * Short invariant: tp2 < tp1 < entry < sl
  */
 export function validateOrderSide(input: OrderSideInput): OrderSideResult {
-  const { direction, entry, sl, tp1, tp2, tp3 } = input;
+  const { direction, entry, sl, tp1, tp2 } = input;
 
-  for (const [k, v] of Object.entries({ entry, sl, tp1, tp2, tp3 })) {
+  for (const [k, v] of Object.entries({ entry, sl, tp1, tp2 })) {
     if (!Number.isFinite(v)) {
       return { ok: false, reason: `Order-side rejected: ${k}=${v} is not a finite number.` };
     }
   }
 
   if (direction === 'long') {
-    if (!(sl < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3)) {
+    if (!(sl < entry && entry < tp1 && tp1 < tp2)) {
       return {
         ok: false,
-        reason: `Long order-side invariant violated: need sl<entry<tp1<tp2<tp3, got sl=${sl}, entry=${entry}, tp1=${tp1}, tp2=${tp2}, tp3=${tp3}.`,
+        reason: `Long order-side invariant violated: need sl<entry<tp1<tp2, got sl=${sl}, entry=${entry}, tp1=${tp1}, tp2=${tp2}.`,
       };
     }
   } else {
-    if (!(tp3 < tp2 && tp2 < tp1 && tp1 < entry && entry < sl)) {
+    if (!(tp2 < tp1 && tp1 < entry && entry < sl)) {
       return {
         ok: false,
-        reason: `Short order-side invariant violated: need tp3<tp2<tp1<entry<sl, got sl=${sl}, entry=${entry}, tp1=${tp1}, tp2=${tp2}, tp3=${tp3}.`,
+        reason: `Short order-side invariant violated: need tp2<tp1<entry<sl, got sl=${sl}, entry=${entry}, tp1=${tp1}, tp2=${tp2}.`,
       };
     }
   }
@@ -461,14 +448,16 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   // 2026-04-28 audit refactor: replaced bare place_order + log_trade with
   // the unified place_split_trade tool. The new tool atomically validates
   // (composite_score / tier-risk / coordination lock / analyst approval /
-  // calendar veto / order side), places all 3 legs, persists the DB
+  // calendar veto / order side), places the legs, persists the DB
   // record, and compensates on partial failure. The agent MUST call
   // request_analyst_review FIRST to get an analyst_token, then pass that
   // token to place_split_trade.
+  // 2026-05-07 — 2-TP restructure (Phase 2). Schema reduced from 3 legs to
+  // 2 legs (Leg A 70% TP1, Leg B 30% TP2). tp3 / size_c dropped.
   {
     name: 'request_analyst_review',
     description:
-      'MANDATORY before place_split_trade. Submits the full 3-leg trade proposal to the Trade Analyst Agent. Returns { decision: APPROVE|REJECT|MODIFY, reason, analyst_token, proposal_hash }. The analyst_token is a hash of the canonicalised proposal — place_split_trade rejects unless the supplied token matches a same-cycle approval AND the proposal hash matches. You CANNOT mutate size/SL/TP/score between approval and placement.',
+      'MANDATORY before place_split_trade. Submits the full 2-leg trade proposal to the Trade Analyst Agent. Returns { decision: APPROVE|REJECT|MODIFY, reason, analyst_token, proposal_hash }. The analyst_token is a hash of the canonicalised proposal — place_split_trade rejects unless the supplied token matches a same-cycle approval AND the proposal hash matches. You CANNOT mutate size/SL/TP/score between approval and placement.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -480,10 +469,8 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         sl: { type: 'number' },
         tp1: { type: 'number' },
         tp2: { type: 'number' },
-        tp3: { type: 'number' },
-        size_a: { type: 'number', description: 'Leg A size (~34% of total)' },
-        size_b: { type: 'number', description: 'Leg B size (~33% of total)' },
-        size_c: { type: 'number', description: 'Leg C size (~33% of total)' },
+        size_a: { type: 'number', description: '70% of total (Leg A — closer TP1 target)' },
+        size_b: { type: 'number', description: '30% of total (Leg B — runner targeting TP2 ≥ 1.3R)' },
         composite_score: { type: 'number' },
         tier: { type: 'number', enum: [1, 2, 3] },
         total_risk_pct: { type: 'number', description: '1.5 / 1.0 / 0.5 per tier' },
@@ -491,13 +478,13 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         kill_zone: { type: 'string' },
         reasoning: { type: 'string' },
       },
-      required: ['instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'tp3', 'size_a', 'size_b', 'size_c', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
+      required: ['instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'size_a', 'size_b', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
     },
   },
   {
     name: 'place_split_trade',
     description:
-      'Atomically place a 3-leg split-position ICT trade after analyst approval. Validates score/tier/risk/coordination/calendar, places legs A→B→C, persists to DB, compensates on partial failure. REQUIRES analyst_token from request_analyst_review whose proposal_hash matches THIS proposal exactly. Returns dealIds + trade_id on success, or a structured error otherwise.',
+      'Atomically place a 2-leg split-position ICT trade after analyst approval. Validates score/tier/risk/coordination/calendar, places legs A→B, persists to DB, compensates on partial failure. REQUIRES analyst_token from request_analyst_review whose proposal_hash matches THIS proposal exactly. Returns dealIds + trade_id on success, or a structured error otherwise.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -510,10 +497,8 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         sl: { type: 'number' },
         tp1: { type: 'number' },
         tp2: { type: 'number' },
-        tp3: { type: 'number' },
-        size_a: { type: 'number' },
-        size_b: { type: 'number' },
-        size_c: { type: 'number' },
+        size_a: { type: 'number', description: '70% of total (Leg A — closer TP1 target)' },
+        size_b: { type: 'number', description: '30% of total (Leg B — runner targeting TP2 ≥ 1.3R)' },
         composite_score: { type: 'number' },
         tier: { type: 'number', enum: [1, 2, 3] },
         total_risk_pct: { type: 'number' },
@@ -521,7 +506,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         kill_zone: { type: 'string' },
         reasoning: { type: 'string' },
       },
-      required: ['analyst_token', 'instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'tp3', 'size_a', 'size_b', 'size_c', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
+      required: ['analyst_token', 'instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'size_a', 'size_b', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
     },
   },
   {
@@ -647,6 +632,9 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           reason: `Cannot resolve instrument_category for ${reqInstrument} — ticker not in INSTRUMENT_UNIVERSE.`,
         });
       }
+      // 2026-05-07 — 2-TP restructure (Phase 2): tp3 / size_c dropped from
+      // the proposal contract. Set to null on the draft so any persisted
+      // downstream object (TradeRecord cols are nullable) carries NULL.
       const proposalDraft = {
         // trade_id placeholder — overwritten below with a unique id.
         trade_id: '',
@@ -659,10 +647,10 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         sl: Number(input.sl),
         tp1: Number(input.tp1),
         tp2: Number(input.tp2),
-        tp3: Number(input.tp3),
+        tp3: null,
         size_a: Number(input.size_a),
         size_b: Number(input.size_b),
-        size_c: Number(input.size_c),
+        size_c: null,
         total_risk_pct: Number(input.total_risk_pct),
         composite_score: Number(input.composite_score),
         tier: input.tier as 1 | 2 | 3,
@@ -702,7 +690,6 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         sl: proposal.sl,
         tp1: proposal.tp1,
         tp2: proposal.tp2,
-        tp3: proposal.tp3,
         tier: proposal.tier,
         ticker: proposal.instrument,
         isRangeMode: isRangeModeProposal,
@@ -731,7 +718,6 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         sl: proposal.sl,
         tp1: proposal.tp1,
         tp2: proposal.tp2,
-        tp3: proposal.tp3,
       });
       if (!orderSidePreCheck.ok) {
         console.log(`[Analyst Pre-Check] ${proposal.instrument} ${proposal.direction}: ${orderSidePreCheck.reason} — skipping analyst call.`);
@@ -796,6 +782,9 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           reason: `Cannot resolve instrument_category for ${splitInstrument} — ticker not in INSTRUMENT_UNIVERSE.`,
         });
       }
+      // 2026-05-07 — 2-TP restructure (Phase 2): tp3 / size_c removed from
+      // the placement contract. Set to null so the persisted TradeRecord
+      // carries NULL on the legacy columns.
       const proposalForVerify: TradeProposal = {
         trade_id: '<placeholder — not part of hash>',
         strategy_tag: 'ICT_INTRADAY',
@@ -807,10 +796,10 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         sl: Number(input.sl),
         tp1: Number(input.tp1),
         tp2: Number(input.tp2),
-        tp3: Number(input.tp3),
+        tp3: null,
         size_a: Number(input.size_a),
         size_b: Number(input.size_b),
-        size_c: Number(input.size_c),
+        size_c: null,
         total_risk_pct: Number(input.total_risk_pct),
         composite_score: Number(input.composite_score),
         tier: input.tier as 1 | 2 | 3,
@@ -901,34 +890,33 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       }
 
       // === Step 3: order-side + finite-numbers
+      // 2026-05-07 — 2-TP restructure (Phase 2): tp3 / sizeC dropped.
       const entry = Number(input.entry);
       const sl = Number(input.sl);
       const tp1 = Number(input.tp1);
       const tp2 = Number(input.tp2);
-      const tp3 = Number(input.tp3);
       const sizeA = Number(input.size_a);
       const sizeB = Number(input.size_b);
-      const sizeC = Number(input.size_c);
-      const allFinite = [entry, sl, tp1, tp2, tp3, sizeA, sizeB, sizeC].every((n) => Number.isFinite(n));
+      const allFinite = [entry, sl, tp1, tp2, sizeA, sizeB].every((n) => Number.isFinite(n));
       if (!allFinite) {
         return JSON.stringify({
           error: 'INVALID_NUMERICS',
-          reason: `Non-finite numeric in proposal: entry=${entry}, sl=${sl}, tps=[${tp1},${tp2},${tp3}], sizes=[${sizeA},${sizeB},${sizeC}]`,
+          reason: `Non-finite numeric in proposal: entry=${entry}, sl=${sl}, tps=[${tp1},${tp2}], sizes=[${sizeA},${sizeB}]`,
         });
       }
-      if (sizeA <= 0 || sizeB <= 0 || sizeC <= 0) {
+      if (sizeA <= 0 || sizeB <= 0) {
         return JSON.stringify({
           error: 'INVALID_SIZES',
-          reason: `All leg sizes must be > 0. Got A=${sizeA} B=${sizeB} C=${sizeC}.`,
+          reason: `All leg sizes must be > 0. Got A=${sizeA} B=${sizeB}.`,
         });
       }
       const sideOk = direction === 'long'
-        ? sl < entry && entry < tp1 && tp1 < tp2 && tp2 < tp3
-        : sl > entry && entry > tp1 && tp1 > tp2 && tp2 > tp3;
+        ? sl < entry && entry < tp1 && tp1 < tp2
+        : sl > entry && entry > tp1 && tp1 > tp2;
       if (!sideOk) {
         return JSON.stringify({
           error: 'INVALID_ORDER_SIDE',
-          reason: `For direction='${direction}', expected ${direction === 'long' ? 'SL<entry<TP1<TP2<TP3' : 'SL>entry>TP1>TP2>TP3'}. Got SL=${sl} entry=${entry} TP1=${tp1} TP2=${tp2} TP3=${tp3}.`,
+          reason: `For direction='${direction}', expected ${direction === 'long' ? 'SL<entry<TP1<TP2' : 'SL>entry>TP1>TP2'}. Got SL=${sl} entry=${entry} TP1=${tp1} TP2=${tp2}.`,
         });
       }
 
@@ -944,7 +932,6 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         sl,
         tp1,
         tp2,
-        tp3,
         tier: expectedTier,
         ticker: String(input.instrument ?? '').toUpperCase(),
         isRangeMode,
@@ -1024,14 +1011,14 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // === Step 3.7: minimum-size guardrail (2026-04-29 structural fix #7)
       // Capital.com instruments have per-instrument minimum deal sizes
       // exposed via getMarketDetails().dealingRules.minDealSize. On a
-      // small demo account (e.g. $500), Tier 3 sizing
-      // ((500 * 0.005 / 3) / 0.0020 = 416 contracts) can fall BELOW the
-      // FX major minimum of typically 1000 contracts. Pre-fix the order
-      // would reach Capital, get rejected with a min-size error, and
-      // the executor would silently compensation-rollback — wasting the
-      // full validation cascade. Now we fail fast with a structured
-      // error the agent can act on (skip the trade or restructure to
-      // larger size on the next cycle).
+      // small demo account (e.g. $500), the smaller leg's size can fall
+      // BELOW the FX major minimum of typically 1000 contracts (post-2026-
+      // 05-07 split: Leg B is 30% of total, so it hits the floor first).
+      // Pre-fix the order would reach Capital, get rejected with a min-
+      // size error, and the executor would silently compensation-rollback
+      // — wasting the full validation cascade. Now we fail fast with a
+      // structured error the agent can act on (skip the trade or
+      // restructure to larger size on the next cycle).
       try {
         const md = await capital.getMarketDetails(epic);
         const minRule = md?.dealingRules?.minDealSize;
@@ -1039,19 +1026,20 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           ? minRule.value
           : null;
         if (minSize !== null) {
-          const undersized: Array<{ leg: 'A' | 'B' | 'C'; size: number }> = [];
+          // 2026-05-07 — 2-TP restructure: only Leg A + Leg B remain.
+          const undersized: Array<{ leg: 'A' | 'B'; size: number }> = [];
           if (sizeA < minSize) undersized.push({ leg: 'A', size: sizeA });
           if (sizeB < minSize) undersized.push({ leg: 'B', size: sizeB });
-          if (sizeC < minSize) undersized.push({ leg: 'C', size: sizeC });
           if (undersized.length > 0) {
             return JSON.stringify({
               error: 'BELOW_MIN_SIZE',
               // 2026-04-29 codex-review fix: corrected the guidance — sizing
-              // formula is `size = (risk / 3) / (entry - SL)` so a WIDER SL
-              // produces SMALLER sizes (larger denominator), not larger.
-              // Real ways to lift size above the floor: upgrade the tier
-              // (raises total_risk_pct → numerator), TIGHTEN the SL (shrinks
-              // denominator), or skip until account balance grows.
+              // formula is `total_size = risk / (entry - SL)`, then split
+              // 70/30 (post-2026-05-07 restructure) into Leg A and Leg B.
+              // A WIDER SL produces SMALLER sizes (larger denominator), not
+              // larger. Real ways to lift size above the floor: upgrade the
+              // tier (raises total_risk_pct → numerator), TIGHTEN the SL
+              // (shrinks denominator), or skip until account balance grows.
               reason: `Capital.com minimum deal size for ${epic} is ${minSize} ${minRule?.unit ?? ''}. Legs ${undersized.map((u) => `${u.leg}=${u.size}`).join(', ')} are below the floor. Either upgrade the tier (raises total_risk_pct → larger sizes), tighten the SL (smaller (entry−SL) → larger sizes), or skip this instrument until account balance grows.`,
               min_deal_size: minSize,
               undersized_legs: undersized,
@@ -1155,12 +1143,14 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // any of Steps 3.5/3.7/4/5 ran.)
 
       // === Step 6: place legs sequentially with compensation
+      // 2026-05-07 — 2-TP restructure (Phase 2): two legs only (A=TP1, B=TP2).
+      // Leg C is no longer placed; the third openPosition call has been removed.
       const tsCompact = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
       const labelBase = `ICT-${input.instrument}-${tsCompact}`;
-      const placedDeals: Array<{ leg: 'A' | 'B' | 'C'; dealId: string }> = [];
+      const placedDeals: Array<{ leg: 'A' | 'B'; dealId: string }> = [];
       const capDirection: 'BUY' | 'SELL' = direction === 'long' ? 'BUY' : 'SELL';
 
-      const placeLeg = async (leg: 'A' | 'B' | 'C', size: number, tp: number): Promise<string> => {
+      const placeLeg = async (leg: 'A' | 'B', size: number, tp: number): Promise<string> => {
         const conf = await capital.openPosition({
           direction: capDirection,
           epic,
@@ -1185,8 +1175,6 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         placedDeals.push({ leg: 'A', dealId: dealA });
         const dealB = await placeLeg('B', sizeB, tp2);
         placedDeals.push({ leg: 'B', dealId: dealB });
-        const dealC = await placeLeg('C', sizeC, tp3);
-        placedDeals.push({ leg: 'C', dealId: dealC });
       } catch (err) {
         // === Compensation: close any successfully-placed legs
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -1203,7 +1191,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         exitCriticalSection();
         return JSON.stringify({
           error: 'PLACE_SPLIT_PARTIAL_FAILURE',
-          reason: `Placement of leg ${placedDeals.length === 0 ? 'A' : placedDeals.length === 1 ? 'B' : 'C'} failed: ${errMsg}.`,
+          reason: `Placement of leg ${placedDeals.length === 0 ? 'A' : 'B'} failed: ${errMsg}.`,
           placed_legs: placedDeals,
           rollback_errors: rollbackErrors,
           guidance: rollbackErrors.length === 0
@@ -1227,6 +1215,9 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // runtime shape is verified by insertTrade's own field-by-field
       // normalization in src/database/index.ts.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // 2026-05-07 — 2-TP restructure (Phase 2): persist NULL on the legacy
+      // C-leg columns. TradeRecord schema permits NULL on tp3 / position_c_id /
+      // size_c / pnl_c (added 2026-04-21 for legacy 2-leg precedent).
       const tradeRow: any = {
         id: tradeId,
         strategy_tag: 'ICT_INTRADAY',
@@ -1239,13 +1230,14 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         sl,
         tp1,
         tp2,
-        tp3,
+        tp3: null,
         position_a_id: placedDeals[0].dealId,
         position_b_id: placedDeals[1].dealId,
-        position_c_id: placedDeals[2].dealId,
+        position_c_id: null,
         size_a: sizeA,
         size_b: sizeB,
-        size_c: sizeC,
+        size_c: null,
+        pnl_c: null,
         status: 'open',
         composite_score: score,
         kill_zone: String(input.kill_zone),
@@ -1256,7 +1248,6 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
         insertTrade(tradeRow);
         createSlTpOrder({ trade_id: tradeId, leg: 'A', instrument: tradeRow.instrument, direction, quantity: sizeA, sl_price: sl, tp_price: tp1, deal_id: placedDeals[0].dealId });
         createSlTpOrder({ trade_id: tradeId, leg: 'B', instrument: tradeRow.instrument, direction, quantity: sizeB, sl_price: sl, tp_price: tp2, deal_id: placedDeals[1].dealId });
-        createSlTpOrder({ trade_id: tradeId, leg: 'C', instrument: tradeRow.instrument, direction, quantity: sizeC, sl_price: sl, tp_price: tp3, deal_id: placedDeals[2].dealId });
       } catch (err) {
         // DB write failed AFTER successful Capital placement. This is the
         // exact orphan-position scenario CR-9 was meant to prevent —
@@ -1286,7 +1277,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
       // re-delete here. (Comment kept as breadcrumb for the next reader.)
 
       await alertTradePlaced(tradeRow);
-      console.log(`[ICT Agent] Trade placed: ${tradeId} ${input.instrument} ${direction} ${score}/T${tier} (3 legs)`);
+      console.log(`[ICT Agent] Trade placed: ${tradeId} ${input.instrument} ${direction} ${score}/T${tier} (2 legs)`);
       return JSON.stringify({
         status: 'placed',
         trade_id: tradeId,
