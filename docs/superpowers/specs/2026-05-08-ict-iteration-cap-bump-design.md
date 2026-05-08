@@ -1,10 +1,11 @@
-# ICT Agent iteration cap bump (8 → 12) + observability
+# ICT Agent iteration cap bump (8 → 12) + observability + parallel tool execution
 
-**Date:** 2026-05-08
-**Author:** Giuseppe + Claude (brainstorming session)
-**Status:** Spec — pending user review, then writing-plans
-**Base commit:** `f577434` (post-merge with parallel session's TP1 BE+offset fix)
+**Date:** 2026-05-08, extended 2026-05-09
+**Author:** Giuseppe + Claude (brainstorming + systematic-debugging session)
+**Status:** Spec — green-lit by Giuseppe 2026-05-09, proceeding to writing-plans
+**Base commit:** `3ff4324` (this spec's first version)
 **Resolves:** Appendix A2 of `docs/superpowers/plans/2026-05-08-tp1-be-offset-and-race-fix.md` (ICT 8-iteration cycle timeouts deferred to its own brainstorm)
+**Sibling specs to follow:** L2 (pre-validate analyst proposals) + L3 (prompt batching directive) — separate specs, ship after this lands
 
 ## Problem
 
@@ -35,9 +36,16 @@ The decision graph is meaningfully bigger. 8 is now too tight on complex days.
 
 ## Goal
 
-Stop missing trades on complex days (e.g. NFP, multi-candidate kill zones) by giving the agent enough iterations to reach a real decision. Pair the bump with light observability so we can keep validating the new cap is the right value.
+Stop missing trades on complex days (e.g. NFP, multi-candidate kill zones) by giving the agent enough iterations to reach a real decision. Pair the bump with light observability so we can keep validating the new cap is the right value. Eliminate one source of hidden waste: tool calls within an iteration are currently executed serially via `for...await` — switching to `Promise.all` is a free wall-time win that does not change agent semantics.
 
 Non-goal: maximise trade count. The bot should still pass when the structure or calendar genuinely don't justify a trade. The bump is a ceiling change, not a behaviour change.
+
+## Why this spec covers cap + L1 together (and L2/L3 don't)
+
+Root-cause investigation 2026-05-09 (cycles c0745, c0800, c0930 on 2026-05-08) found that successful cycles (5-6 iters, clean end_turn) batched 4 tools at iter 1, while timed-out cycles split reads across single-tool iterations. Three additional fixes identified:
+- **L1** — change `for...await` → `Promise.all` so parallel tool_use blocks actually run concurrently (currently they don't — the loop awaits each one in order). Mechanical 5-line change. Folded INTO this spec because it touches the same 25-line loop block as the cap bump and shares test fixtures (the cap-spec's test file is exactly what an L1 concurrency test needs).
+- **L2** — pre-validate analyst proposals locally for BELOW_MIN_SIZE / RR_FLOOR_VIOLATION before round-tripping to the analyst LLM. Highest bug risk (duplicates server-side arithmetic). Sibling spec.
+- **L3** — prompt batching directive in `prompts/ict-agent.md`. Model-behaviour change, validates only via live cycles. Sibling spec.
 
 ## Design
 
