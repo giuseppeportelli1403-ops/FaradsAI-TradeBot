@@ -45,6 +45,7 @@ import {
 } from '../notifications/telegram.js';
 import type { CapitalPosition, Activity, TradeRecord, TradeStatus } from '../types.js';
 import { summarizeError } from './error-summary.js';
+import { typicalSpread } from '../backtest/realism.js';
 
 const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
@@ -457,6 +458,33 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
       console.error(`[Monitor] Error processing Leg C for trade ${order.trade_id}: ${summarizeError(error)}`);
     }
   }
+}
+
+/**
+ * Computes the SL value to amend a runner leg to on TP1 fill.
+ * Returns entry ± max(0.1R, 2 × typicalSpread(instrument)), signed by direction.
+ * The spread floor guards against the SL landing inside the bid-ask on
+ * unusually small-R FX trades (e.g. EURUSD with a 5-pip stop). Falls back to
+ * exact entry with a warning if R is zero (data integrity guard).
+ */
+export function computeBeStop(args: {
+  direction: 'long' | 'short';
+  entry: number;
+  sl: number;
+  instrument: string;
+}): number {
+  const { direction, entry, sl, instrument } = args;
+  const r = Math.abs(entry - sl);
+  if (r === 0) {
+    console.warn(
+      `[computeBeStop] ${instrument} has zero R (entry=sl=${entry}); falling back to exact entry`,
+    );
+    return entry;
+  }
+  const spreadFloor = 2 * typicalSpread(instrument);
+  const offset = Math.max(0.1 * r, spreadFloor);
+  const sign = direction === 'long' ? +1 : -1;
+  return entry + sign * offset;
 }
 
 /** Leg A closed at TP1 → partial profit taken, move B+C SL to break-even
