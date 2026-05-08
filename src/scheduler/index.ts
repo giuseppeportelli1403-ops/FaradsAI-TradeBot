@@ -498,30 +498,49 @@ export async function handleTp1Hit(
   d.updateTradeStatus(tradeId, 'tp1_hit');
   d.deactivateSlTpOrder(tradeId, 'A');
 
-  // Move Position B's SL to break-even (the entry price). safelyAmendPosition
-  // round-trips broker-side stopLevel/profitLevel/trailingStop so the SL change
-  // doesn't strip the existing TP. Observed live 2026-05-07 on a SILVER 3-leg
-  // trade: a partial-body amend ({ stopLevel: x }) here had nulled both
-  // runners' TPs server-side, leaving them uncapped on the upside.
-  if (trade.position_b_id) {
-    try {
-      await d.capital.safelyAmendPosition(trade.position_b_id, { stopLevel: trade.entry });
-      console.log(`[TP1] ${trade.instrument} — Position B SL→BE (${trade.entry})`);
-    } catch (error) {
-      console.error(`[TP1] Failed to move Position B SL to BE for ${tradeId}: ${summarizeError(error)}`);
-    }
-  }
+  // Move Position B's (and Position C's, on 3-leg trades) SL just past
+  // break-even by max(0.1R, 2×spread). safelyAmendPosition round-trips
+  // broker-side stopLevel/profitLevel/trailingStop so the SL change doesn't
+  // strip the existing TP. Observed live 2026-05-07 on a SILVER 3-leg trade:
+  // a partial-body amend ({ stopLevel: x }) had nulled both runners' TPs
+  // server-side, leaving them uncapped on the upside.
+  //
+  // The offset (vs. exact entry) protects the runners from getting wicked-out
+  // by normal bid-ask oscillation around the entry price right after TP1
+  // fills. The spread floor is the real safety net — on tight-stop FX where
+  // 0.1R can be smaller than the typical bid-ask, exact-entry SLs would close
+  // immediately on the next tick.
+  const beStop = computeBeStop({
+    direction: trade.direction,
+    entry: trade.entry,
+    sl: trade.sl,
+    instrument: trade.instrument,
+  });
 
-  // Move Position C's SL to break-even too (3-leg). Legacy 2-leg trades
-  // without position_c_id skip this step silently.
-  if (trade.position_c_id) {
+  const moveLegSlToBe = async (leg: 'B' | 'C', dealId: string) => {
     try {
-      await d.capital.safelyAmendPosition(trade.position_c_id, { stopLevel: trade.entry });
-      console.log(`[TP1] ${trade.instrument} — Position C SL→BE (${trade.entry})`);
+      const result = await d.capital.safelyAmendPosition(dealId, { stopLevel: beStop });
+      // applied===false explicitly means race-skip; undefined falls through as
+      // "applied" (defensive default — covers any future code path that forgets
+      // to tag the response).
+      if (result?.applied === false) {
+        console.log(
+          `[TP1] ${trade.instrument} — Position ${leg} SL→${beStop.toFixed(5)} skipped (race against fast TP fill)`,
+        );
+      } else {
+        console.log(
+          `[TP1] ${trade.instrument} — Position ${leg} SL→${beStop.toFixed(5)} applied`,
+        );
+      }
     } catch (error) {
-      console.error(`[TP1] Failed to move Position C SL to BE for ${tradeId}: ${summarizeError(error)}`);
+      console.error(
+        `[TP1] Failed to move Position ${leg} SL for ${tradeId}: ${summarizeError(error)}`,
+      );
     }
-  }
+  };
+
+  if (trade.position_b_id) await moveLegSlToBe('B', trade.position_b_id);
+  if (trade.position_c_id) await moveLegSlToBe('C', trade.position_c_id);
 
   try {
     if (d.alertTp1Hit) await d.alertTp1Hit(trade);
