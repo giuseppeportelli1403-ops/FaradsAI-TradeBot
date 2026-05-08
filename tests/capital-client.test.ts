@@ -1153,3 +1153,67 @@ describe('safelyAmendPosition — applied flag', () => {
     expect(result.status).toBe('FULLY_CLOSED');
   });
 });
+
+describe('updatePosition — applied flag', () => {
+  beforeEach(() => {
+    resetAxiosMock();
+  });
+
+  it('returns applied:true on a real successful PUT', async () => {
+    // Wire shape: session → PUT /positions/:id → { dealReference } →
+    // GET /confirms/:ref → ACCEPTED. The new applied:true marker lets the
+    // scheduler (Tasks 5/6) log "applied" vs "skipped" without conflating
+    // the real-PUT path with the race-skip synthetic.
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce(okJson({ dealReference: 'REF-UPD-OK' }))
+      .mockResolvedValueOnce(
+        okJson({
+          dealId: 'dealOk',
+          dealReference: 'REF-UPD-OK',
+          dealStatus: 'ACCEPTED',
+          reason: 'SUCCESS',
+          status: 'AMENDED',
+          direction: 'BUY',
+          epic: 'EURUSD',
+          size: 0.5,
+          level: 1.0853,
+          stopLevel: 1.1,
+          profitLevel: null,
+          affectedDeals: [{ dealId: 'dealOk', status: 'AMENDED' }],
+        }),
+      );
+
+    const client = makeClient();
+    const result = await client.updatePosition('dealOk', { stopLevel: 1.1 });
+
+    expect(result.applied).toBe(true);
+    // Sanity: legacy confirmation fields preserved.
+    expect(result.dealStatus).toBe('ACCEPTED');
+    expect(result.status).toBe('AMENDED');
+  });
+
+  it('returns applied:false when broker reports already-closed mid-PUT', async () => {
+    // Mirror the existing race-skip pattern: session OK, then PUT
+    // /positions/:dealId throws with errorCode=error.position.not-found.
+    // updatePosition must surface its synthetic-update-skipped-* with the
+    // new applied:false marker (regression context: the same SL→BE race
+    // that motivated Task 2, but routed through the direct updatePosition
+    // entry point rather than safelyAmendPosition).
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce({
+        status: 404,
+        data: { errorCode: 'error.position.not-found' },
+        headers: {},
+      });
+
+    const client = makeClient();
+    const result = await client.updatePosition('dealClosed', { stopLevel: 1.1 });
+
+    expect(result.applied).toBe(false);
+    expect(result.dealReference).toMatch(/^synthetic-update-skipped-/);
+    expect(result.dealStatus).toBe('ACCEPTED');
+    expect(result.status).toBe('FULLY_CLOSED');
+  });
+});

@@ -463,7 +463,8 @@ export class CapitalClient {
         `/api/v1/positions/${dealId}`,
         params
       );
-      return await this.pollDealConfirmation(ref.dealReference);
+      const confirmation = await this.pollDealConfirmation(ref.dealReference);
+      return { ...confirmation, applied: true };
     } catch (e) {
       if (this.isAlreadyClosed(e)) {
         console.warn(
@@ -482,6 +483,7 @@ export class CapitalClient {
           stopLevel: null,
           profitLevel: null,
           affectedDeals: [{ dealId, status: 'DELETED' }],
+          applied: false, // race-skip marker for caller logging
         };
         return synthetic;
       }
