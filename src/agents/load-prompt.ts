@@ -54,8 +54,9 @@ export function loadStrategy(filename: string): string {
 // against the ranked list it sees at runtime.
 //
 // Tight-spread instrument list per memory/strategy.md Section 4. Used to
-// advertise to the LLM which symbols qualify for the Tier-3 R:R 1.5:1
-// carve-out (default is 2:1).
+// advertise to the LLM which symbols get the lower Tier-3 score floor
+// (40 vs 45 medium-spread). The R:R carve-out this list originally backed
+// is gone post-2026-05-07 Phase 2 — R:R is now universal 1.3R for all.
 //
 // History:
 //   - 2026-04-22: indices (US30/US100/US500/DE40) removed — each routed to
