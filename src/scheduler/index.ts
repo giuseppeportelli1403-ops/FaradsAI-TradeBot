@@ -907,7 +907,7 @@ export function startScheduler(): void {
   let ictRunning = false;
   // Phase 2 / Round 3 / item 3.1: single-slot queue for overlap recovery.
   const ictOverlapQueue = makeOverlapQueueState();
-  cron.schedule('*/5 * * * *', async () => {
+  cron.schedule('*/1 * * * *', async () => {
     if (!monitorRunning) {
       monitorRunning = true;
       try {
@@ -1041,7 +1041,7 @@ export function startScheduler(): void {
   }, CRON_UTC);
 
   console.log('Scheduler started. Cron jobs active:');
-  console.log('  */5 * * * *           — Split-position monitor + candle detection → ICT Agent');
+  console.log('  */1 * * * *           — Split-position monitor (every minute) + 15m/1h candle detection → ICT Agent');
   console.log('  */8 * * * *           — Capital.com session keep-alive ping');
   console.log('  30 5 * * *            — Market Researcher (daily pre-London)');
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
