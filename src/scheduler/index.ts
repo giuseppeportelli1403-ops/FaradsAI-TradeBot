@@ -618,29 +618,94 @@ export interface PingDeps {
   alertSystemWarning: (message: string) => Promise<void>;
 }
 
+// 2026-05-08 (post-demo cleanup item 8): suppress Telegram noise from
+// transient Capital.com ping failures. Pre-fix, every single ECONNABORTED
+// (typically 1-3 per day, all self-healing on the next 8-min cron tick)
+// fired a Telegram alert — Giuseppe got woken at odd hours for a problem
+// that had already resolved by the time he read the message. The keep-alive
+// path is self-healing by design (next tick re-establishes the session)
+// so a single failure is operationally meaningless.
+//
+// Now: Telegram fires once when the failure streak first reaches
+// PING_ALERT_THRESHOLD (3 consecutive failures = ~24 min of dead session
+// at the */8 cron cadence). Subsequent failures stay quiet via the
+// `pingAlertedThisOutage` flag — one alert per outage, not per cron.
+// A successful ping resets both streak and flag.
+//
+// pingInFlight guards against overlap: node-cron does not await the
+// callback, so if a tick takes longer than the 8-min cadence (e.g. a
+// hung TCP socket on a dead session) the next tick could fire while the
+// previous one is still awaiting capital.ping(). Concurrent
+// read-modify-write on `pingFailureStreak` could double-count failures
+// or miss the threshold-crossing alert. The guard makes overlapping
+// invocations a no-op.
+//
+// Threshold gate uses `>=` (not `===`) plus the alerted flag so a
+// race-overshoot streak (e.g. 2→4 instead of 2→3→…) still triggers
+// the alert exactly once.
+//
+// Note: NO retry/backoff added — that would be a stateful behavioural
+// change. The cron itself IS the retry; we just stop alerting on the noise.
+const PING_ALERT_THRESHOLD = 3;
+let pingFailureStreak = 0;
+let pingAlertedThisOutage = false;
+let pingInFlight = false;
+
+/** Test-only: reset the keep-alive failure streak + alert flag + in-flight guard. */
+export function _resetPingFailureStreak(): void {
+  pingFailureStreak = 0;
+  pingAlertedThisOutage = false;
+  pingInFlight = false;
+}
+
+/** Test-only: read the keep-alive failure streak. */
+export function _getPingFailureStreak(): number {
+  return pingFailureStreak;
+}
+
 /**
- * Blocker-6 keep-alive. Fires capital.ping() and surfaces any failure through
- * Telegram so Giuseppe learns about a dead session without having to watch
- * logs. Swallows the thrown error so cron doesn't crash the scheduler on a
- * transient Capital outage.
+ * Blocker-6 keep-alive. Fires capital.ping() and surfaces sustained failures
+ * through Telegram so Giuseppe learns about a dead session without having to
+ * watch logs. Swallows the thrown error so cron doesn't crash the scheduler
+ * on a transient Capital outage.
+ *
+ * Alerts are suppressed for the first PING_ALERT_THRESHOLD - 1 consecutive
+ * failures (transient noise). The threshold-crossing alert fires once; further
+ * consecutive failures stay quiet until a success resets the streak. This
+ * gives one alert per outage, not one per cron tick.
  *
  * Exported + dependency-injected so the alert path can be unit-tested.
  */
 export async function pingKeepAlive(deps?: PingDeps): Promise<void> {
-  const d: PingDeps = deps ?? {
-    capital: capital,
-    alertSystemWarning: realAlertSystemWarning,
-  };
+  if (pingInFlight) return;
+  pingInFlight = true;
   try {
-    await d.capital.ping();
-  } catch (error) {
-    const summary = summarizeError(error);
-    console.error(`[Scheduler] Capital ping failed: ${summary}`);
+    const d: PingDeps = deps ?? {
+      capital: capital,
+      alertSystemWarning: realAlertSystemWarning,
+    };
     try {
-      await d.alertSystemWarning(`Capital.com ping failed: ${summary}`);
-    } catch (alertError) {
-      console.error(`[Scheduler] Telegram alert for ping failure also failed: ${summarizeError(alertError)}`);
+      await d.capital.ping();
+      pingFailureStreak = 0;
+      pingAlertedThisOutage = false;
+    } catch (error) {
+      const summary = summarizeError(error);
+      pingFailureStreak += 1;
+      console.error(
+        `[Scheduler] Capital ping failed (streak ${pingFailureStreak}): ${summary}`,
+      );
+      if (pingFailureStreak < PING_ALERT_THRESHOLD || pingAlertedThisOutage) return;
+      pingAlertedThisOutage = true;
+      try {
+        await d.alertSystemWarning(
+          `Capital.com ping failed ${pingFailureStreak} consecutive times (~${pingFailureStreak * 8} min): ${summary}`,
+        );
+      } catch (alertError) {
+        console.error(`[Scheduler] Telegram alert for ping failure also failed: ${summarizeError(alertError)}`);
+      }
     }
+  } finally {
+    pingInFlight = false;
   }
 }
 

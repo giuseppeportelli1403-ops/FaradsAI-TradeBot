@@ -231,16 +231,17 @@ const TIER_2_THRESHOLD = 60;
 // (EUR/GBP/USDJPY/AUDUSD/GOLD): floor 40. Medium-spread (OIL_CRUDE,
 // SILVER): floor stays 45. Resolved per ticker via tier3FloorFor().
 
-// Hourly ranking cache. During the free-tier demo window, the scanner's full
-// fan-out (20 × fetchCandles('1h', 30) = 20 Twelve Data credits per call) ran
-// every ICT cycle (~every 15 min), burning the daily cap by mid-session.
-// Cache the full ranked list for 60 min, invalidating early on kill-zone
-// transitions so the killZone score bonus stays accurate. Post-demo, once
-// Twelve Data Grow is active, drop RANKING_TTL_MS to 0 to restore per-cycle
-// freshness (memory note: reference_farad_scanner_throttle.md).
+// Ranking cache. Originally a 60 min cache during the free-tier demo to fit
+// Twelve Data's 800/day cap (scanner fan-out is 20 × 1h-candle fetches per
+// call). Reduced to 15 min mid-demo after the Grow tier ($79/mo, 5,000/day)
+// was paid. Now zero post-demo (2026-05-08): on Grow the budget is no longer
+// the constraint, and per-cycle ranking gives the freshest signal-quality.
+// Kill-zone transition invalidation (below) becomes a no-op when TTL is 0
+// but is left in place — the cache write still happens (trivial memory),
+// just never serves. Set TTL > 0 if a future scheduler cadence change makes
+// per-cycle calls a budget concern again.
 let rankingCache: { at: number; zone: string; results: RankedInstrument[] } | null = null;
-// Reduced from 60 min → 15 min so fresh signals are picked up faster each cycle.
-const RANKING_TTL_MS = 15 * 60_000;
+const RANKING_TTL_MS = 0;
 
 /** Exposed for tests — clear the ranking cache. */
 export function _resetRankingCache(): void {

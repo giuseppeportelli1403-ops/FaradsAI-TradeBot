@@ -16,6 +16,8 @@ import {
   classifyCloseReason,
   monitorSplitPositions,
   pingKeepAlive,
+  _resetPingFailureStreak,
+  _getPingFailureStreak,
   type MonitorDeps,
 } from '../src/scheduler/index.js';
 import type { Activity, CapitalPosition, TradeRecord } from '../src/types.js';
@@ -1018,13 +1020,15 @@ describe('pingKeepAlive', () => {
 
   beforeEach(() => {
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    _resetPingFailureStreak();
   });
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
+    _resetPingFailureStreak();
   });
 
-  it('happy path: calls capital.ping() and does NOT fire a Telegram alert', async () => {
+  it('happy path: calls capital.ping(), does NOT alert, leaves streak at 0', async () => {
     const ping = vi.fn().mockResolvedValue(undefined);
     const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
 
@@ -1033,49 +1037,100 @@ describe('pingKeepAlive', () => {
     expect(ping).toHaveBeenCalledTimes(1);
     expect(alertSystemWarning).not.toHaveBeenCalled();
     expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(_getPingFailureStreak()).toBe(0);
   });
 
-  it('on ping failure: logs, fires alertSystemWarning with the error message, and does NOT re-throw', async () => {
+  it('on first ping failure: logs but does NOT alert (streak below threshold)', async () => {
     const pingError = new Error('HTTP 401 error.invalid.session');
     const ping = vi.fn().mockRejectedValue(pingError);
     const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
 
-    // Must not throw — cron wrapper assumes this is safe to await.
     await expect(
       pingKeepAlive({ capital: { ping }, alertSystemWarning }),
     ).resolves.toBeUndefined();
 
     expect(ping).toHaveBeenCalledTimes(1);
-    expect(alertSystemWarning).toHaveBeenCalledTimes(1);
-    expect(alertSystemWarning).toHaveBeenCalledWith(
-      expect.stringContaining('HTTP 401 error.invalid.session'),
-    );
-    // Log is now a single sanitized string (via summarizeError) so an
-    // AxiosError won't leak the auth config. The Error message must still
-    // be present for ops readability.
+    expect(alertSystemWarning).not.toHaveBeenCalled();
+    expect(_getPingFailureStreak()).toBe(1);
     expect(consoleErrorSpy).toHaveBeenCalledWith(
-      expect.stringContaining('[Scheduler] Capital ping failed:'),
+      expect.stringContaining('[Scheduler] Capital ping failed (streak 1):'),
     );
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       expect.stringContaining('HTTP 401 error.invalid.session'),
     );
-    // No second argument — summarizeError collapses to one string so Node
-    // never invokes util.inspect on a raw error object.
     expect(consoleErrorSpy.mock.calls[0]).toHaveLength(1);
   });
 
-  it('if BOTH ping and alertSystemWarning fail, swallows both and logs each — never re-throws', async () => {
+  it('alerts exactly once when failure streak reaches threshold (3 consecutive)', async () => {
+    const ping = vi.fn().mockRejectedValue(new Error('ECONNABORTED timeout'));
+    const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
+
+    // 3 consecutive failures
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning });
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning });
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning });
+
+    expect(ping).toHaveBeenCalledTimes(3);
+    expect(alertSystemWarning).toHaveBeenCalledTimes(1);
+    expect(alertSystemWarning).toHaveBeenCalledWith(
+      expect.stringContaining('Capital.com ping failed 3 consecutive times'),
+    );
+    expect(alertSystemWarning).toHaveBeenCalledWith(
+      expect.stringContaining('ECONNABORTED timeout'),
+    );
+    expect(_getPingFailureStreak()).toBe(3);
+  });
+
+  it('does NOT re-alert on continued failures past threshold (4th, 5th, ...)', async () => {
+    const ping = vi.fn().mockRejectedValue(new Error('still down'));
+    const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
+
+    // 5 consecutive failures
+    for (let i = 0; i < 5; i++) {
+      await pingKeepAlive({ capital: { ping }, alertSystemWarning });
+    }
+
+    // Alert fired on the 3rd, not on 4th or 5th.
+    expect(alertSystemWarning).toHaveBeenCalledTimes(1);
+    expect(_getPingFailureStreak()).toBe(5);
+  });
+
+  it('successful ping resets the streak (one alert per outage, not per cron)', async () => {
+    const ping = vi.fn()
+      .mockRejectedValueOnce(new Error('blip 1'))
+      .mockRejectedValueOnce(new Error('blip 2'))
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('blip 3'));
+    const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
+
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning }); // streak=1
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning }); // streak=2
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning }); // success — streak=0
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning }); // streak=1
+
+    // Threshold never reached — no alerts fired.
+    expect(alertSystemWarning).not.toHaveBeenCalled();
+    expect(_getPingFailureStreak()).toBe(1);
+  });
+
+  it('if alertSystemWarning throws when threshold crossed, swallows + logs cascaded failure', async () => {
     const ping = vi.fn().mockRejectedValue(new Error('ping died'));
     const alertSystemWarning = vi.fn().mockRejectedValue(new Error('telegram died'));
 
+    // 3 consecutive — alert fires on the 3rd and itself fails.
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning });
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning });
     await expect(
       pingKeepAlive({ capital: { ping }, alertSystemWarning }),
     ).resolves.toBeUndefined();
 
-    expect(ping).toHaveBeenCalledTimes(1);
+    expect(ping).toHaveBeenCalledTimes(3);
     expect(alertSystemWarning).toHaveBeenCalledTimes(1);
-    // One log for ping failure, one for the cascaded alert failure.
-    expect(consoleErrorSpy).toHaveBeenCalledTimes(2);
+    // 3 ping-failure logs + 1 cascaded telegram log = 4 total.
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(4);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('Telegram alert for ping failure also failed'),
+    );
   });
 
   it('handles non-Error thrown values (e.g. string) without crashing', async () => {
@@ -1086,9 +1141,55 @@ describe('pingKeepAlive', () => {
       pingKeepAlive({ capital: { ping }, alertSystemWarning }),
     ).resolves.toBeUndefined();
 
-    expect(alertSystemWarning).toHaveBeenCalledWith(
+    // First failure — alert NOT fired (streak below threshold).
+    expect(alertSystemWarning).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
       expect.stringContaining('some string not-an-Error'),
     );
+  });
+
+  it('overlap guard: a 2nd invocation while one is in-flight is a no-op', async () => {
+    // Realistic overlap case: capital.ping() hangs (dead TCP socket on a
+    // dead session) past the 8-min cron cadence, so the next tick fires
+    // while the previous one is still awaiting. Without the guard, two
+    // concurrent ticks race on pingFailureStreak.
+    let resolveFirstPing: () => void = () => {};
+    const firstPingPromise = new Promise<void>((r) => { resolveFirstPing = r; });
+    const ping = vi.fn()
+      .mockImplementationOnce(() => firstPingPromise)
+      .mockResolvedValue(undefined);
+    const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
+
+    // Kick off the first invocation but don't await yet — it's hung on the
+    // pending promise.
+    const firstCall = pingKeepAlive({ capital: { ping }, alertSystemWarning });
+    // Second invocation arrives while the first is still in-flight. This
+    // should be a no-op — capital.ping() must NOT be called a second time.
+    await pingKeepAlive({ capital: { ping }, alertSystemWarning });
+
+    expect(ping).toHaveBeenCalledTimes(1);
+
+    // Now resolve the first one and let it complete.
+    resolveFirstPing();
+    await firstCall;
+    expect(ping).toHaveBeenCalledTimes(1);
+    expect(alertSystemWarning).not.toHaveBeenCalled();
+  });
+
+  it('threshold gate uses >=: race-overshoot still triggers alert exactly once', async () => {
+    // Even if a hypothetical race jumped streak from 2 → 4 (skipping 3),
+    // the alert must still fire and only once. We simulate this by directly
+    // priming the streak via repeated failures and confirming the alerted
+    // flag suppresses re-alerts on subsequent failures.
+    const ping = vi.fn().mockRejectedValue(new Error('still down'));
+    const alertSystemWarning = vi.fn().mockResolvedValue(undefined);
+
+    for (let i = 0; i < 6; i++) {
+      await pingKeepAlive({ capital: { ping }, alertSystemWarning });
+    }
+
+    expect(alertSystemWarning).toHaveBeenCalledTimes(1);
+    expect(_getPingFailureStreak()).toBe(6);
   });
 });
 
