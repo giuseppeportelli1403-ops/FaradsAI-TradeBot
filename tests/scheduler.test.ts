@@ -582,7 +582,7 @@ describe('monitorSplitPositions', () => {
     expect(deps._mocks.alertSlHit).not.toHaveBeenCalled();
   });
 
-  it("leg A closed, activity classifies as TP → moves leg B SL to break-even, marks trade tp1_hit, fires alertTp1Hit", async () => {
+  it("leg A closed, activity classifies as TP → moves leg B SL to BE+offset, marks trade tp1_hit, fires alertTp1Hit", async () => {
     const trade = makeTrade({ id: 'trade-1', entry: 1.0853, position_b_id: 'DEAL-B-1' });
     const deps = makeDeps();
     deps._mocks.getActiveSlTpOrders
@@ -607,13 +607,14 @@ describe('monitorSplitPositions', () => {
 
     await monitorSplitPositions(deps);
 
-    // Break-even move: scheduler calls safelyAmendPosition with just the SL change;
-    // the helper round-trips the existing profitLevel/trailingStop server-side so
-    // Capital.com doesn't strip them. Regression guard for the 2026-05-07 SILVER
-    // bug — see fix/sl-be-preserve-tp commit.
+    // Break-even move with floor offset: SL goes to entry + max(0.1R, 2×spread).
+    // For EURUSD entry=1.0853 sl=1.0830: R=0.0023, 0.1R=0.00023, 2×spread=0.00016 →
+    // 0.1R wins → beStop=1.08553. The helper round-trips the existing
+    // profitLevel/trailingStop server-side so Capital.com doesn't strip them.
+    // Regression guard for the 2026-05-07 SILVER bug — see fix/sl-be-preserve-tp commit.
     expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledTimes(1);
     expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-B-1', {
-      stopLevel: 1.0853,
+      stopLevel: expect.closeTo(1.08553, 5),
     });
 
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-1', 'tp1_hit');
@@ -727,9 +728,10 @@ describe('monitorSplitPositions', () => {
     // Should resolve (not throw) despite the Capital failure.
     await expect(monitorSplitPositions(deps)).resolves.toBeUndefined();
 
-    // BE move was attempted with the right args, even though it failed.
+    // BE move was attempted with the right args (entry + floor offset), even
+    // though it failed. EURUSD beStop = 1.08553 (see top TP1 test for math).
     expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-B-1', {
-      stopLevel: 1.0853,
+      stopLevel: expect.closeTo(1.08553, 5),
     });
     // DB still updated — the monitor does NOT roll back on Capital failure.
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-1', 'tp1_hit');
@@ -821,7 +823,7 @@ describe('monitorSplitPositions', () => {
   // close out organically.
   // ========================================================
 
-  it('2-leg (NEW NORM): Leg A TP → handleTp1Hit moves ONLY Position B SL to entry (no Leg C amend)', async () => {
+  it('2-leg (NEW NORM): Leg A TP → handleTp1Hit moves ONLY Position B SL to BE+offset (no Leg C amend)', async () => {
     // Post-2026-05-07: place_split_trade persists position_c_id=null. The
     // scheduler's handleTp1Hit must amend only Leg B; the `if (trade.position_c_id)`
     // branch for Leg C must NOT fire. This is the explicit no-Leg-C-amend
@@ -848,10 +850,11 @@ describe('monitorSplitPositions', () => {
 
     await monitorSplitPositions(deps);
 
-    // EXACTLY ONE amend (Leg B → entry). No Leg C amend.
+    // EXACTLY ONE amend (Leg B → entry + floor offset). No Leg C amend.
+    // EURUSD beStop = 1.08553 (see top TP1 test for math).
     expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledTimes(1);
     expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-B-1', {
-      stopLevel: 1.0853,
+      stopLevel: expect.closeTo(1.08553, 5),
     });
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-2leg', 'tp1_hit');
     expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('trade-2leg', 'A');
@@ -866,7 +869,7 @@ describe('monitorSplitPositions', () => {
   // logic to its original TPs).
   // ========================================================
 
-  it('3-leg: Leg A TP → handleTp1Hit moves BOTH Position B AND Position C SL to entry', async () => {
+  it('3-leg: Leg A TP → handleTp1Hit moves BOTH Position B AND Position C SL to BE+offset', async () => {
     const trade = makeTrade({
       id: 'trade-3leg',
       entry: 1.0853,
@@ -897,12 +900,13 @@ describe('monitorSplitPositions', () => {
     // round-trips broker-side stopLevel/profitLevel/trailingStop so Capital.com
     // doesn't strip the existing TPs (regression guard for the 2026-05-07 SILVER
     // bug — see fix/sl-be-preserve-tp commit).
+    // EURUSD beStop = 1.08553 (entry + max(0.1R, 2×spread) — see top TP1 test for math).
     expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledTimes(2);
     expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-B-1', {
-      stopLevel: 1.0853,
+      stopLevel: expect.closeTo(1.08553, 5),
     });
     expect(deps._mocks.safelyAmendPosition).toHaveBeenCalledWith('DEAL-C-1', {
-      stopLevel: 1.0853,
+      stopLevel: expect.closeTo(1.08553, 5),
     });
     expect(deps._mocks.updateTradeStatus).toHaveBeenCalledWith('trade-3leg', 'tp1_hit');
     expect(deps._mocks.deactivateSlTpOrder).toHaveBeenCalledWith('trade-3leg', 'A');
