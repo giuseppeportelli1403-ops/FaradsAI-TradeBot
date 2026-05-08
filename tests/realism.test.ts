@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   EXECUTION_COSTS,
   computeExecutionCost,
+  typicalSpread,
   _internalsForTest,
 } from '../src/backtest/realism.js';
 
@@ -102,5 +103,17 @@ describe('computeExecutionCost', () => {
       const actual = computeExecutionCost(ticker, typicalStop);
       expect(actual, `${ticker} @ stop ${typicalStop}`).toBeCloseTo(expectedRCost, 1);
     }
+  });
+});
+
+describe('typicalSpread', () => {
+  it('returns native-price spread for known instruments', () => {
+    expect(typicalSpread('EURUSD')).toBe(0.00008);
+    expect(typicalSpread('GOLD')).toBe(0.40);
+    expect(typicalSpread('SILVER')).toBe(0.025);
+  });
+
+  it('returns a sensible default for unknown instruments', () => {
+    expect(typicalSpread('UNKNOWN_TICKER')).toBeGreaterThan(0);
   });
 });

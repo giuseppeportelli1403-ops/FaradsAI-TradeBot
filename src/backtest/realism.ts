@@ -38,6 +38,19 @@ export const EXECUTION_COSTS: Record<string, ExecutionCostConstants> = {
   OIL_CRUDE: { spread: 0.04,    slippage_entry: 0.07,    slippage_exit: 0.04    },
 };
 
+/**
+ * Returns the typical bid-ask spread in native price units for an instrument.
+ * Falls back to GOLD's spread for unknown tickers (medium-volatility default —
+ * conservative for FX, lenient for tight commodities). Caller should still
+ * validate ticker upstream; this helper is a safe runtime fallback for the
+ * scheduler's BE-offset floor calculation.
+ */
+export function typicalSpread(instrument: string): number {
+  const costs = EXECUTION_COSTS[instrument];
+  if (costs) return costs.spread;
+  return EXECUTION_COSTS.GOLD.spread;
+}
+
 // Track unknown-ticker warnings so we log at most once per ticker per
 // process. Noise control: a typo in the engine (e.g., 'SILVER_FUT') should
 // flag loudly the first time it's seen, then stay silent so downstream log
