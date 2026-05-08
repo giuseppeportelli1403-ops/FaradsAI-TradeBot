@@ -420,6 +420,7 @@ export class CapitalClient {
           stopLevel: null,
           profitLevel: null,
           affectedDeals: [{ dealId, status: 'DELETED' }],
+          applied: false, // race-skip marker for caller logging
         };
         return synthetic;
       }

@@ -1123,3 +1123,33 @@ describe('CapitalClient — createWorkingOrder with P1 expiry + label fields', (
     expect(postCall.data.label).toBeUndefined();
   });
 });
+
+describe('safelyAmendPosition — applied flag', () => {
+  beforeEach(() => {
+    resetAxiosMock();
+  });
+
+  it('returns applied:false on race-skip (position already closed before GET)', async () => {
+    // Mirror the existing race-skip fixture (line 719): session OK, then GET
+    // /positions/:dealId returns 404 with errorCode=error.position.not-found.
+    // safelyAmendPosition must surface the synthetic ALREADY_CLOSED with the
+    // new applied:false marker so callers can log applied-vs-skipped accurately
+    // (regression context: GOLD 2026-05-07 silent no-op race against TP2 fill).
+    requestMock
+      .mockResolvedValueOnce(sessionOkResponse())
+      .mockResolvedValueOnce({
+        status: 404,
+        data: { errorCode: 'error.position.not-found' },
+        headers: {},
+      });
+
+    const client = makeClient();
+    const result = await client.safelyAmendPosition('dealX', { stopLevel: 100 });
+
+    expect(result.applied).toBe(false);
+    expect(result.dealReference).toMatch(/^synthetic-amend-skipped-/);
+    // Legacy fields preserved for backwards compat with MCP tools:
+    expect(result.dealStatus).toBe('ACCEPTED');
+    expect(result.status).toBe('FULLY_CLOSED');
+  });
+});

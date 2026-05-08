@@ -96,6 +96,15 @@ export interface DealConfirmation {
   stopLevel: number | null;
   profitLevel: number | null;
   affectedDeals: Array<{ dealId: string; status: string }>;
+  /**
+   * Optional marker added by amend helpers (`safelyAmendPosition`,
+   * `updatePosition`) so callers can distinguish a real broker-applied
+   * change (`true`) from a race-skipped synthetic where the position was
+   * already closed before the PUT (`false`). Absent on confirmations
+   * returned by other code paths (open/close/poll) to keep the field a
+   * focused amend-context signal rather than a universal flag.
+   */
+  applied?: boolean;
 }
 
 export interface CapitalCandle {
