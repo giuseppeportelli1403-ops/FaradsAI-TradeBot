@@ -16,22 +16,36 @@
 
 - **Modify:** `src/agents/trading-agent.ts`
   - Line 741: add `export` keyword to `async function executeTool` (test access)
+  - **Below executeTool body**: add test seam — `_executeToolImpl` mutable var + `_setExecuteToolImpl(impl)` + `_resetExecuteToolImpl()` exports so the loop's tool dispatch is patchable from tests (vi.spyOn cannot intercept the in-file lexical call site; this seam is the right way)
+  - Loop body (line 1788): change the call from `executeTool(...)` to `_executeToolImpl(...)` so the seam takes effect
   - Lines 1713-1718: replace `const maxIterations = 8` plus its 5-line comment with env-var-aware version + new 16-line comment
-  - Lines 1731 area: add 4 module-level state declarations (`lastIctTimeoutAlertDate` and the per-cycle bookkeeping is local to the loop, but the dedup is module-level)
+  - Lines 1731 area: add module-level dedup state (`lastIctTimeoutAlertDate`) and per-cycle bookkeeping local to the loop
   - Below line 1731: add 2 exported `_*` test helpers (`_resetIctTimeoutAlertDate`, `_getIctTimeoutAlertDate`)
   - Lines 1733-1804: rework the for-loop body — bookkeeping, parallel tool exec, stop_reason handler
   - Lines 1816-1822: replace timeout `console.error` with enriched format + Telegram dedup call
 - **Create:** `tests/trading-agent-loop.test.ts` — new file, all loop tests live here
 
+## Critical test-seam decision (preempting plan-review P0 findings)
+
+Both Claude and Codex flagged the same P0: `vi.spyOn(tradingAgentModule, 'executeTool')` cannot intercept the loop's in-file call. ESM exports a binding to the function, but `runTradingAgent`'s call `executeTool(...)` resolves via lexical scope, NOT via the export object. The spy patches `module.executeTool` but the loop never reads from there.
+
+**Fix adopted:** introduce a module-level `_executeToolImpl` indirection. The loop calls `_executeToolImpl(...)` (a `let` binding initialised to the real `executeTool`). Tests patch via `_setExecuteToolImpl(mockFn)` and clean up via `_resetExecuteToolImpl()`. This adds 8 lines and removes the entire test-seam class of bugs.
+
+Other P0 fixes adopted from the plan review:
+- All shared mock vars use `vi.hoisted(() => ({ ... }))` so they exist before `vi.mock(...)` factory calls (which vitest hoists to top).
+- `loadPrompt`, `loadPromptWithDemoContext`, `loadStrategy`, `loadRecentJournal` are SYNC functions (verified via `src/agents/load-prompt.ts:7,42,135` and `src/agents/eod-journal-agent.ts:67`) — must mock with `mockReturnValue`, NOT `mockResolvedValue`. The latter would make their results Promises and crash on `journal.markdown.length`.
+
 ---
 
-## Task 1: Test scaffolding + export `executeTool`
+## Task 1: Test scaffolding + export `executeTool` + dispatcher seam
 
 **Files:**
 - Modify: `src/agents/trading-agent.ts:741` — add `export`
+- Modify: `src/agents/trading-agent.ts` (below executeTool body) — add seam
+- Modify: `src/agents/trading-agent.ts:1788` — change loop call site
 - Create: `tests/trading-agent-loop.test.ts`
 
-- [ ] **Step 1: Export `executeTool`**
+- [ ] **Step 1: Export `executeTool` and add the test seam**
 
 In `src/agents/trading-agent.ts`, change line 741:
 
@@ -40,9 +54,39 @@ In `src/agents/trading-agent.ts`, change line 741:
 +export async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
 ```
 
-No other change. The function body and signature are identical.
+Find the closing brace of `executeTool` (it's the function that ends just before `request_analyst_review` returns out — search forward for the next top-level `}` after the `case 'request_analyst_review'` block ends). Immediately AFTER the closing brace of `executeTool`, insert:
 
-- [ ] **Step 2: Create test file with mocks + smoke test**
+```ts
+// 2026-05-09: Test seam for the loop's tool dispatch. Both Claude and
+// Codex plan-reviewers flagged that vi.spyOn(module, 'executeTool')
+// cannot intercept the loop's in-file lexical call — ESM exports a
+// binding to the function, but the call resolves via lexical scope,
+// not via the export object. The seam below routes the loop through
+// a mutable module-level binding that tests can patch via
+// _setExecuteToolImpl. Default is the real executeTool above.
+let _executeToolImpl: typeof executeTool = executeTool;
+
+/** Test-only: patch the loop's tool dispatcher. Restore via _resetExecuteToolImpl. */
+export function _setExecuteToolImpl(impl: typeof executeTool): void {
+  _executeToolImpl = impl;
+}
+
+/** Test-only: restore the default executeTool dispatcher. */
+export function _resetExecuteToolImpl(): void {
+  _executeToolImpl = executeTool;
+}
+```
+
+Now find the loop's tool dispatch call (line 1788 currently — `result = await executeTool(...)`). Change it to use the seam:
+
+```diff
+-            result = await executeTool(block.name, block.input as Record<string, unknown>);
++            result = await _executeToolImpl(block.name, block.input as Record<string, unknown>);
+```
+
+This is the ONLY runtime change in this step. The default dispatcher is the real `executeTool`, so production behaviour is identical.
+
+- [ ] **Step 2: Create test file with vi.hoisted mocks + smoke test**
 
 Create `tests/trading-agent-loop.test.ts`:
 
@@ -53,11 +97,24 @@ Create `tests/trading-agent-loop.test.ts`:
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// IMPORTANT: vi.mock calls are hoisted ABOVE imports of the module under test.
-// Define mocks before the trading-agent import.
+// CRITICAL: vi.mock(...) factories are hoisted ABOVE all imports + variable
+// declarations by vitest. So we cannot reference top-level `const` mocks
+// inside vi.mock factories — they would be `undefined` at mock time.
+// vi.hoisted() lets us declare hoisted mock vars that ARE available inside
+// vi.mock factories.
+const {
+  mockMessagesCreate,
+  mockAlertSystemWarning,
+  mockAlertTradePlaced,
+  mockRunAnalystAgent,
+} = vi.hoisted(() => ({
+  mockMessagesCreate: vi.fn(),
+  mockAlertSystemWarning: vi.fn(),
+  mockAlertTradePlaced: vi.fn(),
+  mockRunAnalystAgent: vi.fn(),
+}));
 
-// Anthropic SDK — class mock with controllable messages.create
-const mockMessagesCreate = vi.fn();
+// Anthropic SDK — class mock whose messages.create is controllable per-test
 vi.mock('@anthropic-ai/sdk', () => ({
   default: class MockAnthropic {
     messages = { create: mockMessagesCreate };
@@ -65,31 +122,30 @@ vi.mock('@anthropic-ai/sdk', () => ({
 }));
 
 // Telegram — count alertSystemWarning calls
-const mockAlertSystemWarning = vi.fn().mockResolvedValue(undefined);
-const mockAlertTradePlaced = vi.fn().mockResolvedValue(undefined);
 vi.mock('../src/notifications/telegram.js', () => ({
   alertSystemWarning: mockAlertSystemWarning,
   alertTradePlaced: mockAlertTradePlaced,
 }));
 
-// Prompt loaders — return stub strings
+// Prompt loaders — SYNC functions (NOT async). Use mockReturnValue, not
+// mockResolvedValue, or runTradingAgent will get Promises where it expects strings.
 vi.mock('../src/agents/load-prompt.js', () => ({
-  loadPrompt: vi.fn().mockResolvedValue('mock system prompt'),
-  loadPromptWithDemoContext: vi.fn().mockResolvedValue('mock system prompt with demo'),
-  loadStrategy: vi.fn().mockResolvedValue('mock strategy'),
+  loadPrompt: vi.fn().mockReturnValue('mock system prompt'),
+  loadPromptWithDemoContext: vi.fn().mockReturnValue('mock system prompt with demo'),
+  loadStrategy: vi.fn().mockReturnValue('mock strategy'),
 }));
 
-// Journal — return empty
+// Journal loader — also SYNC. loadRecentJournal returns null or { date, markdown }.
 vi.mock('../src/agents/eod-journal-agent.js', () => ({
-  loadRecentJournal: vi.fn().mockResolvedValue(''),
+  loadRecentJournal: vi.fn().mockReturnValue(null),
 }));
 
-// Analyst — return APPROVE shape (won't be called by loop tests, but needs stub)
+// Analyst agent — async, returns APPROVE/REJECT/MODIFY shape
 vi.mock('../src/agents/analyst-agent.js', () => ({
-  runAnalystAgent: vi.fn().mockResolvedValue({ decision: 'APPROVE', confidence: 0.9 }),
+  runAnalystAgent: mockRunAnalystAgent,
 }));
 
-// Calendar veto — pass-through
+// Calendar veto — pure
 vi.mock('../src/news/calendar-veto.js', () => ({
   instrumentToCurrencies: vi.fn().mockReturnValue([]),
   shouldVetoOrderForCalendar: vi.fn().mockReturnValue(false),
@@ -99,7 +155,7 @@ vi.mock('../src/news/forex-factory-calendar.js', () => ({
   fetchForexFactoryCalendar: vi.fn().mockResolvedValue([]),
 }));
 
-// Database — safe defaults
+// Database — only the 4 functions trading-agent.ts imports at top
 vi.mock('../src/database/index.js', () => ({
   getLatestBrief: vi.fn().mockReturnValue(null),
   countOpenPositions: vi.fn().mockReturnValue(0),
@@ -108,7 +164,12 @@ vi.mock('../src/database/index.js', () => ({
 }));
 
 // NOW import the module under test
-import { runTradingAgent, executeTool } from '../src/agents/trading-agent.js';
+import {
+  runTradingAgent,
+  executeTool,
+  _setExecuteToolImpl,
+  _resetExecuteToolImpl,
+} from '../src/agents/trading-agent.js';
 
 describe('runTradingAgent loop — smoke test', () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
@@ -118,15 +179,19 @@ describe('runTradingAgent loop — smoke test', () => {
   beforeEach(() => {
     mockMessagesCreate.mockReset();
     mockAlertSystemWarning.mockReset().mockResolvedValue(undefined);
+    mockAlertTradePlaced.mockReset().mockResolvedValue(undefined);
+    mockRunAnalystAgent.mockReset().mockResolvedValue({ decision: 'APPROVE', confidence: 0.9 });
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    _resetExecuteToolImpl();
   });
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
     consoleWarnSpy.mockRestore();
     consoleLogSpy.mockRestore();
+    _resetExecuteToolImpl();
   });
 
   it('runs end-to-end with immediate end_turn (smoke)', async () => {
@@ -143,33 +208,65 @@ describe('runTradingAgent loop — smoke test', () => {
     );
   });
 
-  it('exports executeTool as a function (test access)', () => {
+  it('exports executeTool + seam helpers as functions', () => {
     expect(typeof executeTool).toBe('function');
+    expect(typeof _setExecuteToolImpl).toBe('function');
+    expect(typeof _resetExecuteToolImpl).toBe('function');
+  });
+
+  it('seam: _setExecuteToolImpl(mock) routes loop calls to the mock', async () => {
+    const mockImpl = vi.fn().mockResolvedValue(JSON.stringify({ ok: true }));
+    _setExecuteToolImpl(mockImpl);
+
+    let callCount = 0;
+    mockMessagesCreate.mockImplementation(async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          stop_reason: 'tool_use',
+          content: [
+            { type: 'tool_use', id: 'a', name: 'get_daily_pnl', input: {} },
+          ],
+        };
+      }
+      return { stop_reason: 'end_turn', content: [] };
+    });
+
+    await runTradingAgent();
+
+    expect(mockImpl).toHaveBeenCalledTimes(1);
+    expect(mockImpl).toHaveBeenCalledWith('get_daily_pnl', {});
   });
 });
 ```
 
-- [ ] **Step 3: Run the smoke test to verify it passes**
+- [ ] **Step 3: Run the tests to verify they pass**
 
 ```bash
 npx vitest run tests/trading-agent-loop.test.ts
 ```
 
-Expected: 2 tests pass. If `runTradingAgent` throws because a mock is incomplete, add the missing mock to the `vi.mock(...)` block and re-run.
+Expected: 3 tests pass. If `runTradingAgent` throws because a mock is incomplete, add the missing mock to the `vi.mock(...)` block and re-run. The third test verifies the seam works — if it fails, the in-file `_executeToolImpl(...)` call site change in Step 1 was missed.
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add src/agents/trading-agent.ts tests/trading-agent-loop.test.ts
-git commit -m "test(trading-agent): scaffold loop tests + export executeTool
+git commit -m "test(trading-agent): scaffold loop tests + executeTool dispatcher seam
 
-Adds tests/trading-agent-loop.test.ts with vi.mock coverage of
-@anthropic-ai/sdk and all I/O imports, plus a smoke test that drives
-runTradingAgent through one end_turn iteration. Exports executeTool so
-later loop tests can vi.spyOn it.
+Adds tests/trading-agent-loop.test.ts with vi.hoisted mock vars,
+vi.mock coverage of @anthropic-ai/sdk + 7 I/O surfaces (telegram,
+prompt loaders, journal, analyst, calendar, forex calendar, db), plus
+3 tests: smoke (end_turn cycle), executeTool exported, dispatcher
+seam routes loop calls to mocks.
 
-No runtime behaviour change. Per spec
-docs/superpowers/specs/2026-05-08-ict-iteration-cap-bump-design.md.
+Adds the _executeToolImpl/_setExecuteToolImpl/_resetExecuteToolImpl
+seam in trading-agent.ts so the loop's tool dispatch is patchable
+from tests. Pre-fix vi.spyOn could not intercept the in-file lexical
+call (flagged by both reviewers as P0). Default behaviour identical
+to current production.
+
+Per spec docs/superpowers/specs/2026-05-08-ict-iteration-cap-bump-design.md.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -797,7 +894,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/trading-agent-loop.test.ts`:
+Append to `tests/trading-agent-loop.test.ts`. **These tests use the `_setExecuteToolImpl` seam introduced in Task 1, NOT `vi.spyOn` (which cannot intercept the loop's lexical call).**
 
 ```ts
 describe('parallel tool execution', () => {
@@ -811,6 +908,7 @@ describe('parallel tool execution', () => {
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    _resetExecuteToolImpl();
   });
 
   afterEach(() => {
@@ -818,60 +916,42 @@ describe('parallel tool execution', () => {
     consoleWarnSpy.mockRestore();
     consoleLogSpy.mockRestore();
     delete process.env.ICT_AGENT_MAX_ITER;
+    _resetExecuteToolImpl();
   });
 
   it('runs 4 parallel tool_use blocks concurrently (max in-flight = 4)', async () => {
     let inFlight = 0;
     let maxInFlight = 0;
-
-    // Spy on executeTool by intercepting via the SDK mock call sequence.
-    // executeTool is real here — but we don't care; the mocks for capital,
-    // database, etc. make the underlying tools fast. We instrument by
-    // wrapping fetch* via the database mock... easier: drive the loop with
-    // a custom messages.create that records timing of tool_use ⇒ tool_result
-    // round-trips.
-    //
-    // Trick: 4 tool_use blocks in iter 1, then end_turn. In the parallel
-    // branch each block's executeTool starts before the previous one's
-    // promise resolves. We measure by making the database mocks awaitable
-    // with a fake timer.
-
     const order: string[] = [];
-    let pendingResolvers: Array<() => void> = [];
 
-    // Override database mock to count concurrent calls.
-    const dbMock = await import('../src/database/index.js');
-    vi.mocked(dbMock.countOpenPositions).mockImplementation(() => {
+    // Use deferred promises (NOT setTimeout) so concurrency is provable
+    // without relying on real-clock timing on slow CI.
+    const resolvers: Array<() => void> = [];
+    const pendingPromises: Array<Promise<void>> = [];
+    for (let i = 0; i < 4; i++) {
+      pendingPromises.push(
+        new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        }),
+      );
+    }
+    let callIndex = 0;
+
+    _setExecuteToolImpl(async (name: string) => {
+      const myIndex = callIndex++;
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
-      // Return synchronously — countOpenPositions is sync.
-      // Use an async path instead via getOpenTradesByInstrument.
+      order.push(`start:${name}`);
+      await pendingPromises[myIndex];
       inFlight -= 1;
-      return 0;
+      order.push(`end:${name}`);
+      return JSON.stringify({ ok: true, tool: name });
     });
 
-    // Better: intercept executeTool's side effect via a controllable mock
-    // on getOpenTradesByInstrument (which get_portfolio doesn't use, but
-    // get_lessons + get_news_context route through other mocks that we
-    // can make awaitable).
-
-    // Simplest reliable approach: spy on executeTool directly.
-    const tradingAgentModule = await import('../src/agents/trading-agent.js');
-    const executeToolSpy = vi.spyOn(tradingAgentModule, 'executeTool')
-      .mockImplementation(async (name: string) => {
-        inFlight += 1;
-        maxInFlight = Math.max(maxInFlight, inFlight);
-        order.push(`start:${name}`);
-        await new Promise((r) => setTimeout(r, 20));
-        inFlight -= 1;
-        order.push(`end:${name}`);
-        return JSON.stringify({ ok: true, tool: name });
-      });
-
-    let callCount = 0;
+    let messagesCallCount = 0;
     mockMessagesCreate.mockImplementation(async () => {
-      callCount += 1;
-      if (callCount === 1) {
+      messagesCallCount += 1;
+      if (messagesCallCount === 1) {
         return {
           stop_reason: 'tool_use',
           content: [
@@ -885,34 +965,43 @@ describe('parallel tool execution', () => {
       return { stop_reason: 'end_turn', content: [] };
     });
 
-    await runTradingAgent();
+    // Start the cycle. It will await all 4 tool calls in parallel.
+    const cyclePromise = runTradingAgent();
 
-    expect(executeToolSpy).toHaveBeenCalledTimes(4);
+    // Yield microtasks so all 4 executeToolImpl invocations get to "start".
+    // After microtask drain, all 4 should be in-flight if Promise.all is
+    // running them concurrently.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Concurrent: all 4 should be in-flight before any resolves.
+    expect(inFlight).toBe(4);
     expect(maxInFlight).toBe(4);
-    // Concurrent: all 4 starts come before any end (with 20ms delay).
+
+    // Resolve all 4 deferred promises so the cycle can complete.
+    resolvers.forEach((r) => r());
+    await cyclePromise;
+
+    // Order assertion: all 4 starts came before any end.
     const startCount = order.filter((o) => o.startsWith('start:')).length;
     const firstEndIdx = order.findIndex((o) => o.startsWith('end:'));
-    expect(firstEndIdx).toBeGreaterThanOrEqual(4);
     expect(startCount).toBe(4);
-
-    executeToolSpy.mockRestore();
+    expect(firstEndIdx).toBeGreaterThanOrEqual(4);
   });
 
   it('one tool failure does not poison sibling results', async () => {
-    const tradingAgentModule = await import('../src/agents/trading-agent.js');
-    const executeToolSpy = vi.spyOn(tradingAgentModule, 'executeTool')
-      .mockImplementation(async (name: string) => {
-        if (name === 'get_news_context') {
-          throw new Error('news API down');
-        }
-        return JSON.stringify({ ok: true, tool: name });
-      });
+    _setExecuteToolImpl(async (name: string) => {
+      if (name === 'get_news_context') {
+        throw new Error('news API down');
+      }
+      return JSON.stringify({ ok: true, tool: name });
+    });
 
-    let callCount = 0;
+    let messagesCallCount = 0;
     const capturedToolResults: unknown[] = [];
-    mockMessagesCreate.mockImplementation(async (req) => {
-      callCount += 1;
-      if (callCount === 1) {
+    mockMessagesCreate.mockImplementation(async (req: { messages: Array<{ role: string; content: unknown }> }) => {
+      messagesCallCount += 1;
+      if (messagesCallCount === 1) {
         return {
           stop_reason: 'tool_use',
           content: [
@@ -930,7 +1019,9 @@ describe('parallel tool execution', () => {
     await runTradingAgent();
 
     // Three tool_results were sent back, one with an error envelope.
-    const userMessage = capturedToolResults[0] as { content: Array<{ tool_use_id: string; content: string }> };
+    const userMessage = capturedToolResults[0] as {
+      content: Array<{ tool_use_id: string; content: string }>;
+    };
     expect(userMessage.content).toHaveLength(3);
 
     const byId = Object.fromEntries(
@@ -939,8 +1030,6 @@ describe('parallel tool execution', () => {
     expect(byId.a).toMatch(/ok.*get_prices/);
     expect(byId.b).toMatch(/error.*news API down/);
     expect(byId.c).toMatch(/ok.*get_lessons/);
-
-    executeToolSpy.mockRestore();
   });
 });
 ```
@@ -982,7 +1071,9 @@ In `src/agents/trading-agent.ts`, find the existing `if (response.stop_reason ==
             totalToolCalls += 1;
             let result: string;
             try {
-              result = await executeTool(
+              // _executeToolImpl is the test-seam-aware dispatcher; in
+              // production it's the real executeTool. See Task 1 Step 1.
+              result = await _executeToolImpl(
                 block.name,
                 block.input as Record<string, unknown>,
               );
@@ -1075,7 +1166,7 @@ Expected: zero errors.
 npx vitest run
 ```
 
-Expected: all tests pass. Test count should be ≥780 (was 774 pre-plan; Task 1 adds 2, Task 2 adds 5, Task 3 adds 1, Task 4 adds 1, Task 5 adds 2, Task 6 adds 2 → +13).
+Expected: all tests pass. Test count should be ≥788 (was 774 pre-plan; Task 1 adds 3 — smoke + exports check + seam test, Task 2 adds 5, Task 3 adds 1, Task 4 adds 1, Task 5 adds 2, Task 6 adds 2 → +14).
 
 - [ ] **Step 3: Push to origin/master**
 
@@ -1119,10 +1210,17 @@ No commit (verification only). Update task tracker.
 - Spec Change 3 (Telegram dedup) → Task 5 ✓
 - Spec L1 (parallel tool execution) → Task 6 ✓
 - Spec "Required surface change" (export executeTool) → Task 1 ✓
-- Spec test cases (5 numbered) → all covered across Tasks 2/3/4/5/6 + 1 smoke
+- Spec test cases (5 numbered) → all covered across Tasks 2/3/4/5/6 + 3 in Task 1 (smoke/exports/seam)
 
 **2. Placeholder scan:** no TBD, no "implement appropriate", no "similar to Task N" without code.
 
-**3. Type consistency:** `executeTool` signature unchanged (just `export` added); `lastIterToolNames: string[]`, `lastStopReason: string | null`, `totalToolCalls: number`, `distinctTools: Set<string>`, `lastIctTimeoutAlertDate: string | null` — all referenced consistently across Tasks 3, 4, 5, 6.
+**3. Type consistency:** `executeTool` signature unchanged (just `export` added); `_executeToolImpl: typeof executeTool` introduced as test seam (Task 1, used in loop body and Task 6); `lastIterToolNames: string[]`, `lastStopReason: string | null`, `totalToolCalls: number`, `distinctTools: Set<string>`, `lastIctTimeoutAlertDate: string | null` — all referenced consistently across Tasks 3, 4, 5, 6.
 
-**4. Ordering check:** Task 1 (scaffold) blocks all others. Task 2 (cap) is independent of 3/4/5/6. Task 3 (bookkeeping) sets up state Task 4 reads (`lastStopReason`) and Task 5 reads (`lastIterToolNames`, `totalToolCalls`, `distinctTools`). Task 6 (parallel) re-arranges Task 3's bookkeeping inside `Promise.all` map but keeps the public state names. Tasks 4 and 5 are independent of each other. Task 7 verifies. Order is correct.
+**4. Ordering check:** Task 1 (scaffold + seam) blocks all others. Task 2 (cap) is independent of 3/4/5/6. Task 3 (bookkeeping) sets up state Task 4 reads (`lastStopReason`) and Task 5 reads (`lastIterToolNames`, `totalToolCalls`, `distinctTools`). Task 6 (parallel) re-arranges Task 3's bookkeeping inside `Promise.all` map but keeps the public state names AND uses the `_executeToolImpl` seam from Task 1. Tasks 4 and 5 are independent of each other. Task 7 verifies. Order is correct.
+
+**5. Plan-review P0 fixes folded in (2026-05-09 review by Claude + Codex):**
+- ✅ vi.hoisted() used for shared mock vars (Task 1 Step 2)
+- ✅ mockReturnValue (not mockResolvedValue) for sync prompt loaders (Task 1 Step 2)
+- ✅ executeTool dispatcher seam introduced in Task 1, used in Task 6 (eliminates the vi.spyOn-cannot-intercept-lexical-call class of bugs)
+- ✅ Concurrency assertions use deferred Promises + setImmediate microtask drain (Task 6 Step 1) — robust on slow CI, no real-clock dependency
+- ✅ Test count expectation updated from ≥780 to ≥788
