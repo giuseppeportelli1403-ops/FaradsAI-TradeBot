@@ -13,6 +13,8 @@ import initSqlJs, { type Database } from 'sql.js';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { randomUUID } from 'node:crypto';
+import { alertSystemWarning } from '../notifications/telegram.js';
 import type {
   TradeRecord, TradeStatus, StrategyTag, Direction,
   Lesson, ResearchBrief, AnalystDecision,
@@ -414,8 +416,30 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
   //   - Nullable columns null-coerce.
   //   - opened_at defaults to now().
 
+  // id is the trades-table primary key. Convention is `trade-{hash}-{uuid8}`
+  // assigned at proposal time. If a caller forgets it, self-heal with a
+  // distinguishable fallback id and warn loudly — the fallback prefix makes
+  // orphaned writes greppable so the missing caller can be tracked down.
+  if (!trade.id) {
+    const fallbackId = `trade-fallback-${randomUUID().slice(0, 8)}`;
+    const payloadKeys = Object.keys(trade).join(',');
+    console.warn(
+      `[insertTrade] trade.id missing — generated fallback ${fallbackId}. ` +
+        `Caller should supply an id (convention: trade-{hash}-{uuid8}). ` +
+        `Payload keys: ${payloadKeys}`
+    );
+    // Fire-and-forget Telegram alert: a fallback id firing is a programming
+    // error (some caller bypassed the id-setting contract), and console.warn
+    // alone gets buried in pm2-out.log. Non-blocking by design.
+    alertSystemWarning(
+      `⚠️ insertTrade self-healed missing id → ${fallbackId}. ` +
+        `A caller bypassed the trade-{hash}-{uuid8} convention. ` +
+        `Payload keys: ${payloadKeys}. Check pm2-out.log for stack context.`
+    ).catch(() => { /* alert failure non-blocking */ });
+    trade.id = fallbackId;
+  }
+
   const missing: string[] = [];
-  if (!trade.id) missing.push('id');
   if (!trade.strategy_tag) missing.push('strategy_tag');
   if (!trade.instrument) missing.push('instrument');
   if (!trade.direction) missing.push('direction');

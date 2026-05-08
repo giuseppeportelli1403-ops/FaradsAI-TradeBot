@@ -1,7 +1,7 @@
 // Tests for getLessonWinRate SQL fix + sl_tp_orders.deal_id column
 // (added for the Capital.com migration — dealId is how we reference a
 // position in Capital's PUT/DELETE endpoints).
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import {
   initDatabaseAsync,
   insertLesson,
@@ -220,8 +220,24 @@ describe('insertTrade defensive normalization (regression for 2026-04-21 log_tra
   });
 
   it('throws a clear, actionable error when required fields are missing', () => {
-    const broken = { instrument: 'EURUSD', direction: 'long' } as never;
-    expect(() => insertTrade(broken)).toThrowError(/required field\(s\) missing: id, strategy_tag/);
+    // id is now self-healed (see "self-heals missing id" below); strategy_tag,
+    // instrument, and direction remain strict.
+    const broken = { id: 'trade-test-broken', instrument: 'EURUSD', direction: 'long' } as never;
+    expect(() => insertTrade(broken)).toThrowError(/required field\(s\) missing: strategy_tag/);
+  });
+
+  it('self-heals missing id with trade-fallback-* and warns (does not throw)', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const trade = makeMinimalTrade({});
+      delete (trade as { id?: string }).id;
+      expect(() => insertTrade(trade as never)).not.toThrow();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/^\[insertTrade\] trade\.id missing — generated fallback trade-fallback-/),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('null-coerces undefined position_a_id / position_b_id (nullable columns)', () => {

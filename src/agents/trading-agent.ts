@@ -8,7 +8,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
-import { ensureTradeId } from './trade-id.js';
 import { loadRecentJournal } from './eod-journal-agent.js';
 import { withTimeout } from './llm-output.js';
 import { runAnalystAgent, type TradeProposal } from './analyst-agent.js';
