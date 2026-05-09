@@ -1838,35 +1838,54 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
     // If there are tool calls, execute them
     if (response.stop_reason === 'tool_use') {
       lastStopReason = response.stop_reason;
-      const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
 
-      for (const block of response.content) {
-        if (block.type === 'tool_use') {
-          console.log(`[ICT Agent] Calling tool: ${block.name}`);
-          distinctTools.add(block.name);
-          totalToolCalls += 1;
-          let result: string;
-          try {
-            result = await _executeToolImpl(block.name, block.input as Record<string, unknown>);
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            console.warn(`[ICT Agent] Tool ${block.name} failed: ${message}`);
-            result = JSON.stringify({ error: message, tool: block.name });
-          }
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: result,
-          });
-        }
-      }
+      // 2026-05-09: parallel tool execution. Pre-fix the for-await loop
+      // executed each tool serially even when the model emitted them as
+      // parallel tool_use blocks in one response. With multi-tool
+      // batches (4-5 reads in iter 1 of clean cycles) wall-time was
+      // dominated by the slowest tool × N. Now Promise.all runs them
+      // concurrently. Order is preserved (Promise.all keeps input
+      // order); Anthropic matches tool_use to tool_result by id anyway.
+      // Per-tool try/catch is preserved so one failed tool's error
+      // envelope reaches the model without poisoning siblings.
+      const toolUseBlocks = response.content.filter(
+        (b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use',
+      );
+
+      const toolResults: Anthropic.Messages.ToolResultBlockParam[] =
+        await Promise.all(
+          toolUseBlocks.map(async (block) => {
+            console.log(`[ICT Agent] Calling tool: ${block.name}`);
+            distinctTools.add(block.name);
+            totalToolCalls += 1;
+            let result: string;
+            try {
+              // _executeToolImpl is the test-seam-aware dispatcher; in
+              // production it's the real executeTool. See the seam decl
+              // below executeTool's body.
+              result = await _executeToolImpl(
+                block.name,
+                block.input as Record<string, unknown>,
+              );
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              console.warn(
+                `[ICT Agent] Tool ${block.name} failed: ${message}`,
+              );
+              result = JSON.stringify({ error: message, tool: block.name });
+            }
+            return {
+              type: 'tool_result' as const,
+              tool_use_id: block.id,
+              content: result,
+            };
+          }),
+        );
+
+      lastIterToolNames = toolUseBlocks.map((b) => b.name);
 
       messages.push({ role: 'assistant', content: response.content });
       messages.push({ role: 'user', content: toolResults });
-
-      lastIterToolNames = response.content
-        .filter((b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use')
-        .map((b) => b.name);
     }
 
     // 2026-05-09: explicit handler for stop_reasons other than end_turn/

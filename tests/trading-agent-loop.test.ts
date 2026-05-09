@@ -361,3 +361,137 @@ describe('Telegram dedup per UTC day', () => {
     );
   });
 });
+
+describe('parallel tool execution', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockMessagesCreate.mockReset();
+    mockAlertSystemWarning.mockReset().mockResolvedValue(undefined);
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    _resetExecuteToolImpl();
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
+    consoleLogSpy.mockRestore();
+    delete process.env.ICT_AGENT_MAX_ITER;
+    _resetExecuteToolImpl();
+  });
+
+  it('runs 4 parallel tool_use blocks concurrently (max in-flight = 4)', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const order: string[] = [];
+
+    // Use deferred promises so concurrency is provable without real-clock dependencies.
+    const resolvers: Array<() => void> = [];
+    const pendingPromises: Array<Promise<void>> = [];
+    for (let i = 0; i < 4; i++) {
+      pendingPromises.push(
+        new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        }),
+      );
+    }
+    let callIndex = 0;
+
+    _setExecuteToolImpl(async (name: string) => {
+      const myIndex = callIndex++;
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      order.push(`start:${name}`);
+      await pendingPromises[myIndex];
+      inFlight -= 1;
+      order.push(`end:${name}`);
+      return JSON.stringify({ ok: true, tool: name });
+    });
+
+    let messagesCallCount = 0;
+    mockMessagesCreate.mockImplementation(async () => {
+      messagesCallCount += 1;
+      if (messagesCallCount === 1) {
+        return {
+          stop_reason: 'tool_use',
+          content: [
+            { type: 'tool_use', id: 'a', name: 'get_prices', input: {} },
+            { type: 'tool_use', id: 'b', name: 'get_news_context', input: {} },
+            { type: 'tool_use', id: 'c', name: 'get_economic_calendar', input: {} },
+            { type: 'tool_use', id: 'd', name: 'get_lessons', input: {} },
+          ],
+        };
+      }
+      return { stop_reason: 'end_turn', content: [] };
+    });
+
+    // Start the cycle. It will await all 4 tool calls in parallel.
+    const cyclePromise = runTradingAgent();
+
+    // Yield microtasks so all 4 _executeToolImpl invocations get to "start".
+    // After microtask drain, all 4 should be in-flight if Promise.all is concurrent.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // Concurrent: all 4 should be in-flight before any resolves.
+    expect(inFlight).toBe(4);
+    expect(maxInFlight).toBe(4);
+
+    // Resolve all 4 deferred promises so the cycle can complete.
+    resolvers.forEach((r) => r());
+    await cyclePromise;
+
+    // Order assertion: all 4 starts came before any end.
+    const startCount = order.filter((o) => o.startsWith('start:')).length;
+    const firstEndIdx = order.findIndex((o) => o.startsWith('end:'));
+    expect(startCount).toBe(4);
+    expect(firstEndIdx).toBeGreaterThanOrEqual(4);
+  });
+
+  it('one tool failure does not poison sibling results', async () => {
+    _setExecuteToolImpl(async (name: string) => {
+      if (name === 'get_news_context') {
+        throw new Error('news API down');
+      }
+      return JSON.stringify({ ok: true, tool: name });
+    });
+
+    let messagesCallCount = 0;
+    const capturedToolResults: unknown[] = [];
+    mockMessagesCreate.mockImplementation(async (req: { messages: Array<{ role: string; content: unknown }> }) => {
+      messagesCallCount += 1;
+      if (messagesCallCount === 1) {
+        return {
+          stop_reason: 'tool_use',
+          content: [
+            { type: 'tool_use', id: 'a', name: 'get_prices', input: {} },
+            { type: 'tool_use', id: 'b', name: 'get_news_context', input: {} },
+            { type: 'tool_use', id: 'c', name: 'get_lessons', input: {} },
+          ],
+        };
+      }
+      // On the second call, capture what the loop sent us as tool_result.
+      capturedToolResults.push(req.messages[req.messages.length - 1]);
+      return { stop_reason: 'end_turn', content: [] };
+    });
+
+    await runTradingAgent();
+
+    // Three tool_results were sent back, one with an error envelope.
+    const userMessage = capturedToolResults[0] as {
+      content: Array<{ tool_use_id: string; content: string }>;
+    };
+    expect(userMessage.content).toHaveLength(3);
+
+    const byId = Object.fromEntries(
+      userMessage.content.map((c) => [c.tool_use_id, c.content]),
+    );
+    expect(byId.a).toMatch(/ok.*get_prices/);
+    expect(byId.b).toMatch(/error.*news API down/);
+    expect(byId.c).toMatch(/ok.*get_lessons/);
+  });
+});
