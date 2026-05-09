@@ -146,16 +146,15 @@ export interface TradeProposal {
   sl: number;
   tp1: number;
   tp2: number;
-  // 2026-05-07 — 2-TP restructure (Phase 2). The 3-leg ladder collapsed
-  // to a 2-leg ladder; tp3 / size_c are no longer part of the ICT proposal.
-  // Kept optional/null on the type for back-compat with any in-flight
-  // legacy 3-leg proposal still referenced by long-running APIs (none on
-  // the normal request_analyst_review → place_split_trade path), and
-  // because TradeRecord rows persist them as nullable columns.
-  tp3?: number | null;
+  // 2026-05-08 — 3-leg removal Phase 1, Task 6: tp3 and size_c dropped from
+  // the LLM-facing TradeProposal type. The 2-TP restructure (2026-05-07,
+  // Phase 2) already collapsed the ladder to 2 legs, leaving the fields
+  // nullable on the type for legacy back-compat. Phase 1 finishes the job by
+  // removing them from the LLM's structured output schema entirely. The MCP
+  // place_split_trade runtime guard (Task 2) rejects any non-null tp3/size_c
+  // anyway, and TradeRecord (DB) keeps the nullable columns.
   size_a: number;
   size_b: number;
-  size_c?: number | null;
   total_risk_pct: number;
   composite_score: number;
   tier: 1 | 2 | 3;
