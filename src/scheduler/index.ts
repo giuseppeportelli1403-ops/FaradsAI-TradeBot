@@ -190,7 +190,7 @@ export function classifyCloseReason(
   // Optional price-proximity inputs. When supplied and Tier 1 misses,
   // we use the trade's recorded levels + closePrice to decide.
   trade?: TradeRecord,
-  leg?: 'A' | 'B' | 'C',
+  leg?: 'A' | 'B',
   closePrice?: number,
 ): 'TP' | 'SL' | 'OTHER' {
   const relevant = activities.filter((a) => a.dealId === dealId);
@@ -245,10 +245,7 @@ export function classifyCloseReason(
   // ----- Tier 2: price proximity -----
   if (trade && leg && typeof closePrice === 'number' && Number.isFinite(closePrice)) {
     const slLevel = trade.sl;
-    const tpLevel =
-      leg === 'A' ? trade.tp1
-      : leg === 'B' ? trade.tp2
-      : (trade.tp3 ?? trade.tp2);
+    const tpLevel = leg === 'A' ? trade.tp1 : trade.tp2;
     if (Number.isFinite(slLevel) && Number.isFinite(tpLevel)) {
       const slDist = Math.abs(closePrice - slLevel);
       const tpDist = Math.abs(closePrice - tpLevel);
