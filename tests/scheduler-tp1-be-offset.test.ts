@@ -115,17 +115,6 @@ describe('handleTp1Hit — offset + applied logging', () => {
     expect(deps.calls[0].changes.stopLevel).toBeCloseTo(4734.286, 3);
   });
 
-  it('3-leg long: BOTH Leg B and Leg C amended with the same offset', async () => {
-    const trade = makeTrade({ position_c_id: 'C', tp3: 4760, size_c: 0.1 });
-    const deps = makeDeps('applied');
-    await handleTp1Hit(trade, trade.id, deps as any);
-    expect(deps.calls).toHaveLength(2);
-    expect(deps.calls[0].dealId).toBe('B');
-    expect(deps.calls[1].dealId).toBe('C');
-    expect(deps.calls[0].changes.stopLevel).toBeCloseTo(4736.794, 3);
-    expect(deps.calls[1].changes.stopLevel).toBeCloseTo(4736.794, 3);
-  });
-
   it('race-skip: status flips to tp1_hit; "skipped" log fires; no throw', async () => {
     const trade = makeTrade();
     const deps = makeDeps('skipped');
