@@ -28,4 +28,17 @@ describe('ict-agent.md L3 directives', () => {
     expect(promptText).toMatch(/get_portfolio\(\)/);
     expect(promptText).toMatch(/get_economic_calendar\(1\)/);
   });
+
+  it('STEP 3 mandates parallel batching of read-only fetches per candidate', () => {
+    expect(promptText).toContain(
+      'CRITICAL — batch all read-only data tools in a single response',
+    );
+    // Minimum batch per candidate
+    expect(promptText).toMatch(/get_prices\(instrument, '1h', 50\)/);
+    expect(promptText).toMatch(/get_prices\(instrument, '15m', 50\)/);
+    expect(promptText).toMatch(/get_news_context\(instrument\)/);
+    expect(promptText).toMatch(
+      /get_lessons\(setup_type, instrument_category, kill_zone, 'ICT_INTRADAY'\)/,
+    );
+  });
 });

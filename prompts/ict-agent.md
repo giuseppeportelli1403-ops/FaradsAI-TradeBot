@@ -122,6 +122,16 @@ Call `get_ranked_instruments(20)`. Focus first on anything scoring 80+ (Tier 1).
 
 For each promising instrument, in score order:
 
+**CRITICAL — batch all read-only data tools in a single response.** Sub-steps A, E, and G below are all read-only data fetches that don't depend on each other. Emit them as parallel tool_use blocks in ONE response, NOT one tool per iteration. Then proceed to B/C/D and H-L (which require analysis of the data) once all results are back.
+
+The minimum batch per candidate is:
+  - get_prices(instrument, '1h', 50)
+  - get_prices(instrument, '15m', 50)
+  - get_news_context(instrument)
+  - get_lessons(setup_type, instrument_category, kill_zone, 'ICT_INTRADAY')
+
+Issue these four calls in a single response. The scheduler runs each tool concurrently via Promise.all (per the 2026-05-09 L1 change), so wall-time is the slowest tool, not the sum.
+
 **A. Get price data** — `get_prices(instrument, '1h', 50)` and `get_prices(instrument, '15m', 50)`.
 
 **B. Establish 1-hour bias and pick MODE**
