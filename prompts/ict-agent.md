@@ -98,14 +98,21 @@ The executor returns `{status:'placed', trade_id, deals:[{leg, dealId}, ...]}` o
 
 You are called every time a new 15-minute or 1-hour candle closes. Walk through these steps in order. Do not skip.
 
-### STEP 1 — CHECK DAILY RISK STATUS
+### STEP 1 — CHECK DAILY RISK STATUS + GLOBAL CONTEXT
 
-Call `get_daily_pnl()`. If `kill_switch_active` is true (daily loss ≥ 6%):
-> "KILL SWITCH ACTIVE — Daily loss limit reached. No new positions. Managing existing positions only."
+In a single response, call IN PARALLEL (emit all three as parallel tool_use blocks, NOT one per iteration):
+  - get_daily_pnl()
+  - get_portfolio()
+  - get_economic_calendar(1)
 
-Then check existing positions (Step 4) only. No new entries.
+The calendar veto applies to the entire trading window (not per-candidate), so fetching it once at STEP 1 saves N-1 calls when analysing N candidates in STEP 3. The veto windows match the code:
+- Generic high-impact event: skip if within **−5/+30 min** of intended trade time
+- Tier-1 events (FOMC, NFP, CPI, central-bank rate decisions, Core PCE, GDP, ISM PMI, AHE, Unemployment Rate, Retail Sales, central-bank press conferences): skip if within **−60/+30 min**
 
-Call `get_portfolio()`. There is NO hard cap on number of open positions — each new trade stands on its score. Coordination lock applies: do not open a new ICT trade on an instrument already held.
+After reading the three results:
+- If `kill_switch_active` is true (daily loss ≥ 6%): "KILL SWITCH ACTIVE — Daily loss limit reached. No new positions. Managing existing positions only." Then check existing positions (Step 4) only. No new entries.
+- Open positions: there is NO hard cap on number of open positions — each new trade stands on its score. Coordination lock applies: do not open a new ICT trade on an instrument already held.
+- Calendar: note any Tier-1 events within the next ~3 hours that would veto entries opened now.
 
 ### STEP 2 — GET RANKED INSTRUMENTS
 
@@ -137,11 +144,7 @@ If NOT in a kill zone: STOP. Do not analyse further. Wait for the next zone.
 
 **E. Get news context** — `get_news_context(instrument)`. Per the rebalanced rubric (see Step H): aligned Cat A → +10, aligned Cat B → +5, neutral / Cat C / none → 0, opposing Cat B → −5, opposing Cat A → −15.
 
-**F. Get economic calendar** — `get_economic_calendar(1)`. The veto windows match the code:
-- Generic high-impact event: skip if within **−5/+30 min** of trade time
-- Tier-1 events (FOMC, NFP, CPI, central-bank rate decisions, Core PCE, GDP, ISM PMI, AHE, Unemployment Rate, Retail Sales, central-bank press conferences): skip if within **−60/+30 min**
-
-If you're inside a window: SKIP. Don't bother running structure analysis. The `place_split_trade` tool will refuse anyway.
+**F. Calendar veto re-check** — apply the veto windows from STEP 1's `get_economic_calendar` result to this candidate's intended trade time. If inside a Tier-1 −60/+30 window or a generic −5/+30 window relative to the current 15M close: SKIP this candidate, no structure analysis, no proposal. The `place_split_trade` tool will refuse anyway. Do NOT call `get_economic_calendar` again here — it was already fetched in STEP 1.
 
 **G. Get relevant lessons** — `get_lessons(setup_type, instrument_category, kill_zone, 'ICT_INTRADAY')`. History adjustment activates at **≥ 2 prior trades** in this exact setup × kill zone × instrument bucket: win rate < 50% → −10; > 70% → +10. (Threshold lowered from 5 to 2 on 2026-04-29 so the feedback loop activates inside the demo window. The signal is noisier at small N but better than dead.)
 
