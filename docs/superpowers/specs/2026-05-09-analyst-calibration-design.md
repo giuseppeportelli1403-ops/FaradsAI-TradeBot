@@ -86,8 +86,8 @@ Replace with:
 ### CHECK 2 — CONTEXT
 - Does the trade direction contradict the researcher brief's regime or themes?
 - Is there a Tier 1 macro event (FOMC, NFP, CPI, central-bank decision, AHE, Unemployment Rate, Retail Sales, Core PCE, GDP, ISM PMI) within the expected trade duration?
-  - **If yes and entry is INSIDE the −60/+30 veto window for that event** → REJECT with reason `"Deferred — Tier-1 [event name] at [time UTC] within veto window. Resubmit after [time + 30 min UTC] if structure still valid."` Do NOT use MODIFY for this — wait-instructions are not field-level changes the agent can apply.
-  - **If yes but entry is OUTSIDE the veto window AND the event is BEFORE the trade closes** → flag in `reason` as a caveat ("trade matures into post-event volatility"), but do NOT downgrade to MODIFY/REJECT solely on this. The kill-zone gate already filters most of these; if the proposal reached you, the structural setup is acceptable.
+  - **If yes and entry is inside the −60/+30 veto window for that event** → REJECT with reason `"Deferred — Tier-1 [event name] at [time UTC] within veto window. Next fresh evaluation: 15M close after [time + 30 min UTC]."` Do NOT use MODIFY for this — wait-instructions are not field-level changes the agent can apply.
+  - **If yes but entry is outside the veto window AND the event is before the trade closes** → flag in `reason` as a caveat ("trade matures into post-event volatility"), but do NOT downgrade to MODIFY/REJECT solely on this. The kill-zone gate already filters most of these; if the proposal reached you, the structural setup is acceptable.
 - Does a correlated asset strongly disagree with the trade direction?
 ```
 
