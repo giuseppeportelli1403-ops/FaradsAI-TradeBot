@@ -71,14 +71,17 @@ Non-goals:
  }
 ```
 
-**Surface impact:** every consumer of `RankedInstrument` now sees the new field. TypeScript surfaces consumers via `tsc --noEmit`. Today's consumers (per `grep -rn "RankedInstrument" src tests`):
-- `src/scanner/index.ts` — produces them
-- `src/agents/trading-agent.ts` — `get_ranked_instruments` tool serializes to JSON for the LLM
-- `tests/*` — mock objects in test fixtures
+**Surface impact:** every consumer of `RankedInstrument` now sees the new field. TypeScript surfaces consumers via `tsc --noEmit`. Today's consumers (per `grep -rn "RankedInstrument" src tests`, verified by parallel-review subagents 2026-05-09):
 
-Adding a field is non-breaking: existing code paths just don't reference it. Test fixtures that explicitly construct `RankedInstrument` literals will need `min_deal_size: number | null` added — TypeScript will flag them.
+- **`src/scanner/index.ts:384-389`** — the only literal construction site (`{ ticker, name, composite_score, bias, tier } satisfies RankedInstrument`). This site WILL fail tsc until `min_deal_size` is added. Change 2 below adds the field at this site.
+- **`src/agents/trading-agent.ts`, `src/agents/researcher-agent.ts`, `src/mcp-server/tools/db-tools.ts`** — consume the shape but don't construct literals; non-breaking.
+- **`tests/*`** — searched for `RankedInstrument` literals; none found. The `composite_score`-bearing fixtures across `tests/database.test.ts`, `tests/proposal-hash.test.ts`, `tests/rr-validation.test.ts`, `tests/scheduler.test.ts`, `tests/scheduler-tp1-be-offset.test.ts`, `tests/trading-tools.test.ts`, `tests/reflection.test.ts` are TradeRecord/proposal-shaped, NOT RankedInstrument-shaped. **No test fixtures need updating.**
 
 ### Change 2 — `src/scanner/index.ts`: fetch + cache + populate
+
+**Prerequisite — capital client wiring:** the scanner currently does NOT import a `CapitalClient` instance. The singleton lives at `src/agents/trading-agent.ts` (around line 765-767, the `const capital = new CapitalClient({ ... })` declaration). To avoid a duplicate Capital session/login at scanner-init, the cleanest path is to **export the existing instance from `trading-agent.ts` and import it into the scanner**, OR move the singleton to a shared module. Recommendation: add `export` to the existing `const capital = ...` line in `trading-agent.ts`, then `import { capital } from '../agents/trading-agent.js'` at the top of `src/scanner/index.ts`. One-line surface change in trading-agent.ts; one-line import in scanner.
+
+(Alternative — declined: construct a new `CapitalClient` inside scanner. Wastes a fresh auth handshake on every pm2 restart and creates a parallel session, which is wasteful and slightly riskier under Capital's session-keepalive ping cadence.)
 
 Add module-level cache + helper near the existing `RANKING_TTL_MS` declaration (~line 240):
 
@@ -91,8 +94,14 @@ Add module-level cache + helper near the existing `RANKING_TTL_MS` declaration (
 // upfront; the existing pre-check at trading-agent.ts:869 still does a fresh
 // fetch on every request_analyst_review call as the defensive last gate, so
 // stale cache entries result in at most one wasted analyst round-trip per
-// per drift event (caught and corrected by the live fetch).
-let minDealSizeCache: Map<string, number | null> | null = null;
+// drift event (caught and corrected by the live fetch).
+//
+// In-flight promise dedup: when two callers hit the same cold ticker
+// concurrently (e.g. researcher-agent + scheduler ICT trigger overlapping
+// at startup), we want exactly one Capital fetch per ticker. Storing the
+// in-flight promise in the cache means subsequent callers await the same
+// promise and resolve with the same value, no duplicate API calls.
+let minDealSizeCache: Map<string, Promise<number | null>> | null = null;
 
 async function getMinDealSizeFor(ticker: string): Promise<number | null> {
   if (!minDealSizeCache) {
@@ -102,21 +111,22 @@ async function getMinDealSizeFor(ticker: string): Promise<number | null> {
   if (cached !== undefined) {
     return cached;
   }
-  try {
-    const md = await capital.getMarketDetails(ticker);
-    const v = md?.dealingRules?.minDealSize?.value;
-    const size =
-      typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
-    minDealSizeCache.set(ticker, size);
-    return size;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.warn(
-      `[Scanner] min_deal_size fetch failed for ${ticker}: ${msg} — caching null; agent will fall through to request_analyst_review pre-check.`,
-    );
-    minDealSizeCache.set(ticker, null);
-    return null;
-  }
+  // Store the IN-FLIGHT promise so concurrent callers dedupe to one fetch.
+  const fetchPromise = (async (): Promise<number | null> => {
+    try {
+      const md = await capital.getMarketDetails(ticker);
+      const v = md?.dealingRules?.minDealSize?.value;
+      return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[Scanner] min_deal_size fetch failed for ${ticker}: ${msg} — caching null; agent will fall through to request_analyst_review pre-check.`,
+      );
+      return null;
+    }
+  })();
+  minDealSizeCache.set(ticker, fetchPromise);
+  return fetchPromise;
 }
 
 /** Test-only: clear the min_deal_size cache. Mirrors the _resetRankingCache pattern. */
@@ -124,8 +134,8 @@ export function _resetMinDealSizeCache(): void {
   minDealSizeCache = null;
 }
 
-/** Test-only: read current cache state for assertion. */
-export function _getMinDealSizeCache(): Map<string, number | null> | null {
+/** Test-only: read current cache state for assertion. Returns the Map of in-flight or resolved Promises (test code can await each value to inspect resolved size). */
+export function _getMinDealSizeCache(): Map<string, Promise<number | null>> | null {
   return minDealSizeCache;
 }
 ```
@@ -166,17 +176,16 @@ where `tier_risk_pct` is **1.5** for Tier 1, **1.0** for Tier 2, **0.5** for Tie
 
 **Worked example (the case L3b-2 is designed to prevent):**
 ```
-balance:        1012  (USD)
-tier_risk_pct:  1.0   (Tier 2)
-entry:          80.13
-sl:             79.35
-risk per unit:  |80.13 − 79.35| = 0.78
-total_notional: 1012 × 0.01 × ... wait, the formula:
-                = (1012 × 0.01) × 0.30 / 0.78
-                = 10.12 × 0.30 / 0.78
-                = 3.89  ← Leg B units
+balance:           1012  (USD)
+tier_risk_pct:     1.0   (Tier 2)
+SILVER entry:      80.13
+SL:                79.35
+|entry − SL|:      0.78
+leg_b_notional:    (1012 × 1.0 / 100) × 0.30 / 0.78
+                 = 10.12 × 0.30 / 0.78
+                 ≈ 3.89  ← Leg B units
 SILVER min_deal_size: 5
-3.89 < 5  →  SKIP this candidate (BELOW_MIN_SIZE inevitable)
+3.89 < 5  →  SKIP this candidate (BELOW_MIN_SIZE rejection inevitable downstream)
 ```
 
 After this check passes (or the candidate is skipped and you've moved to the next), proceed to step L below.
