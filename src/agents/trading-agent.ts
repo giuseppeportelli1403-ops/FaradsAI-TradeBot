@@ -1762,6 +1762,15 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
   // "CYCLE TIMED OUT" log fired even on a clean break.
   let cleanlyCompleted = false;
 
+  // 2026-05-09: bookkeeping for the enriched timeout log. Tracks what the
+  // agent was doing at the moment the cap fired so pm2-err.log lines can
+  // answer "is the agent looping on a single tool, or making real
+  // progress that just runs out of room?".
+  let lastIterToolNames: string[] = [];
+  let lastStopReason: string | null = null;
+  let totalToolCalls = 0;
+  const distinctTools = new Set<string>();
+
   for (let i = 0; i < maxIterations; i++) {
     const response = await withTimeout(anthropic.messages.create({
       // Cost optimisation (2026-04-29): downgraded Sonnet → Haiku 4.5 per
@@ -1810,11 +1819,14 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
 
     // If there are tool calls, execute them
     if (response.stop_reason === 'tool_use') {
+      lastStopReason = response.stop_reason;
       const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
 
       for (const block of response.content) {
         if (block.type === 'tool_use') {
           console.log(`[ICT Agent] Calling tool: ${block.name}`);
+          distinctTools.add(block.name);
+          totalToolCalls += 1;
           let result: string;
           try {
             result = await _executeToolImpl(block.name, block.input as Record<string, unknown>);
@@ -1833,6 +1845,10 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
 
       messages.push({ role: 'assistant', content: response.content });
       messages.push({ role: 'user', content: toolResults });
+
+      lastIterToolNames = response.content
+        .filter((b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use')
+        .map((b) => b.name);
     }
   }
 
@@ -1846,8 +1862,16 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
   // loop exhausted iterations — pre-fix it fired on every clean
   // end_turn break too, polluting pm2-err.log.
   if (!cleanlyCompleted) {
+    const lastTools = lastIterToolNames.join(',') || '(none)';
+    const stopReasonNote =
+      lastStopReason && lastStopReason !== 'tool_use'
+        ? ` Last stop_reason: ${lastStopReason}.`
+        : '';
     console.error(
-      `[ICT Agent] CYCLE TIMED OUT after ${maxIterations} iterations without end_turn. ` +
+      `[ICT Agent] CYCLE TIMED OUT after ${maxIterations} iterations without end_turn.` +
+        stopReasonNote +
+        ` Last iter tools: ${lastTools}. Total tool calls: ${totalToolCalls} ` +
+        `across ${distinctTools.size} distinct tools. ` +
         `Decision may be incomplete. If this happens repeatedly, raise the cap or audit ` +
         `which tool the agent is looping on.`,
     );

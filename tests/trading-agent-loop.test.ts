@@ -210,3 +210,52 @@ describe('iteration cap — env-var override + validation', () => {
     );
   });
 });
+
+describe('enriched timeout log', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockMessagesCreate.mockReset();
+    mockAlertSystemWarning.mockReset().mockResolvedValue(undefined);
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    process.env.ICT_AGENT_MAX_ITER = '3'; // small cap = fast test
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
+    consoleLogSpy.mockRestore();
+    delete process.env.ICT_AGENT_MAX_ITER;
+  });
+
+  it('includes Last iter tools, Total tool calls, distinct count', async () => {
+    let callCount = 0;
+    mockMessagesCreate.mockImplementation(async () => {
+      callCount += 1;
+      // Iter 1: get_daily_pnl. Iter 2: get_prices ×2. Iter 3: get_news_context.
+      const blocks =
+        callCount === 1
+          ? [{ type: 'tool_use', id: 'a', name: 'get_daily_pnl', input: {} }]
+          : callCount === 2
+            ? [
+                { type: 'tool_use', id: 'b', name: 'get_prices', input: {} },
+                { type: 'tool_use', id: 'c', name: 'get_prices', input: {} },
+              ]
+            : [{ type: 'tool_use', id: 'd', name: 'get_news_context', input: {} }];
+      return { stop_reason: 'tool_use', content: blocks };
+    });
+
+    await runTradingAgent();
+
+    const calls = consoleErrorSpy.mock.calls.map((c) => c[0] as string);
+    const timeoutLog = calls.find((c) => c.includes('CYCLE TIMED OUT'));
+    expect(timeoutLog).toBeDefined();
+    expect(timeoutLog).toMatch(/Last iter tools: get_news_context/);
+    expect(timeoutLog).toMatch(/Total tool calls: 4/);
+    expect(timeoutLog).toMatch(/across 3 distinct tools/);
+  });
+});
