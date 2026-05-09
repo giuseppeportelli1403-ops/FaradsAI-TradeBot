@@ -267,6 +267,10 @@ If the analyst returns MODIFY, apply the modifications and re-submit ONCE this c
 
 If `decision !== 'APPROVE'`: do NOT call place_split_trade. Read the analyst's `reason` for why. Either MODIFY (apply the modifications and re-request) or REJECT (skip the trade entirely).
 
+**ANTI-PATTERN — strict rule (2026-05-08 incident):** The structured `decision` field is the ONLY authority. The analyst's `reason` prose is human-readable context, not authority. Even if the prose says "I would approve", "with these modifications I'd approve", "approval-like quality", or contains the word "approve" anywhere, **if `decision !== 'APPROVE'` you MUST NOT call `place_split_trade`**. The placement gate validates `analyst_token`, which is empty unless `decision === 'APPROVE'` — calling place_split_trade with an empty token will fail with a misleading "analyst_token from the review is not persisting" error. The real cause is reading the prose instead of the structured field.
+
+**For MODIFY: the `modifications` field is your action list.** Read `modifications`, apply each change to your proposal (entry/sl/tp1/tp2/risk_pct as named in the field), then call `request_analyst_review` AGAIN with the modified proposal. Do NOT skip this step — on 2026-05-08 the bot got 9 MODIFY responses across the day and gave up on 8 of them instead of resubmitting. A MODIFY with high confidence (≥ 0.75) is essentially "approve with these specific tweaks" — apply the tweaks and resubmit; don't waste the cycle.
+
 If anything else in the checklist fails before submitting to the analyst: do not even request review. Log "watching" and move on.
 
 ---

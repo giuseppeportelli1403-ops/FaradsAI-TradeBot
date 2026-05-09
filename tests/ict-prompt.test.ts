@@ -50,4 +50,20 @@ describe('ict-agent.md L3 directives', () => {
       'R:R to TP1 ≥ 1.01 and R:R to TP2 ≥ 1.31',
     );
   });
+
+  it('analyst response interpretation rule (2026-05-08 incident guard)', () => {
+    // Structured-field-only rule must be present so the agent doesn't
+    // misread MODIFY prose as APPROVE.
+    expect(promptText).toContain(
+      'structured `decision` field is the ONLY authority',
+    );
+    // MODIFY-must-resubmit rule must be present so the agent applies
+    // modifications and resubmits instead of giving up.
+    expect(promptText).toContain(
+      'the `modifications` field is your action list',
+    );
+    // The 2026-05-08 incident reference tells future readers what bug
+    // this guard exists for (9 MODIFYs misread or abandoned, 0 trades).
+    expect(promptText).toContain('2026-05-08');
+  });
 });
