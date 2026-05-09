@@ -259,3 +259,41 @@ describe('enriched timeout log', () => {
     expect(timeoutLog).toMatch(/across 3 distinct tools/);
   });
 });
+
+describe('stop_reason handling', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockMessagesCreate.mockReset();
+    mockAlertSystemWarning.mockReset().mockResolvedValue(undefined);
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
+    consoleLogSpy.mockRestore();
+    delete process.env.ICT_AGENT_MAX_ITER;
+  });
+
+  it('breaks out on max_tokens stop_reason and logs the cause', async () => {
+    mockMessagesCreate.mockResolvedValue({
+      stop_reason: 'max_tokens',
+      content: [{ type: 'text', text: 'partial response' }],
+    });
+
+    await runTradingAgent();
+
+    expect(mockMessagesCreate).toHaveBeenCalledTimes(1);
+    expect(consoleWarnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Unexpected stop_reason 'max_tokens'"),
+    );
+    const errorCalls = consoleErrorSpy.mock.calls.map((c) => c[0] as string);
+    const timeoutLog = errorCalls.find((c) => c.includes('CYCLE TIMED OUT'));
+    expect(timeoutLog).toMatch(/Last stop_reason: max_tokens/);
+  });
+});

@@ -1850,6 +1850,25 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
         .filter((b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use')
         .map((b) => b.name);
     }
+
+    // 2026-05-09: explicit handler for stop_reasons other than end_turn/
+    // tool_use (e.g. 'max_tokens', 'stop_sequence', 'pause_turn'). Pre-fix
+    // the loop fell through with neither branch matching, silently spinning
+    // until the cap fired. Now: log loudly, set lastStopReason for the
+    // timeout log, and break out so we don't waste iterations.
+    // NB: only `!== 'tool_use'` is needed because the `end_turn` branch
+    // above always `break`s, so TS has already narrowed it away here —
+    // adding `!== 'end_turn'` would be flagged TS2367 as unintentional.
+    if (response.stop_reason !== 'tool_use') {
+      console.warn(
+        `[ICT Agent] Unexpected stop_reason '${response.stop_reason}' on iter ${i + 1}. ` +
+          `Breaking loop to avoid wasted iterations.`,
+      );
+      lastStopReason = response.stop_reason;
+      // Don't set cleanlyCompleted = true — this is an abnormal exit; the
+      // timeout-log path will still fire to give us observability.
+      break;
+    }
   }
 
   // Codex P2 #18 (2026-04-28): if the loop exhausted maxIterations
