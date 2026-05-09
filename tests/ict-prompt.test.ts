@@ -66,4 +66,11 @@ describe('ict-agent.md L3 directives', () => {
     // this guard exists for (9 MODIFYs misread or abandoned, 0 trades).
     expect(promptText).toContain('2026-05-08');
   });
+
+  it('STEP 3 contains L0 feasibility pre-flight directive', () => {
+    expect(promptText).toContain('L0. Sizing feasibility pre-flight');
+    expect(promptText).toContain('leg_b_notional = (balance × tier_risk_pct / 100) × 0.30 / |entry − sl|');
+    expect(promptText).toContain('skip this candidate');
+    expect(promptText).toContain('do NOT submit to `request_analyst_review`');
+  });
 });

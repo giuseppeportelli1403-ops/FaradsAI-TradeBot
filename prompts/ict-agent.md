@@ -218,6 +218,34 @@ Tier assignment:
 
 **Both modes:** if the news is STALE and bearish (the news_context summary contains `[stale … bearish-dampened]`), prefer to SKIP rather than half-size — the stale-bearish dampening rule already softened the score and stacking another mitigation on top is overcompensating.
 
+**L0. Sizing feasibility pre-flight (post-2026-05-09 L3b-2)** — before the final checklist below, verify the proposal can satisfy the broker's `min_deal_size` constraint:
+
+```
+leg_b_notional = (balance × tier_risk_pct / 100) × 0.30 / |entry − sl|
+```
+
+where `tier_risk_pct` is **1.5** for Tier 1, **1.0** for Tier 2, **0.5** for Tier 3 (trend-mode), and **0.25** for range-mode (setup_type starts with `Range_`). The `min_deal_size` for each candidate is in the `get_ranked_instruments` response (added 2026-05-09 via the L3b-2 spec — `RankedInstrument.min_deal_size`).
+
+**If `leg_b_notional < min_deal_size`:** skip this candidate. The trade is mathematically too small to execute on the current account balance at this tier and SL distance. Move to the next candidate, or skip the cycle if no remaining candidates pass; do NOT submit to `request_analyst_review` — the pre-check there will reject for the same reason after wasting one round-trip.
+
+**If `min_deal_size` is null/missing** for this instrument (the scanner's getMarketDetails fetch failed or this is a freshly-added ticker): proceed to `request_analyst_review` anyway. The pre-check there does a fresh live fetch and will catch any infeasibility. The L0 check is an optimization, not a hard gate — null means "I don't know, let the live pre-check decide".
+
+**Worked example (the case L3b-2 is designed to prevent — pre-top-up demo on 2026-05-08):**
+```
+balance:           1012  (USD)
+tier_risk_pct:     1.0   (Tier 2)
+SILVER entry:      80.13
+SL:                79.35
+|entry − SL|:      0.78
+leg_b_notional:    (1012 × 1.0 / 100) × 0.30 / 0.78
+                 = 10.12 × 0.30 / 0.78
+                 ≈ 3.89  ← Leg B units
+SILVER min_deal_size: 5
+3.89 < 5  →  SKIP this candidate (BELOW_MIN_SIZE rejection inevitable downstream)
+```
+
+After this check passes (or the candidate is skipped and you've moved to the next), proceed to step L below.
+
 **L. Final checklist**
 - [ ] 1H bias direction matches trade direction (clarity is in the score; bias is no longer a binary "clean enough" gate — Phase E 2026-05-04)
 - [ ] Valid ICT trigger printed on 15M
