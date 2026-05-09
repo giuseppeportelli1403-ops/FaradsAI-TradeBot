@@ -912,11 +912,9 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         sl: reqSl,
         tp1: Number(input.tp1),
         tp2: Number(input.tp2),
-        tp3: null,
         // Sizes are server-computed; LLM input is ignored.
         size_a: serverSizeA,
         size_b: serverSizeB,
-        size_c: null,
         total_risk_pct: reqTotalRiskPct,
         composite_score: Number(input.composite_score),
         tier: input.tier as 1 | 2 | 3,
@@ -1074,11 +1072,9 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         sl: Number(input.sl),
         tp1: Number(input.tp1),
         tp2: Number(input.tp2),
-        tp3: null,
         // proposalHash ignores these post-Codex-follow-up. 0 is a safe sentinel.
         size_a: 0,
         size_b: 0,
-        size_c: null,
         total_risk_pct: Number(input.total_risk_pct),
         composite_score: Number(input.composite_score),
         tier: input.tier as 1 | 2 | 3,
@@ -1497,9 +1493,10 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // runtime shape is verified by insertTrade's own field-by-field
       // normalization in src/database/index.ts.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // 2026-05-07 — 2-TP restructure (Phase 2): persist NULL on the legacy
-      // C-leg columns. TradeRecord schema permits NULL on tp3 / position_c_id /
-      // size_c / pnl_c (added 2026-04-21 for legacy 2-leg precedent).
+      // 2026-05-07 — 2-TP restructure (Phase 2): legacy C-leg columns
+      // (tp3 / position_c_id / size_c / pnl_c) are omitted from the INSERT
+      // and default to NULL at the DB layer. Explicit-null writes were
+      // removed in Task 5 of the 3-leg removal plan (2026-05-09).
       const tradeRow: any = {
         id: tradeId,
         strategy_tag: 'ICT_INTRADAY',
@@ -1512,14 +1509,10 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         sl,
         tp1,
         tp2,
-        tp3: null,
         position_a_id: placedDeals[0].dealId,
         position_b_id: placedDeals[1].dealId,
-        position_c_id: null,
         size_a: sizeA,
         size_b: sizeB,
-        size_c: null,
-        pnl_c: null,
         status: 'open',
         composite_score: score,
         kill_zone: String(input.kill_zone),
