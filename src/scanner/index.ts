@@ -484,12 +484,31 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
   // the in-memory map. The agent now sees min_deal_size in
   // get_ranked_instruments output and can run the L0 feasibility check
   // before requesting analyst review for an oversized-notional candidate.
-  const augmented: RankedInstrument[] = await Promise.all(
-    results.map(async (r) => ({
-      ...r,
-      min_deal_size: await getMinDealSizeFor(r.ticker),
-    })),
-  );
+  // 2026-05-09 (L3b-2 review-hardening): wrap Promise.all in try/catch so a
+  // rejection in any getMinDealSizeFor promise can't take down the entire
+  // ranking call. Today getMinDealSizeFor catches all errors internally
+  // (returns null on Capital fetch failure) so this path is unreachable —
+  // but a future change that broke that invariant would otherwise propagate
+  // an unhandled rejection up to the agent's executeTool, killing the
+  // cycle. Fall back to all-null min_deal_size so the agent's L0 prompt
+  // step routes everything through the live pre-check at
+  // trading-agent.ts:869 — same defensive behavior as for individual ticker
+  // failures.
+  let augmented: RankedInstrument[];
+  try {
+    augmented = await Promise.all(
+      results.map(async (r) => ({
+        ...r,
+        min_deal_size: await getMinDealSizeFor(r.ticker),
+      })),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[Scanner] min_deal_size augmentation failed: ${msg} — returning results with null min_deal_size; agent will fall through to request_analyst_review pre-check.`,
+    );
+    augmented = results.map((r) => ({ ...r, min_deal_size: null }));
+  }
   rankingCache = { at: Date.now(), zone: killZone.zone, results: augmented };
   return augmented.slice(0, limit);
 }
