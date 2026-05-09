@@ -1729,12 +1729,25 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
     { role: 'user', content: contextMessage },
   ];
 
-  // Iteration cap reduced 15 → 8 on 2026-04-21. Typical decision cycle
-  // completes in 5-8 iterations; runs that hit 15 were usually stuck in
-  // a research loop that never converges. 8 forces a decision with the
-  // data the agent has gathered so far — occasional quality dip on
-  // borderline cases, significant tail-cost saving.
-  const maxIterations = 8;
+  // 2026-04-21: cap reduced 15 → 8 to force decisions; runs that hit 15
+  // were stuck in a never-converging research loop. The reduction
+  // prioritised "force a decision with the data the agent has gathered"
+  // over occasional quality on borderline cases.
+  //
+  // 2026-05-09: cap bumped 8 → 12. NFP Friday (2026-05-08) surfaced 5 of
+  // 12 cycles hitting the 8 cap before reaching end_turn. Decision graph
+  // has grown since 2026-04-21 (calendar veto check, bias-mismatch
+  // validation, sizing constraint check, Force-Propose mandatory analyst
+  // submission, multi-candidate pivot logic) — 8 is now too tight on
+  // complex days. 12 keeps the "force decision" guardrail at a higher
+  // threshold.
+  //
+  // ICT_AGENT_MAX_ITER env override added 2026-05-09 so live tuning
+  // (during a kill zone) doesn't require a redeploy. Reads as Number();
+  // falls back to 12 on NaN, non-integer, or out-of-range. 1 ≤ N ≤ 50.
+  const envCap = Number(process.env.ICT_AGENT_MAX_ITER);
+  const maxIterations =
+    Number.isInteger(envCap) && envCap >= 1 && envCap <= 50 ? envCap : 12;
 
   // 2026-04-29 audit (continued bug hunt): the ICT main loop had no per-
   // iteration timeout. With 8 iterations and the SDK's 600s default, a

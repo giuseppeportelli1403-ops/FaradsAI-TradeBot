@@ -145,3 +145,68 @@ describe('runTradingAgent loop — smoke test', () => {
     expect(mockImpl).toHaveBeenCalledWith('get_daily_pnl', {});
   });
 });
+
+describe('iteration cap — env-var override + validation', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockMessagesCreate.mockReset();
+    mockAlertSystemWarning.mockReset().mockResolvedValue(undefined);
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    // Force a never-ending tool_use loop so the cap fires deterministically.
+    mockMessagesCreate.mockResolvedValue({
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'call_1', name: 'get_daily_pnl', input: {} }],
+    });
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
+    consoleLogSpy.mockRestore();
+    delete process.env.ICT_AGENT_MAX_ITER;
+  });
+
+  it('defaults cap to 12 when ICT_AGENT_MAX_ITER is unset', async () => {
+    await runTradingAgent();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('after 12 iterations'),
+    );
+  });
+
+  it('honours ICT_AGENT_MAX_ITER=3 (lowers cap)', async () => {
+    process.env.ICT_AGENT_MAX_ITER = '3';
+    await runTradingAgent();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('after 3 iterations'),
+    );
+  });
+
+  it('falls back to 12 when ICT_AGENT_MAX_ITER is non-numeric', async () => {
+    process.env.ICT_AGENT_MAX_ITER = 'oops';
+    await runTradingAgent();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('after 12 iterations'),
+    );
+  });
+
+  it('falls back to 12 when ICT_AGENT_MAX_ITER is out of range', async () => {
+    process.env.ICT_AGENT_MAX_ITER = '99999';
+    await runTradingAgent();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('after 12 iterations'),
+    );
+  });
+
+  it('falls back to 12 when ICT_AGENT_MAX_ITER is non-integer', async () => {
+    process.env.ICT_AGENT_MAX_ITER = '3.7';
+    await runTradingAgent();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('after 12 iterations'),
+    );
+  });
+});
