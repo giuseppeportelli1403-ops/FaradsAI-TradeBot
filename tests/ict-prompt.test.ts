@@ -41,4 +41,13 @@ describe('ict-agent.md L3 directives', () => {
       /get_lessons\(setup_type, instrument_category, kill_zone, 'ICT_INTRADAY'\)/,
     );
   });
+
+  it('TP2 R:R precision rule cites 1.31 (not 1.30) as the safe target', () => {
+    // The precision rule itself
+    expect(promptText).toContain('TP2 ≥ 1.31 × |entry − SL|');
+    // Step L checklist updated to use 1.01 / 1.31 as the safe-target margins
+    expect(promptText).toContain(
+      'R:R to TP1 ≥ 1.01 and R:R to TP2 ≥ 1.31',
+    );
+  });
 });

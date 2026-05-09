@@ -198,11 +198,15 @@ Tier assignment:
 **Trend-mode targets (triggers 1-4) — universal floors post-2026-05-07:**
 - **TP1: ≥ 1:1 R:R** (the de-risk leg, 1.2:1 acceptable)
 - **TP2: ≥ 1.3:1 R:R** (universal — same floor for all tiers and all instruments)
+
+> **Precision rule (post-2026-05-09 retry-pattern audit):** broker tick rounding can shave the actual R:R below the strict 1.30 floor even when your math computes 1.30 exactly. To clear the floor robustly, **always set TP2 ≥ 1.31 × |entry − SL|** (1.31, not 1.30). The same defensive margin applies to TP1 — set TP1 ≥ 1.01 × |entry − SL| even though the de-risk leg is described as "1:1" in spirit. The pre-check at request_analyst_review is strict; one extra basis point of TP distance avoids a same-cycle resubmission.
 - Total risk: `Account_balance × tier_risk_pct` where tier_risk_pct = 1.5% T1 / 1.0% T2 / 0.5% T3. Then split tick-aware 70/30 (Leg A absorbs rounding remainder; see "Position sizing with 2 legs" above).
 
 **Range-mode targets (trigger 5) — universal floors post-2026-05-07:**
 - **TP1: mid-range** (50% level of the 1H range) — must be ≥ 1:1 R:R
 - **TP2: opposite range extreme** — must be ≥ 1.3:1 R:R (universal floor)
+
+> **Precision rule (post-2026-05-09 retry-pattern audit):** broker tick rounding can shave the actual R:R below the strict 1.30 floor even when your math computes 1.30 exactly. To clear the floor robustly, **always set TP2 ≥ 1.31 × |entry − SL|** (1.31, not 1.30). The same defensive margin applies to TP1 — set TP1 ≥ 1.01 × |entry − SL| even though the de-risk leg is described as "1:1" in spirit. The pre-check at request_analyst_review is strict; one extra basis point of TP distance avoids a same-cycle resubmission.
 - **Half-size posture:** total risk is 0.25% (half of Tier 3's 0.5%) because range reversals are higher-variance than trend-following entries. Same 70/30 tick-aware split as trend-mode.
 - Tier MUST be 3 in the proposal (range-mode never qualifies for Tier 1 or 2)
 
@@ -218,7 +222,7 @@ Tier assignment:
 - [ ] 1H bias direction matches trade direction (clarity is in the score; bias is no longer a binary "clean enough" gate — Phase E 2026-05-04)
 - [ ] Valid ICT trigger printed on 15M
 - [ ] Score ≥ 40 (T3) / ≥ 60 (T2) / ≥ 80 (T1)
-- [ ] R:R to TP1 ≥ 1.0 and R:R to TP2 ≥ 1.3 (universal floors post-2026-05-07)
+- [ ] R:R to TP1 ≥ 1.01 and R:R to TP2 ≥ 1.31 (precision margin against broker tick rounding — see precision rule above; strict floors are 1.0 / 1.3 but the safe target is 1.01 / 1.31)
 - [ ] Calendar veto not triggered
 - [ ] Daily 6% kill switch not hit
 - [ ] No existing position on this instrument (coordination lock)
