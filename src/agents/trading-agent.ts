@@ -738,7 +738,7 @@ async function getPreferredAccountBalance(): Promise<{ balance: number; deposit:
   return preferred.balance;
 }
 
-async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
+export async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
   switch (name) {
     case 'get_daily_pnl': {
       const balance = await getPreferredAccountBalance();
@@ -1667,6 +1667,25 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
   }
 }
 
+// 2026-05-09: Test seam for the loop's tool dispatch. Both Claude and
+// Codex plan-reviewers flagged that vi.spyOn(module, 'executeTool')
+// cannot intercept the loop's in-file lexical call — ESM exports a
+// binding to the function, but the call resolves via lexical scope,
+// not via the export object. The seam below routes the loop through
+// a mutable module-level binding that tests can patch via
+// _setExecuteToolImpl. Default is the real executeTool above.
+let _executeToolImpl: typeof executeTool = executeTool;
+
+/** Test-only: patch the loop's tool dispatcher. Restore via _resetExecuteToolImpl. */
+export function _setExecuteToolImpl(impl: typeof executeTool): void {
+  _executeToolImpl = impl;
+}
+
+/** Test-only: restore the default executeTool dispatcher. */
+export function _resetExecuteToolImpl(): void {
+  _executeToolImpl = executeTool;
+}
+
 // ==================== MAIN AGENT LOOP ====================
 
 export async function runTradingAgent(): Promise<void> {
@@ -1785,7 +1804,7 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
           console.log(`[ICT Agent] Calling tool: ${block.name}`);
           let result: string;
           try {
-            result = await executeTool(block.name, block.input as Record<string, unknown>);
+            result = await _executeToolImpl(block.name, block.input as Record<string, unknown>);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             console.warn(`[ICT Agent] Tool ${block.name} failed: ${message}`);
