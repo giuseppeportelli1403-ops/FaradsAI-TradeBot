@@ -1,7 +1,8 @@
 // Tests for the backtest engine rewrite (Phase B, 2026-05-04 audit Finding #3).
 //
 // Pre-fix the engine implemented the 2026-04-22 obsolete strategy:
-//   - TP1=2R, TP2=3R, TP3=4R (current docs: TP1=1R, TP2≥2R, TP3≥3R)
+//   - TP ladder used the old 2R/3R/4R numbers (current ladder is 2-leg:
+//     TP1 ≥ 1R, TP2 ≥ 1.3R per the 2026-05-07 Phase-2 restructure)
 //   - Tier 3 floor=50 (current: 40 post-Phase-E; was 45 post-Phase-B)
 //   - Bias clarity scale 0/10/20 (current rubric: 0/15/20/25)
 //   - Kill zone as score component +15/+5 (current: hard gate, not scored)

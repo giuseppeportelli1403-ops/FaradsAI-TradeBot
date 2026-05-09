@@ -11,6 +11,10 @@ import { describe, it, expect } from 'vitest';
 import { extractLessonFromTool } from '../src/agents/reflection-agent.js';
 
 describe('extractLessonFromTool — read lesson from submit_lesson tool_use', () => {
+  // 2026-05-08 (3-leg removal Phase 1, Task 7/10): position_c_outcome and
+  // pnl_c_r dropped from the LLM tool schema and from this fixture. The
+  // extractor hard-codes both to null on output regardless of LLM input —
+  // that contract is pinned in the 'pnl_c_r is always null' test below.
   const validInput = {
     lesson_id: 'lesson-abc',
     timestamp: '2026-05-05T10:00:00Z',
@@ -27,10 +31,8 @@ describe('extractLessonFromTool — read lesson from submit_lesson tool_use', ()
     analyst_decision: 'APPROVE',
     position_a_outcome: 'TP1 hit',
     position_b_outcome: 'TP2 hit',
-    position_c_outcome: 'TP3 hit',
     pnl_a_r: 1.0,
     pnl_b_r: 2.0,
-    pnl_c_r: 3.0,
     pnl_total_r: 2.0,
     was_bias_correct: true,
     was_trigger_valid: true,
@@ -127,7 +129,12 @@ describe('extractLessonFromTool — read lesson from submit_lesson tool_use', ()
     expect(extractLessonFromTool(content as never)).toBeNull();
   });
 
-  it('still coerces non-finite pnl_c_r to null (legacy 2-leg legitimate)', () => {
+  it('pnl_c_r is always null (Phase 1: removed from extractor schema)', () => {
+    // 2026-05-08 (3-leg removal Phase 1, Task 7): the extractor hard-codes
+    // pnl_c_r to null and ignores any LLM-supplied value. Even a stale
+    // caller that emits a numeric pnl_c_r (or garbage) gets null on output.
+    // This pins that contract — historical lesson rows still nullable on
+    // the column, but no new write ever lands a non-null value.
     const input = { ...validInput, pnl_c_r: 'not a number' };
     const content = [
       { type: 'tool_use', id: 'x', name: 'submit_lesson', input },

@@ -1,14 +1,9 @@
 // Tests for the R:R floor validator added 2026-05-04 (Phase A1, doc-vs-code
 // audit Finding #2) and refactored 2026-05-07 (Phase 2 — 2-TP restructure).
 //
-// Pre-Phase-2 floors (per-mode / per-tier):
-//   Trend-mode: TP1 ≥ 1, TP2 ≥ 2 (T1/T2) or ≥ 1.5 (T3 tight-spread), TP3 ≥ 3
-//   Range-mode: TP1 ≥ 1, TP2 ≥ 1.5, TP3 ≥ 2
-//
-// Post-Phase-2 floors (universal across all modes/tiers/spread classes):
-//   TP1 ≥ 1.0R   — same as before
-//   TP2 ≥ 1.3R   — UNIVERSAL (lowered from 1.5R / 2.0R per-mode)
-//   TP3 — REMOVED (the 3-leg ladder collapsed to 2 legs)
+// Floors (universal across all modes/tiers/spread classes):
+//   TP1 ≥ 1.0R
+//   TP2 ≥ 1.3R   — UNIVERSAL (was 1.5R / 2.0R per-mode pre-Phase-2)
 //
 // `tier`, `ticker`, `isRangeMode` are kept on the input shape for forward-
 // compatibility with future per-mode rules and to keep the proposal contract

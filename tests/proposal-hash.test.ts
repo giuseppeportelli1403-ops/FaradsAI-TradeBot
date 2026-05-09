@@ -8,14 +8,18 @@
 //     now server-computed from total_risk_pct + balance + minDealSize; the
 //     LLM-supplied size_a/size_b values are ignored on the placement path,
 //     so they MUST NOT affect hash identity.
+//   - 2026-05-08 (3-leg removal Phase 1, Task 6/10): tp3 + size_c gone from
+//     the TradeProposal type entirely. Fixture + ignored-fields assertions
+//     removed; runtime guard in tests/three-leg-removal.test.ts pins the
+//     placement-path rejection of any caller still passing tp3/size_c.
 import { describe, it, expect } from 'vitest';
 import { proposalHash } from '../src/agents/trading-agent.js';
 import type { TradeProposal } from '../src/agents/analyst-agent.js';
 
 function mkProposal(overrides: Partial<TradeProposal> = {}): Omit<TradeProposal, 'trade_id'> {
-  // 2026-05-07: tp3 / size_c are nullable on the new TradeProposal type and
-  // size_a / size_b are no longer part of the canonical hash. The values
-  // below are placeholders — see the 'IGNORED fields' test for proof.
+  // 2026-05-07: size_a / size_b are no longer part of the canonical hash.
+  // The values below are placeholders — see the 'IGNORED fields' test for
+  // proof.
   return {
     strategy_tag: 'ICT_INTRADAY',
     instrument: 'EURUSD',
@@ -26,10 +30,8 @@ function mkProposal(overrides: Partial<TradeProposal> = {}): Omit<TradeProposal,
     sl: 1.0830,
     tp1: 1.0890,
     tp2: 1.0920,
-    tp3: null,
     size_a: 0.7,
     size_b: 0.3,
-    size_c: null,
     total_risk_pct: 1.0,
     composite_score: 65,
     tier: 2,
@@ -69,22 +71,6 @@ describe('proposalHash', () => {
     expect(proposalHash(mkProposal({ size_a: 0.35 }))).toBe(base);
     expect(proposalHash(mkProposal({ size_b: 999 }))).toBe(base);
     expect(proposalHash(mkProposal({ size_a: 1, size_b: 1 }))).toBe(base);
-  });
-
-  it('does NOT change when tp3 or size_c changes (post-2026-05-07 2-TP restructure ignores legacy 3-leg fields)', () => {
-    // 2026-05-07 (Phase 2): the 3-leg ladder collapsed to 2 legs. The hash
-    // canonical projection drops tp3 + size_c so any value in those fields
-    // (null, 0, a stale 3-leg number from a hand-typed request) hashes the
-    // same. Defensive guard for back-compat with proposal payloads that
-    // still carry legacy fields.
-    const base = proposalHash(mkProposal());
-    expect(proposalHash(mkProposal({ tp3: 999 }))).toBe(base);
-    expect(proposalHash(mkProposal({ size_c: 999 }))).toBe(base);
-    expect(proposalHash(mkProposal({ tp3: 1.0960, size_c: 0.33 }))).toBe(base);
-    // null vs number on tp3/size_c also doesn't matter (the canonical
-    // projection ignores them entirely).
-    expect(proposalHash(mkProposal({ tp3: null }))).toBe(base);
-    expect(proposalHash(mkProposal({ tp3: 1.0960 }))).toBe(base);
   });
 
   it('changes when composite_score changes', () => {
