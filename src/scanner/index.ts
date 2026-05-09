@@ -19,6 +19,7 @@
 // the epic field here is the source of truth.
 
 import { fetchCandles, TwelveDataDailyCapError } from '../mcp-server/market-data.js';
+import { capital } from '../mcp-server/capital-singleton.js';
 import { getNewsScore } from '../news/index.js';
 import { tier3FloorFor } from '../agents/spread.js';
 import type { Candle, RankedInstrument } from '../types.js';
@@ -251,6 +252,64 @@ export function _resetRankingCache(): void {
 /** Exposed for tests/monitoring — current cache state. */
 export function _getRankingCache(): { at: number; zone: string; results: RankedInstrument[] } | null {
   return rankingCache;
+}
+
+// 2026-05-09: min_deal_size lookup cache. Capital's broker minimums rarely
+// change (typically stable for months), so we cache per-instrument values
+// for the lifetime of the scanner module. PM2 restarts (deploy, daily cron)
+// refresh the cache. The agent's L3b-2 feasibility check (prompts/ict-agent.md
+// STEP 3 sub-step L0) reads min_deal_size to skip infeasible candidates
+// upfront; the existing pre-check at trading-agent.ts:869 still does a fresh
+// fetch on every request_analyst_review call as the defensive last gate, so
+// stale cache entries result in at most one wasted analyst round-trip per
+// drift event (caught and corrected by the live fetch).
+//
+// In-flight promise dedup: when two callers hit the same cold ticker
+// concurrently (e.g. researcher-agent + scheduler ICT trigger overlapping
+// at startup), we want exactly one Capital fetch per ticker. Storing the
+// in-flight promise in the cache means subsequent callers await the same
+// promise and resolve with the same value, no duplicate API calls.
+let minDealSizeCache: Map<string, Promise<number | null>> | null = null;
+
+/** Test-only export so tests/scanner-min-deal-size.test.ts can drive the helper directly. */
+export async function _getMinDealSizeFor(ticker: string): Promise<number | null> {
+  return getMinDealSizeFor(ticker);
+}
+
+async function getMinDealSizeFor(ticker: string): Promise<number | null> {
+  if (!minDealSizeCache) {
+    minDealSizeCache = new Map();
+  }
+  const cached = minDealSizeCache.get(ticker);
+  if (cached !== undefined) {
+    return cached;
+  }
+  // Store the IN-FLIGHT promise so concurrent callers dedupe to one fetch.
+  const fetchPromise = (async (): Promise<number | null> => {
+    try {
+      const md = await capital.getMarketDetails(ticker);
+      const v = md?.dealingRules?.minDealSize?.value;
+      return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[Scanner] min_deal_size fetch failed for ${ticker}: ${msg} — caching null; agent will fall through to request_analyst_review pre-check.`,
+      );
+      return null;
+    }
+  })();
+  minDealSizeCache.set(ticker, fetchPromise);
+  return fetchPromise;
+}
+
+/** Test-only: clear the min_deal_size cache. Mirrors the _resetRankingCache pattern. */
+export function _resetMinDealSizeCache(): void {
+  minDealSizeCache = null;
+}
+
+/** Test-only: read current cache state for assertion. Returns the Map of in-flight or resolved Promises (test code can await each value to inspect resolved size). */
+export function _getMinDealSizeCache(): Map<string, Promise<number | null>> | null {
+  return minDealSizeCache;
 }
 
 export async function getRankedInstruments(limit: number = 20): Promise<RankedInstrument[]> {
