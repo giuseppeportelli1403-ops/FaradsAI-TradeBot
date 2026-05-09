@@ -196,7 +196,6 @@ export async function runAnalystAgent(proposal: TradeProposal): Promise<AnalystD
     kill_zone: t.kill_zone,
     size_a: t.size_a,
     size_b: t.size_b,
-    size_c: t.size_c,
     opened_at: t.opened_at,
   }));
   const recentLessonsProjection = recentLessons.map((l) => ({
@@ -207,7 +206,6 @@ export async function runAnalystAgent(proposal: TradeProposal): Promise<AnalystD
     pnl_total_r: l.pnl_total_r,
     leg_a: l.position_a_outcome,
     leg_b: l.position_b_outcome,
-    leg_c: l.position_c_outcome,
   }));
 
   // 2026-04-29 audit fix (P0-AN6): use a robust section parser. Pre-fix
