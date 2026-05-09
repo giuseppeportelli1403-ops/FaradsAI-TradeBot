@@ -38,4 +38,13 @@ describe('analyst-agent.md decision-rule calibration', () => {
       '"All 6 checks pass but I have qualitative concerns" is APPROVE, not MODIFY',
     );
   });
+
+  it('CHECK 2 explicit deferred-resubmit clause for inside-veto-window case', () => {
+    expect(promptText).toContain('central-bank decision');
+    expect(promptText).toContain('AHE, Unemployment Rate, Retail Sales');
+    expect(promptText).toContain('inside the −60/+30 veto window');
+    expect(promptText).toContain('→ REJECT with reason');
+    expect(promptText).toContain('flag in `reason` as a caveat');
+    expect(promptText).toContain('do NOT downgrade');
+  });
 });
