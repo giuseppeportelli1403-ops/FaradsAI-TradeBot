@@ -44,6 +44,24 @@ export function _resetAnalystApprovals(): void {
   approvedProposals.clear();
 }
 
+// 2026-05-09: Telegram dedup for ICT cycle timeouts. Module-level state.
+// Safe under module-level mutation because ICT cycles are serialized via
+// scheduler/index.ts ictRunning + ictOverlapQueue — two runTradingAgent
+// invocations never run concurrently. See spec
+// docs/superpowers/specs/2026-05-08-ict-iteration-cap-bump-design.md
+// "Change 3" for the serialization invariant.
+let lastIctTimeoutAlertDate: string | null = null;
+
+/** Test-only: reset dedup so a same-day timeout re-alerts. */
+export function _resetIctTimeoutAlertDate(): void {
+  lastIctTimeoutAlertDate = null;
+}
+
+/** Test-only: read current dedup state. Symmetry with _getPingFailureStreak. */
+export function _getIctTimeoutAlertDate(): string | null {
+  return lastIctTimeoutAlertDate;
+}
+
 /**
  * Compute a deterministic hash of the canonicalised proposal. Used as the
  * analyst_token. The agent cannot mutate proposal fields between approval
@@ -1894,5 +1912,20 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
         `Decision may be incomplete. If this happens repeatedly, raise the cap or audit ` +
         `which tool the agent is looping on.`,
     );
+
+    // Fire Telegram alert ONCE per UTC day to surface sustained timeouts
+    // without spamming on a single bad-day run.
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+    if (lastIctTimeoutAlertDate !== today) {
+      lastIctTimeoutAlertDate = today;
+      const lastToolsForAlert = lastIterToolNames.join(',') || '(none)';
+      alertSystemWarning(
+        `⚠️ ICT cycle hit iteration cap (${maxIterations}). ` +
+          `Last iter tools: ${lastToolsForAlert}. ${totalToolCalls} total tool calls. ` +
+          `Decision may be incomplete. Check pm2-err.log for full context.`,
+      ).catch(() => {
+        /* alert failure non-blocking */
+      });
+    }
   }
 }

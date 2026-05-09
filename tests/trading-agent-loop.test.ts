@@ -76,6 +76,8 @@ import {
   executeTool,
   _setExecuteToolImpl,
   _resetExecuteToolImpl,
+  _resetIctTimeoutAlertDate,
+  _getIctTimeoutAlertDate,
 } from '../src/agents/trading-agent.js';
 
 describe('runTradingAgent loop — smoke test', () => {
@@ -295,5 +297,67 @@ describe('stop_reason handling', () => {
     const errorCalls = consoleErrorSpy.mock.calls.map((c) => c[0] as string);
     const timeoutLog = errorCalls.find((c) => c.includes('CYCLE TIMED OUT'));
     expect(timeoutLog).toMatch(/Last stop_reason: max_tokens/);
+  });
+});
+
+describe('Telegram dedup per UTC day', () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
+  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockMessagesCreate.mockReset();
+    mockAlertSystemWarning.mockReset().mockResolvedValue(undefined);
+    _resetIctTimeoutAlertDate();
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    consoleWarnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    consoleLogSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    process.env.ICT_AGENT_MAX_ITER = '2'; // small cap = fast timeout
+    mockMessagesCreate.mockResolvedValue({
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'x', name: 'get_daily_pnl', input: {} }],
+    });
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
+    consoleLogSpy.mockRestore();
+    delete process.env.ICT_AGENT_MAX_ITER;
+    vi.useRealTimers();
+  });
+
+  it('dedups alerts: first per UTC day fires, same-day suppressed, next UTC day re-fires', async () => {
+    vi.useFakeTimers();
+
+    // First timeout 2026-05-08 UTC — alert should fire
+    vi.setSystemTime(new Date('2026-05-08T10:00:00Z'));
+    await runTradingAgent();
+    expect(mockAlertSystemWarning).toHaveBeenCalledTimes(1);
+    expect(_getIctTimeoutAlertDate()).toBe('2026-05-08');
+
+    // Second timeout same UTC day — alert suppressed
+    vi.setSystemTime(new Date('2026-05-08T14:00:00Z'));
+    await runTradingAgent();
+    expect(mockAlertSystemWarning).toHaveBeenCalledTimes(1);
+
+    // Third timeout next UTC day — alert re-fires
+    vi.setSystemTime(new Date('2026-05-09T01:00:00Z'));
+    await runTradingAgent();
+    expect(mockAlertSystemWarning).toHaveBeenCalledTimes(2);
+    expect(_getIctTimeoutAlertDate()).toBe('2026-05-09');
+  });
+
+  it('alert payload includes cap, last-iter tools, and total tool calls', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-05-08T10:00:00Z'));
+
+    await runTradingAgent();
+
+    expect(mockAlertSystemWarning).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /ICT cycle hit iteration cap \(2\)\..*Last iter tools: get_daily_pnl\..*\d+ total tool calls/,
+      ),
+    );
   });
 });
