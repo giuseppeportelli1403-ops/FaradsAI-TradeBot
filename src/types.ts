@@ -232,6 +232,10 @@ export interface Sentiment {
 
 // ==================== TRADE RECORDS ====================
 
+/**
+ * Trade lifecycle status.
+ * @deprecated `'tp2_hit'` since 2026-05-08 — no new code transitions to this state after Phase 1 of the 3-leg removal. Phase 2 will drop it from this union and from the DB CHECK constraint. See docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md.
+ */
 export type TradeStatus =
   | 'open'
   | 'tp1_hit'
@@ -266,17 +270,21 @@ export interface TradeRecord {
   sl: number;
   tp1: number;
   tp2: number;
-  tp3: number | null;                // NEW 2026-04-21: Leg C target; null on legacy 2-leg rows
+  /** @deprecated since 2026-05-08 — Phase 1 stopped writing/reading this; Phase 2 will drop the column from schema and remove from this type. See docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md. (Originally added 2026-04-21: Leg C target; null on legacy 2-leg rows.) */
+  tp3: number | null;
   position_a_id: string;
   position_b_id: string;
-  position_c_id: string | null;      // NEW: nullable for legacy 2-leg rows
+  /** @deprecated since 2026-05-08 — Phase 1 stopped writing/reading this; Phase 2 will drop the column from schema and remove from this type. See docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md. (Originally nullable for legacy 2-leg rows.) */
+  position_c_id: string | null;
   size_a: number;
   size_b: number;
-  size_c: number | null;             // NEW: nullable for legacy 2-leg rows
+  /** @deprecated since 2026-05-08 — Phase 1 stopped writing/reading this; Phase 2 will drop the column from schema and remove from this type. See docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md. (Originally nullable for legacy 2-leg rows.) */
+  size_c: number | null;
   status: TradeStatus;
   pnl_a: number | null;
   pnl_b: number | null;
-  pnl_c: number | null;              // NEW: Leg C P&L (only populated after C closes)
+  /** @deprecated since 2026-05-08 — Phase 1 stopped writing/reading this; Phase 2 will drop the column from schema and remove from this type. See docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md. (Originally Leg C P&L, only populated after C closes.) */
+  pnl_c: number | null;
   pnl_total: number | null;
   composite_score: number;
   kill_zone: string;
@@ -306,10 +314,12 @@ export interface Lesson {
   composite_score: number;
   position_a_outcome: string;
   position_b_outcome: string;
-  position_c_outcome: string | null;   // NEW 2026-04-21: null on legacy 2-leg lessons
+  /** @deprecated since 2026-05-08 — Phase 1 stopped writing/reading this; Phase 2 will drop the column from schema and remove from this type. See docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md. (Originally added 2026-04-21: null on legacy 2-leg lessons.) */
+  position_c_outcome: string | null;
   pnl_a_r: number;
   pnl_b_r: number;
-  pnl_c_r: number | null;              // NEW: Leg C P&L in R units
+  /** @deprecated since 2026-05-08 — Phase 1 stopped writing/reading this; Phase 2 will drop the column from schema and remove from this type. See docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md. (Originally Leg C P&L in R units.) */
+  pnl_c_r: number | null;
   pnl_total_r: number;
   was_bias_correct: boolean;
   was_trigger_valid: boolean;
