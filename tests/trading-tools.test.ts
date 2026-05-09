@@ -137,6 +137,13 @@ describe('normaliseTradePayload (log_trade MCP wrapper)', () => {
 
   it('handles the full 2026-04-22 failure payload end-to-end', () => {
     // Literal subset of the payload that failed three times that afternoon.
+    // Trimmed to 2-leg shape after the 2026-05-08 Phase 1 3-leg removal —
+    // the original payload also had position_c_id/tp3/size_c, but those
+    // fields are no longer accepted by the placement surface (the runtime
+    // guard `_assertTwoLegOnly` rejects them) so they are omitted here.
+    // Removing them does not affect the normalisation assertions below
+    // (id/strategy_tag/status/closure_reason/entry) — those touch unrelated
+    // fields.
     const agentPayload = {
       timestamp: '2026-04-22T14:21:19Z',
       strategy: 'ICT_INTRADAY',
@@ -148,16 +155,13 @@ describe('normaliseTradePayload (log_trade MCP wrapper)', () => {
       setup_type: 'OB_retest',
       position_a_id: '000154c4-0029-065e-0000-000080e2f5eb',
       position_b_id: '000154c4-0029-065e-0000-000080e2f5ed',
-      position_c_id: '000154c4-0029-065e-0000-000080e2f5ef',
       intended_entry: 159.333,
       actual_entry: 159.187,
       sl: 159.42,
       tp1: 159.15,
       tp2: 159.07,
-      tp3: 158.99,
       size_a: 6200,
       size_b: 6000,
-      size_c: 6000,
       status: 'closed_rr_violation',
       closure_reason: 'Fill slippage of 14.6 pips from analyzed entry to actual fill',
     };

@@ -318,16 +318,15 @@ export function registerTradingTools(server: McpServer): void {
     'log_trade',
     {
       title: 'Log Trade to Database',
-      description: 'Save a complete trade record (3 legs A/B/C targeting TP1/TP2/TP3) to the database and create SL/TP monitoring entries for the scheduler. Accepts Capital.com dealIds for audit linkage. Legacy 2-leg trades still work — omit size_c/tp3/position_c_deal_id and only A+B rows are created.',
+      description: 'Save a 2-leg trade record (legs A/B targeting TP1/TP2) to the database and create SL/TP monitoring entries for the scheduler. Accepts Capital.com dealIds for audit linkage. 3-leg trades are no longer supported (Phase 1 3-leg removal, 2026-05-08).',
       inputSchema: {
-        trade_data: z.string().describe('JSON string of full trade record: id, instrument, direction, size_a, size_b, size_c?, sl, tp1, tp2, tp3?, position_a_id, position_b_id, position_c_id?, composite_score, kill_zone, setup_type'),
+        trade_data: z.string().describe('JSON string of full 2-leg trade record: id, instrument, direction, size_a, size_b, sl, tp1, tp2, position_a_id, position_b_id, composite_score, kill_zone, setup_type'),
         position_a_deal_id: z.string().optional().describe('Capital.com dealId of Position A (Leg A, targets TP1, from place_order confirmation)'),
         position_b_deal_id: z.string().optional().describe('Capital.com dealId of Position B (Leg B, targets TP2)'),
-        position_c_deal_id: z.string().optional().describe('Capital.com dealId of Position C (Leg C, targets TP3). Omit on legacy 2-leg trades.'),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    wrapTool('log_trade', async ({ trade_data, position_a_deal_id, position_b_deal_id, position_c_deal_id }) => {
+    wrapTool('log_trade', async ({ trade_data, position_a_deal_id, position_b_deal_id }) => {
       let rawParsed: Record<string, unknown>;
       try {
         rawParsed = JSON.parse(trade_data);
@@ -340,8 +339,10 @@ export function registerTradingTools(server: McpServer): void {
 
       // Phase 1 3-leg removal — runtime guard. Reject any caller that still
       // passes `size_c` or `tp3` (LLM regression, stale prompt, hand-rolled
-      // MCP request). Must run before any other logic, including the legacy
-      // 3-leg branch below (Task 3 will delete that branch).
+      // MCP request). Defense in depth: the input schema no longer documents
+      // these fields and the legacy 3-leg branch below has been deleted
+      // (Task 3, 2026-05-08), but the guard remains in case a stale caller
+      // bypasses the schema entirely.
       _assertTwoLegOnly(rawParsed);
 
       // Bridge agent payload quirks (strategy vs strategy_tag, missing id,
@@ -376,24 +377,6 @@ export function registerTradingTools(server: McpServer): void {
         deal_id: position_b_deal_id,
       } as Parameters<typeof createSlTpOrder>[0]);
 
-      // Leg C (3-leg trades only) — create if size_c + tp3 are both provided.
-      // Omitting either keeps this a legacy 2-leg record.
-      const hasLegC =
-        parsed.size_c !== undefined && parsed.size_c !== null &&
-        parsed.tp3 !== undefined && parsed.tp3 !== null;
-      if (hasLegC) {
-        createSlTpOrder({
-          trade_id: parsed.id as string,
-          leg: 'C',
-          instrument: parsed.instrument as string,
-          direction: parsed.direction as 'long' | 'short',
-          quantity: parsed.size_c as number,
-          sl_price: parsed.sl as number,
-          tp_price: parsed.tp3 as number,
-          deal_id: position_c_deal_id,
-        } as Parameters<typeof createSlTpOrder>[0]);
-      }
-
       return {
         content: [{
           type: 'text' as const,
@@ -402,8 +385,7 @@ export function registerTradingTools(server: McpServer): void {
             trade_id: parsed.id,
             position_a_deal_id: position_a_deal_id ?? null,
             position_b_deal_id: position_b_deal_id ?? null,
-            position_c_deal_id: hasLegC ? (position_c_deal_id ?? null) : null,
-            legs_registered: hasLegC ? 3 : 2,
+            legs_registered: 2,
           }),
         }],
       };
