@@ -15,6 +15,7 @@ import {
   _normaliseTradePayload,
   _placeOrderInputSchema,
   _placeOrderHandler,
+  _assertTwoLegOnly,
 } from '../src/mcp-server/tools/trading-tools.js';
 
 describe('normaliseTradePayload (log_trade MCP wrapper)', () => {
@@ -262,5 +263,73 @@ describe('place_order tool (P1 — limit-only)', () => {
     expect(body.workingOrderId).toBe('WO-P1');
     expect(body.dealReference).toBe('REF-P1');
     expect(body.note).toContain('auto-cancel');
+  });
+});
+
+// ==================== Phase 1 — 3-leg placement runtime guard ====================
+//
+// Context: 2026-05-08 Phase 1 of the 3-leg removal. Even after the analyst
+// prompt was reduced to a 2-leg ladder (Phase 2, 2026-05-07), the MCP
+// placement surface still happily creates a Leg C if any caller passes
+// `size_c + tp3`. A stale prompt revision, a hand-rolled MCP request, or an
+// LLM regression could re-introduce a 3-leg trade. This guard fails loudly
+// at the top of the executor before any other logic.
+//
+// The fixture builder mirrors the codebase's existing pattern of testing
+// exported pure functions (`_placeOrderHandler`, `_normaliseTradePayload`)
+// rather than booting an MCP server. `_assertTwoLegOnly` is the guard —
+// the executor calls it first, then proceeds to schema parsing / DB binds.
+
+function makePlaceSplitTradeTool(): { executor: (args: Record<string, unknown>) => Promise<unknown> } {
+  return {
+    executor: async (args) => {
+      _assertTwoLegOnly(args);
+      // Past the guard → in a real executor, the rest (schema parse,
+      // broker call, DB write) would run. Tests for the guard short-circuit
+      // here; the third "proceeds normally" case asserts the error
+      // message did NOT match, regardless of any downstream throw.
+      return { ok: true };
+    },
+  };
+}
+
+describe('place_split_trade — Phase 1 3-leg guard', () => {
+  it('throws when size_c is non-null', async () => {
+    const tool = makePlaceSplitTradeTool();
+    await expect(
+      tool.executor({
+        instrument: 'GOLD', direction: 'long',
+        entry: 4735, sl: 4723, tp1: 4748, tp2: 4751,
+        size_a: 0.56, size_b: 0.24,
+        size_c: 0.1, // <-- triggers guard
+      } as any),
+    ).rejects.toThrow(/3-leg placement is no longer supported/);
+  });
+
+  it('throws when tp3 is non-null', async () => {
+    const tool = makePlaceSplitTradeTool();
+    await expect(
+      tool.executor({
+        instrument: 'GOLD', direction: 'long',
+        entry: 4735, sl: 4723, tp1: 4748, tp2: 4751,
+        size_a: 0.56, size_b: 0.24,
+        tp3: 4760, // <-- triggers guard
+      } as any),
+    ).rejects.toThrow(/3-leg placement is no longer supported/);
+  });
+
+  it('proceeds normally when size_c and tp3 are null/undefined', async () => {
+    const tool = makePlaceSplitTradeTool();
+    let err: unknown;
+    try {
+      await tool.executor({
+        instrument: 'GOLD', direction: 'long',
+        entry: 4735, sl: 4723, tp1: 4748, tp2: 4751,
+        size_a: 0.56, size_b: 0.24,
+      } as any);
+    } catch (e) { err = e; }
+    if (err) {
+      expect(String(err)).not.toMatch(/3-leg placement is no longer supported/);
+    }
   });
 });

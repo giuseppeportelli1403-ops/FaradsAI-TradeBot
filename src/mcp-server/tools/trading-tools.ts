@@ -70,6 +70,28 @@ function normaliseTradePayload(raw: Record<string, unknown>): Record<string, unk
 // Exported for tests only.
 export const _normaliseTradePayload = normaliseTradePayload;
 
+/**
+ * Phase 1 3-leg removal — runtime guard. Phase 2 (2026-05-07) collapsed the
+ * ICT ladder from 3 legs to 2, but the MCP placement surface still happily
+ * creates a Leg C if any caller passes `size_c + tp3`. A stale prompt
+ * revision, a hand-rolled MCP request, or an LLM regression could
+ * re-introduce a 3-leg trade silently. This guard fails loudly before any
+ * other logic runs (schema parse, broker call, DB bind).
+ *
+ * Both `null` and `undefined` are treated as "absent" via `!= null`.
+ *
+ * Spec: docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md
+ */
+export function _assertTwoLegOnly(args: Record<string, unknown> | null | undefined): void {
+  if (!args) return;
+  if (args.size_c != null || args.tp3 != null) {
+    throw new Error(
+      'place_split_trade: 3-leg placement is no longer supported. ' +
+      'size_c/tp3 must be null/undefined. See docs/superpowers/specs/2026-05-08-3-leg-removal-phase-1-design.md.',
+    );
+  }
+}
+
 // ==================== P1 — place_order LIMIT handler ====================
 //
 // Extracted as a pure function (takes the Capital client as an argument)
@@ -315,6 +337,12 @@ export function registerTradingTools(server: McpServer): void {
           isError: true,
         } as { content: Array<{ type: 'text'; text: string }> };
       }
+
+      // Phase 1 3-leg removal — runtime guard. Reject any caller that still
+      // passes `size_c` or `tp3` (LLM regression, stale prompt, hand-rolled
+      // MCP request). Must run before any other logic, including the legacy
+      // 3-leg branch below (Task 3 will delete that branch).
+      _assertTwoLegOnly(rawParsed);
 
       // Bridge agent payload quirks (strategy vs strategy_tag, missing id,
       // actual_entry vs entry, non-enum close statuses) before DB bind.
