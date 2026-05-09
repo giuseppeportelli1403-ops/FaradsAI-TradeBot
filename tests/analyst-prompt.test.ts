@@ -23,4 +23,19 @@ describe('analyst-agent.md decision-rule calibration', () => {
     expect(promptText).toContain('MODIFY rate target: 5-15%');
     expect(promptText).toContain('REJECT rate target: 15-25%');
   });
+
+  it('contains the explicit DECISION RULE table + strict MODIFY clause', () => {
+    // The decision-rule table header
+    expect(promptText).toContain('DECISION RULE — pick exactly one');
+    // The strict-MODIFY-requires-non-empty-modifications rule
+    expect(promptText).toContain(
+      'MODIFY requires `modifications` to contain at least one specific proposal field',
+    );
+    // The "wait is REJECT not MODIFY" rule
+    expect(promptText).toContain('"Wait for X event to clear" is REJECT, not MODIFY');
+    // The "all-6-pass with concerns is APPROVE" rule
+    expect(promptText).toContain(
+      '"All 6 checks pass but I have qualitative concerns" is APPROVE, not MODIFY',
+    );
+  });
 });
