@@ -39,7 +39,6 @@ import { CapitalClient } from '../mcp-server/capital-client.js';
 import {
   alertTp1Hit as realAlertTp1Hit,
   alertTp2Hit as realAlertTp2Hit,
-  alertTp3Hit as realAlertTp3Hit,
   alertSlHit as realAlertSlHit,
   alertSystemWarning as realAlertSystemWarning,
 } from '../notifications/telegram.js';
@@ -75,7 +74,6 @@ export interface MonitorDeps {
   updateTradeStatus: typeof realUpdateTradeStatus;
   alertTp1Hit?: typeof realAlertTp1Hit;
   alertTp2Hit?: typeof realAlertTp2Hit;
-  alertTp3Hit?: typeof realAlertTp3Hit;   // NEW (3-leg): fired on Leg C TP
   alertSlHit?: typeof realAlertSlHit;
 }
 
@@ -275,7 +273,6 @@ function defaultMonitorDeps(): MonitorDeps {
     updateTradeStatus: realUpdateTradeStatus,
     alertTp1Hit: realAlertTp1Hit,
     alertTp2Hit: realAlertTp2Hit,
-    alertTp3Hit: realAlertTp3Hit,
     alertSlHit: realAlertSlHit,
   };
 }
@@ -575,7 +572,7 @@ export async function handleSlOnLeg(
       if (d.alertSlHit) await d.alertSlHit(trade);
     } else {
       // Partial-win close — use alertTp2Hit which already describes a
-      // completed trade with P&L. (alertTp3Hit is reserved for full TP3 wins.)
+      // completed trade with P&L.
       if (d.alertTp2Hit) await d.alertTp2Hit(trade);
     }
   } catch (e) {

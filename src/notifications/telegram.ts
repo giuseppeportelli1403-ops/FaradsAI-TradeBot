@@ -89,22 +89,6 @@ export async function alertTradePlaced(trade: TradeRecord): Promise<void> {
   const rrTp2 = riskDist > 0
     ? Math.abs((trade.tp2 - trade.entry) / riskDist).toFixed(1)
     : 'N/A';
-  // 3-leg alert format — show all 3 TPs + all 3 leg sizes. Legacy 2-leg
-  // trades (no tp3 / position_c_id / size_c) render a compact 2-leg block.
-  const isThreeLeg = trade.tp3 !== null && trade.tp3 !== undefined && trade.position_c_id;
-  const rrTp3 = isThreeLeg && riskDist > 0
-    ? Math.abs(((trade.tp3 as number) - trade.entry) / riskDist).toFixed(1)
-    : null;
-
-  const tpsLine = isThreeLeg
-    ? `TP1: ${trade.tp1} | TP2: ${trade.tp2} | TP3: ${trade.tp3}`
-    : `TP1: ${trade.tp1} | TP2: ${trade.tp2}`;
-  const legsLine = isThreeLeg
-    ? `Leg A: ${trade.size_a} | Leg B: ${trade.size_b} | Leg C: ${trade.size_c}`
-    : `Leg A: ${trade.size_a} units | Leg B: ${trade.size_b} units`;
-  const rrLine = isThreeLeg
-    ? `R:R to TP2: ${rrTp2}:1  ·  R:R to TP3: ${rrTp3}:1`
-    : `R:R to TP2: ${rrTp2}:1`;
 
   await send(`${emoji} *NEW TRADE — ${strategy}*
 
@@ -112,63 +96,32 @@ export async function alertTradePlaced(trade: TradeRecord): Promise<void> {
 Score: ${trade.composite_score}/100
 Entry: ${trade.entry}
 SL: ${trade.sl}
-${tpsLine}
-${legsLine}
-${rrLine}
+TP1: ${trade.tp1} | TP2: ${trade.tp2}
+Leg A: ${trade.size_a} units | Leg B: ${trade.size_b} units
+R:R to TP2: ${rrTp2}:1
 Setup: ${trade.setup_type}
 Kill Zone: ${trade.kill_zone}`);
 }
 
 export async function alertTp1Hit(trade: TradeRecord): Promise<void> {
-  // Leg A closed at TP1 — partial profit locked in, Legs B+C now risk-free
+  // Leg A closed at TP1 — partial profit locked in, Leg B now risk-free
   // at break-even. Trade still running.
-  const legCLine = trade.position_c_id
-    ? `Position C SL → BE (${trade.entry}), heading for TP3 (${trade.tp3})`
-    : ''; // Legacy 2-leg trade — no Leg C to report
   await send(`🎯 *TP1 HIT — ${trade.instrument}*
 
 Position A closed at TP1 (${trade.tp1})
 Position B SL → BE (${trade.entry}), heading for TP2 (${trade.tp2})
-${legCLine}
 Strategy: ${trade.strategy_tag}`);
 }
 
 export async function alertTp2Hit(trade: TradeRecord): Promise<void> {
-  // In 3-leg mode this is the MIDDLE milestone (Leg B hit TP2, Leg C trails).
-  // In 2-leg legacy mode OR a partial-win close (Leg B SL'd at BE after Leg A
-  // TP'd), this can also be the FINAL milestone. We pick the message based on
-  // whether the trade already has a closed_at timestamp.
+  // 2-leg full close: Leg A already TP'd, Leg B now closed at TP2.
+  // Or a partial-win finale (Leg B SL'd at BE after Leg A TP'd).
   const pnl = trade.pnl_total?.toFixed(2) || 'pending';
-  const isFinal = trade.closed_at !== null;
 
-  if (trade.position_c_id && !isFinal) {
-    // 3-leg interim: B closed at TP2, C still running with SL trailing to TP1.
-    await send(`🎯 *TP2 HIT — ${trade.instrument}*
-
-Position B closed at TP2 (${trade.tp2})
-Position C SL trailing to TP1 level (${trade.tp1}), heading for TP3 (${trade.tp3})
-Realised so far: ${pnl}R
-Strategy: ${trade.strategy_tag}`);
-  } else {
-    // Final close — either legacy 2-leg full close, or a partial-win finale
-    // (some leg SL'd after TPs).
-    await send(`🏆 *TRADE COMPLETE — ${trade.instrument}*
+  await send(`🏆 *TRADE COMPLETE — ${trade.instrument}*
 
 All legs closed.
 P&L: ${pnl}R
-Strategy: ${trade.strategy_tag}
-Duration: ${trade.opened_at} → ${trade.closed_at ?? 'now'}`);
-  }
-}
-
-// NEW 2026-04-21: fired when Leg C closes at TP3 (full trade complete at max R).
-export async function alertTp3Hit(trade: TradeRecord): Promise<void> {
-  const pnl = trade.pnl_total?.toFixed(2) || 'pending';
-  await send(`🏆🏆 *TP3 HIT — FULL TRADE COMPLETE AT MAX — ${trade.instrument}*
-
-All 3 legs closed at TP — the full A/B/C chain ran to max R.
-TP1: ${trade.tp1} | TP2: ${trade.tp2} | TP3: ${trade.tp3}
-P&L: ${pnl}R (maximum target achieved)
 Strategy: ${trade.strategy_tag}
 Duration: ${trade.opened_at} → ${trade.closed_at ?? 'now'}`);
 }
