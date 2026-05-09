@@ -762,14 +762,7 @@ import {
   deactivateSlTpOrder,
   enterCriticalSection, exitCriticalSection,
 } from '../database/index.js';
-import { CapitalClient } from '../mcp-server/capital-client.js';
-
-export const capital = new CapitalClient({
-  apiKey: process.env.CAPITAL_API_KEY || '',
-  identifier: process.env.CAPITAL_IDENTIFIER || '',
-  password: process.env.CAPITAL_API_KEY_PASSWORD || '',
-  baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
-});
+import { capital } from '../mcp-server/capital-singleton.js';
 
 async function getPreferredAccountBalance(): Promise<{ balance: number; deposit: number; profitLoss: number; available: number }> {
   const accounts = await capital.getAccounts();

@@ -176,7 +176,7 @@ const { mockGetMarketDetails } = vi.hoisted(() => ({
 }));
 
 // Mock the capital singleton — same module the scanner imports.
-vi.mock('../src/agents/trading-agent.js', () => ({
+vi.mock('../src/mcp-server/capital-singleton.js', () => ({
   capital: {
     getMarketDetails: mockGetMarketDetails,
   },
@@ -299,7 +299,7 @@ Expected: FAIL — `_getMinDealSizeFor`, `_resetMinDealSizeCache`, `_getMinDealS
 In `src/scanner/index.ts`, near the top of the file (with the existing imports), add:
 
 ```ts
-import { capital } from '../agents/trading-agent.js';
+import { capital } from '../mcp-server/capital-singleton.js';
 ```
 
 Near the existing `RANKING_TTL_MS` declaration (around line 240), add the cache + helper:
