@@ -445,9 +445,11 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
             composite_score: Math.max(0, Math.min(100, score)),
             bias: biasResult.bias as 'bullish' | 'bearish' | 'neutral',
             tier,
-            // Placeholder — Task 3 wires this to a real cache fetch via capital.getMarketDetails().
-            min_deal_size: null,
-          } satisfies RankedInstrument;
+            // min_deal_size populated post-loop via getMinDealSizeFor (L3b-2).
+            // Double-cast bridges the partial literal through the
+            // RankedInstrument type until the Promise.all augmentation
+            // below fills the field on every result before return.
+          } as Omit<RankedInstrument, 'min_deal_size'> as RankedInstrument;
         } catch (err) {
           // Per-instrument failures are expected (TD outage on a single
           // symbol, rate-limit queue timeout on one call, etc.) and the
@@ -475,6 +477,19 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
 
   // Sort by score descending, then cache the full list (slice on read).
   results.sort((a, b) => b.composite_score - a.composite_score);
-  rankingCache = { at: Date.now(), zone: killZone.zone, results };
-  return results.slice(0, limit);
+
+  // 2026-05-09 (L3b-2): augment each result with min_deal_size from the
+  // module-level cache. Promise.all means the 7-instrument universe fetches
+  // concurrently on cold cache; subsequent cycles return instantly from
+  // the in-memory map. The agent now sees min_deal_size in
+  // get_ranked_instruments output and can run the L0 feasibility check
+  // before requesting analyst review for an oversized-notional candidate.
+  const augmented: RankedInstrument[] = await Promise.all(
+    results.map(async (r) => ({
+      ...r,
+      min_deal_size: await getMinDealSizeFor(r.ticker),
+    })),
+  );
+  rankingCache = { at: Date.now(), zone: killZone.zone, results: augmented };
+  return augmented.slice(0, limit);
 }
