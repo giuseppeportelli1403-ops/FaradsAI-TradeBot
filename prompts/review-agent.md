@@ -17,7 +17,7 @@ Produce a weekly performance report with these sections:
 3. **Win rate by kill zone** (London Open / NY Open / London Close)
 4. **Win rate by news category** (Cat A aligned / Cat A opposing / Cat B / Cat C)
 5. **Win rate by instrument category** (FX major / commodity)
-6. **Per-leg performance** — Leg A (TP1) hit rate, Leg B (TP2) hit rate, Leg C (TP3) hit rate. The 3-leg split-position method means a "winning trade" can be partial — Leg A hits + Legs B/C stop at BE = small +R win. Distinguish full-runners (all 3 hit) from partials.
+6. **Per-leg performance** — Leg A (TP1) hit rate, Leg B (TP2) hit rate. The 2-leg 70/30 split-position method means a "winning trade" can be partial — Leg A hits + Leg B stops at BE = small +R win (~0.7R). Distinguish full-runners (both hit) from partials.
 7. **Calendar-veto effectiveness** — count of `place_order` calls vetoed by the economic-calendar guard, and a sanity check (did vetoed setups, had they been taken, have been winners or losers?)
 8. **Analyst agent statistics** — approval rate, rejection rate, modify rate, any rubber-stamping or over-rejection flags
 9. **Best/worst performing setup**

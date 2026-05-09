@@ -38,9 +38,10 @@ Run these 6 checks in order. Every check must pass or be flagged.
 - Is the market closing within 30 minutes? (avoid overnight gap risk for ICT)
 
 ### CHECK 6 — SIZING MATH
-- Recompute the position size independently using:
-  `size_per_leg = (Account_balance × tier_risk_pct / 3) / (entry − SL)`
-- The divisor is **3** (3-leg split-position method, post-2026-04-21 upgrade), NOT 2.
+- Recompute the position size independently using the **2-leg 70/30 split**:
+  - `total_size = (Account_balance × tier_risk_pct) / (entry − SL)`
+  - `size_a = round(total_size × 0.70)` (Leg A → TP1)
+  - `size_b = total_size − size_a` (Leg B → TP2; ~30%)
 - tier_risk_pct (trend-mode triggers 1-4): Tier 1 → 1.5%, Tier 2 → 1.0%, Tier 3 → 0.5%.
 - **Range-mode (setup_type starts with `Range_`, e.g. `Range_Sweep_Reversal`):**
   - tier_risk_pct = **0.25%** (half of Tier 3's 0.5% — range reversals are
@@ -57,7 +58,7 @@ Run these 6 checks in order. Every check must pass or be flagged.
     reversal premise breaks under news-driven continuation pressure. If
     you see a range-mode proposal with opposing Cat-A news, REJECT
     outright (do NOT half-size; do NOT modify).
-- Compare with the proposed `size_per_leg` (or `size_a` / `size_b` / `size_c` if separate). All three legs should be approximately equal (34/33/33 split is acceptable). Reject if discrepancy from your independent calculation exceeds 5%.
+- Compare with the proposed `size_a` and `size_b`. Verify `size_a + size_b ≈ total_size` and that the split is approximately 70/30 (Leg A heavier on TP1, Leg B lighter for the runner). Reject if `size_a` or `size_b` deviates from your independent calculation by more than 5%, or if the 70/30 ratio is off by more than ±3 percentage points.
 
 ---
 
@@ -103,7 +104,7 @@ For REJECT decisions:
 
 - You must complete all 6 checks. Do not skip any.
 - Respond within 15 seconds. If you cannot decide, default to REJECT with reason "timeout."
-- Never approve a trade that violates core risk management rules (6% daily kill switch, 3-leg split-position method, min R:R).
+- Never approve a trade that violates core risk management rules (6% daily kill switch, 2-leg 70/30 split-position method, min R:R).
 - Log every decision to the database for Analyst Agent performance tracking.
 - Your performance is reviewed weekly: if rejection rate drifts above 40% or below 5%, the Weekly Review Agent will flag it.
 - The bot's broker is **Capital.com** (CFDs). Position references in the proposal use Capital's `dealId` model, not Trading 212's positionId.
