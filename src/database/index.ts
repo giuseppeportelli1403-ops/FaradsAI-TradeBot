@@ -183,16 +183,199 @@ function rebuildTradesTable(): void {
   }
 }
 
+// 2026-05-09 Phase 2 of 3-leg removal: drops tp3/position_c_id/size_c/pnl_c
+// columns, drops 'tp2_hit' from status CHECK, drops 'C' from sl_tp_orders.leg
+// CHECK, drops position_c_outcome/pnl_c_r from lessons. Idempotent: each
+// rebuild's guard exits early once the new schema is in place. See
+// docs/superpowers/specs/2026-05-09-3-leg-removal-phase-2-design.md.
+function rebuildTradesTablePhase2(): void {
+  const cols = db.exec('PRAGMA table_info(trades)')[0]?.values.map((r) => String(r[1])) ?? [];
+  const stillHas3LegCols = cols.includes('tp3') || cols.includes('position_c_id')
+    || cols.includes('size_c') || cols.includes('pnl_c');
+  const checkSql = String(db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='trades'")[0]?.values[0]?.[0] ?? '');
+  const stillHasTp2Hit = checkSql.includes("'tp2_hit'");
+  if (!stillHas3LegCols && !stillHasTp2Hit) return;
+
+  console.log("[DB Migration] Phase 2: dropping tp3/position_c_id/size_c/pnl_c columns + 'tp2_hit' status");
+  db.run('PRAGMA foreign_keys = OFF');
+  db.run('BEGIN TRANSACTION');
+  try {
+    db.run("UPDATE trades SET status='closed_early' WHERE status='tp2_hit'");
+    db.run('ALTER TABLE trades RENAME TO trades_old_phase2');
+    db.run(`
+      CREATE TABLE trades (
+        id TEXT PRIMARY KEY,
+        strategy_tag TEXT NOT NULL CHECK(strategy_tag IN ('ICT_INTRADAY', 'SWING')),
+        instrument TEXT NOT NULL,
+        instrument_category TEXT NOT NULL,
+        direction TEXT NOT NULL CHECK(direction IN ('long', 'short')),
+        setup_type TEXT NOT NULL,
+        entry REAL NOT NULL,
+        sl REAL NOT NULL,
+        tp1 REAL NOT NULL,
+        tp2 REAL NOT NULL,
+        position_a_id TEXT,
+        position_b_id TEXT,
+        size_a REAL NOT NULL,
+        size_b REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'complete', 'sl_hit', 'closed_early')),
+        pnl_a REAL,
+        pnl_b REAL,
+        pnl_total REAL,
+        composite_score INTEGER NOT NULL,
+        kill_zone TEXT,
+        news_category TEXT,
+        analyst_decision TEXT,
+        reasoning TEXT,
+        closure_reason TEXT,
+        opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+        closed_at TEXT
+      )
+    `);
+    db.run(`
+      INSERT INTO trades (
+        id, strategy_tag, instrument, instrument_category, direction, setup_type,
+        entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status,
+        pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category,
+        analyst_decision, reasoning, closure_reason, opened_at, closed_at
+      )
+      SELECT
+        id, strategy_tag, instrument, instrument_category, direction, setup_type,
+        entry, sl, tp1, tp2, position_a_id, position_b_id, size_a, size_b, status,
+        pnl_a, pnl_b, pnl_total, composite_score, kill_zone, news_category,
+        analyst_decision, reasoning, closure_reason, opened_at, closed_at
+      FROM trades_old_phase2
+    `);
+    db.run('DROP TABLE trades_old_phase2');
+    db.run('CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_tag)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_trades_instrument ON trades(instrument)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_trades_opened ON trades(opened_at)');
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK');
+    throw err;
+  } finally {
+    db.run('PRAGMA foreign_keys = ON');
+  }
+}
+
+function rebuildLessonsTablePhase2(): void {
+  const cols = db.exec('PRAGMA table_info(lessons)')[0]?.values.map((r) => String(r[1])) ?? [];
+  if (!cols.includes('position_c_outcome') && !cols.includes('pnl_c_r')) return;
+
+  console.log('[DB Migration] Phase 2: dropping position_c_outcome/pnl_c_r columns from lessons');
+  db.run('BEGIN TRANSACTION');
+  try {
+    db.run('ALTER TABLE lessons RENAME TO lessons_old_phase2');
+    db.run(`
+      CREATE TABLE lessons (
+        lesson_id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+        strategy_tag TEXT NOT NULL,
+        instrument TEXT NOT NULL,
+        instrument_category TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        setup_type TEXT NOT NULL,
+        kill_zone TEXT,
+        hold_duration TEXT,
+        news_category TEXT,
+        news_description TEXT,
+        composite_score INTEGER,
+        analyst_decision TEXT,
+        position_a_outcome TEXT,
+        position_b_outcome TEXT,
+        pnl_a_r REAL,
+        pnl_b_r REAL,
+        pnl_total_r REAL,
+        was_bias_correct INTEGER,
+        was_trigger_valid INTEGER,
+        was_news_correctly_weighted INTEGER,
+        was_split_execution_clean INTEGER,
+        score_accuracy_notes TEXT,
+        lesson TEXT NOT NULL,
+        rule_suggestion TEXT
+      )
+    `);
+    db.run(`
+      INSERT INTO lessons (
+        lesson_id, timestamp, strategy_tag, instrument, instrument_category, direction,
+        setup_type, kill_zone, hold_duration, news_category, news_description,
+        composite_score, analyst_decision, position_a_outcome, position_b_outcome,
+        pnl_a_r, pnl_b_r, pnl_total_r, was_bias_correct, was_trigger_valid,
+        was_news_correctly_weighted, was_split_execution_clean, score_accuracy_notes,
+        lesson, rule_suggestion
+      )
+      SELECT
+        lesson_id, timestamp, strategy_tag, instrument, instrument_category, direction,
+        setup_type, kill_zone, hold_duration, news_category, news_description,
+        composite_score, analyst_decision, position_a_outcome, position_b_outcome,
+        pnl_a_r, pnl_b_r, pnl_total_r, was_bias_correct, was_trigger_valid,
+        was_news_correctly_weighted, was_split_execution_clean, score_accuracy_notes,
+        lesson, rule_suggestion
+      FROM lessons_old_phase2
+    `);
+    db.run('DROP TABLE lessons_old_phase2');
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK');
+    throw err;
+  }
+}
+
+function rebuildSlTpOrdersTablePhase2(): void {
+  const checkSql = String(db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='sl_tp_orders'")[0]?.values[0]?.[0] ?? '');
+  const stillAllowsLegC = checkSql.includes("'C'");
+  if (!stillAllowsLegC) return;
+
+  console.log("[DB Migration] Phase 2: dropping leg='C' from sl_tp_orders + deleting historical Leg C rows");
+  db.run('PRAGMA foreign_keys = OFF');
+  db.run('BEGIN TRANSACTION');
+  try {
+    db.run("DELETE FROM sl_tp_orders WHERE leg='C'");
+    db.run('ALTER TABLE sl_tp_orders RENAME TO sl_tp_orders_old_phase2');
+    db.run(`
+      CREATE TABLE sl_tp_orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trade_id TEXT NOT NULL,
+        leg TEXT NOT NULL CHECK(leg IN ('A', 'B')),
+        instrument TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        quantity REAL NOT NULL,
+        sl_price REAL,
+        tp_price REAL,
+        trailing_stop_distance REAL,
+        deal_id TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        triggered_at TEXT,
+        FOREIGN KEY (trade_id) REFERENCES trades(id)
+      )
+    `);
+    db.run(`
+      INSERT INTO sl_tp_orders (id, trade_id, leg, instrument, direction, quantity, sl_price, tp_price, trailing_stop_distance, deal_id, is_active, created_at, triggered_at)
+      SELECT id, trade_id, leg, instrument, direction, quantity, sl_price, tp_price, trailing_stop_distance, deal_id, is_active, created_at, triggered_at
+      FROM sl_tp_orders_old_phase2
+    `);
+    db.run('DROP TABLE sl_tp_orders_old_phase2');
+    db.run('CREATE INDEX IF NOT EXISTS idx_sl_tp_active ON sl_tp_orders(is_active)');
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK');
+    throw err;
+  } finally {
+    db.run('PRAGMA foreign_keys = ON');
+  }
+}
+
 function createTables(): void {
-  // 3-leg split-position architecture (upgraded from 2-leg on 2026-04-21):
-  //   Leg A (partial: size_a) closes at TP1 → status = tp1_hit, SL of B+C moved to entry
-  //   Leg B (partial: size_b) closes at TP2 → status = tp2_hit, SL of C moved to TP1 level
-  //   Leg C (partial: size_c) closes at TP3 → status = complete
-  //   Any leg hitting SL → status = sl_hit (logged even if A/B already closed at TP)
-  //
-  // tp3 / position_c_id / size_c / pnl_c are nullable to accommodate legacy
-  // 2-leg rows from before the upgrade. New rows always populate all three
-  // legs (see insertTrade defensive defaults).
+  // 2-leg split-position architecture (Phase 2 of 2026-05-07; 3-leg legacy
+  // removed in Phase 1 (2026-05-08) and Phase 2 (2026-05-09)):
+  //   Leg A (size_a, ~70%) closes at TP1 → status = tp1_hit, SL of B moved to BE+offset
+  //   Leg B (size_b, ~30%) closes at TP2 → status = complete
+  //   Any leg hitting SL → status = sl_hit (logged even if A already closed at TP)
+  // Historical context: tp3/position_c_id/size_c/pnl_c columns + tp2_hit
+  // status existed in the 3-leg era; both removed in Phase 2.
   db.run(`
     CREATE TABLE IF NOT EXISTS trades (
       id TEXT PRIMARY KEY,
@@ -205,17 +388,13 @@ function createTables(): void {
       sl REAL NOT NULL,
       tp1 REAL NOT NULL,
       tp2 REAL NOT NULL,
-      tp3 REAL,
       position_a_id TEXT,
       position_b_id TEXT,
-      position_c_id TEXT,
       size_a REAL NOT NULL,
       size_b REAL NOT NULL,
-      size_c REAL,
-      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit', 'closed_early')),
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'tp1_hit', 'complete', 'sl_hit', 'closed_early')),
       pnl_a REAL,
       pnl_b REAL,
-      pnl_c REAL,
       pnl_total REAL,
       composite_score INTEGER NOT NULL,
       kill_zone TEXT,
@@ -245,10 +424,8 @@ function createTables(): void {
       analyst_decision TEXT,
       position_a_outcome TEXT,
       position_b_outcome TEXT,
-      position_c_outcome TEXT,
       pnl_a_r REAL,
       pnl_b_r REAL,
-      pnl_c_r REAL,
       pnl_total_r REAL,
       was_bias_correct INTEGER,
       was_trigger_valid INTEGER,
@@ -286,7 +463,7 @@ function createTables(): void {
     CREATE TABLE IF NOT EXISTS sl_tp_orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       trade_id TEXT NOT NULL,
-      leg TEXT NOT NULL CHECK(leg IN ('A', 'B', 'C')),
+      leg TEXT NOT NULL CHECK(leg IN ('A', 'B')),
       instrument TEXT NOT NULL,
       direction TEXT NOT NULL,
       quantity REAL NOT NULL,
@@ -314,61 +491,42 @@ function createTables(): void {
     db.run('ALTER TABLE sl_tp_orders ADD COLUMN deal_id TEXT');
   }
 
-  // 3-leg schema migration: add tp3/position_c_id/size_c/pnl_c if missing.
+  // Legacy 3-leg add-column migrations removed in Phase 2 (2026-05-09).
+  // Phase 2 rebuild functions below (rebuildTradesTablePhase2 etc.) drop
+  // those columns; re-adding them on every boot would silently undo the
+  // migration. closure_reason is the only remaining add-column migration —
+  // it's an independent column unrelated to the 3-leg surface.
   const tradesCols = db.exec('PRAGMA table_info(trades)');
   const existingTradesCols = tradesCols[0]
     ? tradesCols[0].values.map((row) => row[1] as string)
     : [];
-  if (!existingTradesCols.includes('tp3')) {
-    db.run('ALTER TABLE trades ADD COLUMN tp3 REAL');
-  }
-  if (!existingTradesCols.includes('position_c_id')) {
-    db.run('ALTER TABLE trades ADD COLUMN position_c_id TEXT');
-  }
-  if (!existingTradesCols.includes('size_c')) {
-    db.run('ALTER TABLE trades ADD COLUMN size_c REAL');
-  }
-  if (!existingTradesCols.includes('pnl_c')) {
-    db.run('ALTER TABLE trades ADD COLUMN pnl_c REAL');
-  }
   // 2026-04-23: closure_reason captures why an agent closed a trade before
   // any TP/SL trigger (e.g. fill-slippage R:R violation). Nullable; null on
-  // legacy rows and on trades that exit cleanly via tp1_hit/tp2_hit/complete/
-  // sl_hit.
+  // legacy rows and on trades that exit cleanly via tp1_hit/complete/sl_hit.
   if (!existingTradesCols.includes('closure_reason')) {
     db.run('ALTER TABLE trades ADD COLUMN closure_reason TEXT');
   }
 
-  // Lessons table: add position_c_outcome, pnl_c_r for 3-leg reflection.
-  const lessonsCols = db.exec('PRAGMA table_info(lessons)');
-  const existingLessonsCols = lessonsCols[0]
-    ? lessonsCols[0].values.map((row) => row[1] as string)
-    : [];
-  if (!existingLessonsCols.includes('position_c_outcome')) {
-    db.run('ALTER TABLE lessons ADD COLUMN position_c_outcome TEXT');
-  }
-  if (!existingLessonsCols.includes('pnl_c_r')) {
-    db.run('ALTER TABLE lessons ADD COLUMN pnl_c_r REAL');
-  }
-
-  // CHECK-constraint changes cannot be done via ALTER TABLE in SQLite. Three
-  // constraint changes so far:
+  // CHECK-constraint changes cannot be done via ALTER TABLE in SQLite. For
+  // pre-existing DBs with older constraints, we rebuild via the standard
+  // SQLite pattern: create new with updated schema, copy data, drop old,
+  // rename. Each rebuild is idempotent.
+  // Constraint history:
   //   - sl_tp_orders.leg: 'A'|'B' → 'A'|'B'|'C'              (2026-04-21)
   //   - trades.status:    added 'tp2_hit'                     (2026-04-21)
   //   - trades.status:    added 'closed_early'                (2026-04-23)
-  // For pre-existing DBs with older constraints, we rebuild via the standard
-  // SQLite pattern: create new with updated schema, copy data, drop old,
-  // rename. The rebuild is idempotent — once the current schema is in place
-  // the trigger predicate returns false and no further work is done.
-  // `tradesHasClosedEarlyStatus` is the strictest (newest) check; DBs missing
-  // it also miss tp2_hit on older installations, and rebuildTradesTable
-  // produces a schema containing both.
+  //   - PHASE 2 (2026-05-09): drops tp2_hit + 3-leg cols + 'C' leg
   if (existingSltpCols.length > 0 && !sltpOrdersHasLegCCheck()) {
     rebuildSltpOrdersTable();
   }
   if (existingTradesCols.length > 0 && !tradesHasClosedEarlyStatus()) {
     rebuildTradesTable();
   }
+  // Phase 2: drops 3-leg columns + 'tp2_hit' status + 'C' leg. Idempotent —
+  // each function exits early once its target schema is already in place.
+  rebuildTradesTablePhase2();
+  rebuildLessonsTablePhase2();
+  rebuildSlTpOrdersTablePhase2();
 
   db.run(`
     CREATE TABLE IF NOT EXISTS daily_pnl_log (
@@ -536,7 +694,7 @@ export function updateTradeStatus(
 //   - 'tp2_hit'  — Legs A+B closed, Leg C still running (added 2026-04-28
 //                  audit; previously omitted, which made tp2_hit trades
 //                  invisible to the coordination lock — Codex P1 #10)
-const OPEN_STATUSES_SQL = "status IN ('open', 'tp1_hit', 'tp2_hit')";
+const OPEN_STATUSES_SQL = "status IN ('open', 'tp1_hit')";
 
 export function getOpenTrades(): TradeRecord[] {
   const result = db.exec(`SELECT * FROM trades WHERE ${OPEN_STATUSES_SQL} ORDER BY opened_at DESC`);
