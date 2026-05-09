@@ -612,11 +612,6 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
   const asStrOrNull = (v: unknown): string | null =>
     v === undefined || v === null ? null : String(v);
 
-  // Helper: treat undefined/null as null, otherwise coerce to Number. Used
-  // for tp3 / size_c / pnl_c where a legacy 2-leg trade may omit the field.
-  const asNumOrNull = (v: unknown): number | null =>
-    v === undefined || v === null ? null : (typeof v === 'number' && !isNaN(v) ? v : null);
-
   const row = {
     id: String(trade.id),
     strategy_tag: trade.strategy_tag!,
@@ -628,13 +623,10 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
     sl: asNum(trade.sl, 0),
     tp1: asNum(trade.tp1, 0),
     tp2: asNum(trade.tp2, 0),
-    tp3: asNumOrNull(trade.tp3),                           // NEW (3-leg)
     position_a_id: asStrOrNull(trade.position_a_id),
     position_b_id: asStrOrNull(trade.position_b_id),
-    position_c_id: asStrOrNull(trade.position_c_id),       // NEW (3-leg)
     size_a: asNum(trade.size_a, 0),
     size_b: asNum(trade.size_b, 0),
-    size_c: asNumOrNull(trade.size_c),                     // NEW (3-leg)
     status: trade.status ?? 'open',
     composite_score: asNum(trade.composite_score, 0),
     kill_zone: asStrOrNull(trade.kill_zone),
@@ -647,16 +639,16 @@ export function insertTrade(trade: Partial<Omit<TradeRecord, 'closed_at'>>): voi
 
   db.run(`
     INSERT INTO trades (id, strategy_tag, instrument, instrument_category, direction,
-      setup_type, entry, sl, tp1, tp2, tp3, position_a_id, position_b_id, position_c_id,
-      size_a, size_b, size_c,
+      setup_type, entry, sl, tp1, tp2, position_a_id, position_b_id,
+      size_a, size_b,
       status, composite_score, kill_zone, news_category, analyst_decision, reasoning,
       closure_reason, opened_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     row.id, row.strategy_tag, row.instrument, row.instrument_category,
-    row.direction, row.setup_type, row.entry, row.sl, row.tp1, row.tp2, row.tp3,
-    row.position_a_id, row.position_b_id, row.position_c_id,
-    row.size_a, row.size_b, row.size_c,
+    row.direction, row.setup_type, row.entry, row.sl, row.tp1, row.tp2,
+    row.position_a_id, row.position_b_id,
+    row.size_a, row.size_b,
     row.status, row.composite_score, row.kill_zone, row.news_category,
     row.analyst_decision, row.reasoning, row.closure_reason, row.opened_at,
   ]);
@@ -668,11 +660,10 @@ export function updateTradeStatus(
   status: TradeStatus,
   pnlA?: number,
   pnlB?: number,
-  pnlC?: number,    // NEW (3-leg) — P&L on Leg C in R units once it closes
 ): void {
   // pnl_total = sum of whichever leg pnls have been populated. COALESCE via the
-  // existing stored values so partial updates (e.g. only leg C this call)
-  // don't clobber earlier leg pnl_a/pnl_b that were set on previous calls.
+  // existing stored values so partial updates don't clobber earlier leg
+  // pnl_a/pnl_b that were set on previous calls.
   const closedAt = status === 'complete' || status === 'sl_hit' ? new Date().toISOString() : null;
 
   db.run(`
@@ -680,11 +671,10 @@ export function updateTradeStatus(
     SET status = ?,
         pnl_a = COALESCE(?, pnl_a),
         pnl_b = COALESCE(?, pnl_b),
-        pnl_c = COALESCE(?, pnl_c),
-        pnl_total = COALESCE(pnl_a, 0) + COALESCE(pnl_b, 0) + COALESCE(pnl_c, 0),
+        pnl_total = COALESCE(pnl_a, 0) + COALESCE(pnl_b, 0),
         closed_at = COALESCE(?, closed_at)
     WHERE id = ?
-  `, [status, pnlA ?? null, pnlB ?? null, pnlC ?? null, closedAt, tradeId]);
+  `, [status, pnlA ?? null, pnlB ?? null, closedAt, tradeId]);
   saveToFile();
 }
 
@@ -778,20 +768,18 @@ export function insertLesson(lesson: Lesson): void {
   db.run(`
     INSERT INTO lessons (lesson_id, timestamp, strategy_tag, instrument, instrument_category,
       direction, setup_type, kill_zone, hold_duration, news_category, news_description,
-      composite_score, analyst_decision, position_a_outcome, position_b_outcome, position_c_outcome,
-      pnl_a_r, pnl_b_r, pnl_c_r, pnl_total_r, was_bias_correct, was_trigger_valid,
+      composite_score, analyst_decision, position_a_outcome, position_b_outcome,
+      pnl_a_r, pnl_b_r, pnl_total_r, was_bias_correct, was_trigger_valid,
       was_news_correctly_weighted, was_split_execution_clean, score_accuracy_notes,
       lesson, rule_suggestion)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `, [
     lesson.lesson_id, lesson.timestamp, lesson.strategy_tag, lesson.instrument,
     lesson.instrument_category, lesson.direction, lesson.setup_type, lesson.kill_zone,
     asStrOrNull(lesson.hold_duration), asStrOrNull(lesson.news_category), asStrOrNull(lesson.news_description),
     asNumOrNull(lesson.composite_score), asStrOrNull(lesson.analyst_decision),
     asStrOrNull(lesson.position_a_outcome), asStrOrNull(lesson.position_b_outcome),
-    asStrOrNull(lesson.position_c_outcome), // 2026-04-29 audit fix
     asNumOrNull(lesson.pnl_a_r), asNumOrNull(lesson.pnl_b_r),
-    asNumOrNull(lesson.pnl_c_r), // 2026-04-29 audit fix
     asNumOrNull(lesson.pnl_total_r),
     coerceBool(lesson.was_bias_correct), coerceBool(lesson.was_trigger_valid),
     coerceBool(lesson.was_news_correctly_weighted), coerceBool(lesson.was_split_execution_clean),

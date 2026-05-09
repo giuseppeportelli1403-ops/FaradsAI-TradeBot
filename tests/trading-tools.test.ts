@@ -123,7 +123,7 @@ describe('normaliseTradePayload (log_trade MCP wrapper)', () => {
   });
 
   it('leaves canonical statuses untouched (no spurious closure_reason)', () => {
-    for (const status of ['open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit', 'closed_early']) {
+    for (const status of ['open', 'tp1_hit', 'complete', 'sl_hit', 'closed_early']) {
       const out = _normaliseTradePayload({
         id: 't-1',
         instrument: 'USDJPY',

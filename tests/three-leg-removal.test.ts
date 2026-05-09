@@ -41,26 +41,29 @@ describe('three-leg removal — Phase 1 negative coverage', () => {
     expect((mod as unknown as Record<string, unknown>).handleTp3Hit).toBeUndefined();
   });
 
-  // 4. Defensive read contract — historical 3-leg DB row remains queryable.
-  // Skips locally if no 3-leg row exists; on the prod VPS this exercises the
-  // back-compat read path we promised to keep working in Phase 1 (DB columns
-  // stay; only the write/placement paths are gone).
-  it('reading a historical 3-leg row does not crash', async () => {
+  // 4. Schema contract (Phase 2, 2026-05-09) — trades table no longer has
+  // 3-leg columns. Pins the migration outcome: a successful Phase 2 deploy
+  // drops these columns and they stay dropped.
+  it('trades schema does not have 3-leg columns (Phase 2 dropped them)', async () => {
     const SQL = await initSqlJs();
     const dbPath = 'data/trading-bot.db';
     if (!fs.existsSync(dbPath)) return; // skip if DB not present locally
     const db = new SQL.Database(fs.readFileSync(dbPath));
-    const res = db.exec(
-      "SELECT id, status, tp3, position_c_id, size_c, pnl_c FROM trades WHERE position_c_id IS NOT NULL LIMIT 1",
-    );
-    if (!res.length) return; // no historical 3-leg rows; skip
-    const row = res[0].values[0];
-    expect(row).toBeDefined();
-    // Type round-trip: simulate reading into TradeRecord shape, no throw.
-    const trade = {
-      id: row[0], status: row[1], tp3: row[2],
-      position_c_id: row[3], size_c: row[4], pnl_c: row[5],
-    };
-    expect(trade.position_c_id).not.toBeNull();
+    const cols = db.exec('PRAGMA table_info(trades)')[0]?.values.map((r) => String(r[1])) ?? [];
+    expect(cols).not.toContain('tp3');
+    expect(cols).not.toContain('position_c_id');
+    expect(cols).not.toContain('size_c');
+    expect(cols).not.toContain('pnl_c');
+  });
+
+  // 5. Sibling: lessons table no longer has C-outcome columns.
+  it('lessons schema does not have C-outcome columns (Phase 2 dropped them)', async () => {
+    const SQL = await initSqlJs();
+    const dbPath = 'data/trading-bot.db';
+    if (!fs.existsSync(dbPath)) return;
+    const db = new SQL.Database(fs.readFileSync(dbPath));
+    const cols = db.exec('PRAGMA table_info(lessons)')[0]?.values.map((r) => String(r[1])) ?? [];
+    expect(cols).not.toContain('position_c_outcome');
+    expect(cols).not.toContain('pnl_c_r');
   });
 });

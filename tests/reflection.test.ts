@@ -129,21 +129,6 @@ describe('extractLessonFromTool — read lesson from submit_lesson tool_use', ()
     expect(extractLessonFromTool(content as never)).toBeNull();
   });
 
-  it('pnl_c_r is always null (Phase 1: removed from extractor schema)', () => {
-    // 2026-05-08 (3-leg removal Phase 1, Task 7): the extractor hard-codes
-    // pnl_c_r to null and ignores any LLM-supplied value. Even a stale
-    // caller that emits a numeric pnl_c_r (or garbage) gets null on output.
-    // This pins that contract — historical lesson rows still nullable on
-    // the column, but no new write ever lands a non-null value.
-    const input = { ...validInput, pnl_c_r: 'not a number' };
-    const content = [
-      { type: 'tool_use', id: 'x', name: 'submit_lesson', input },
-    ];
-    const lesson = extractLessonFromTool(content as never);
-    expect(lesson).not.toBeNull();
-    expect(lesson?.pnl_c_r).toBeNull();
-  });
-
   it('returns null when lesson text is empty (insufficient signal)', () => {
     const input = { ...validInput, lesson: '' };
     const content = [

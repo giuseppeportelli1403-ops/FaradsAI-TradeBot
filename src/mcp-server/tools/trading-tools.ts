@@ -18,7 +18,7 @@ import {
 // Any agent-supplied `status` outside this set is normalised to 'closed_early'
 // with the original value preserved in `closure_reason` (see normaliseTradePayload).
 const CANONICAL_TRADE_STATUSES = new Set([
-  'open', 'tp1_hit', 'tp2_hit', 'complete', 'sl_hit', 'closed_early',
+  'open', 'tp1_hit', 'complete', 'sl_hit', 'closed_early',
 ]);
 
 const CANONICAL_STRATEGY_TAGS = new Set(['ICT_INTRADAY', 'SWING']);
