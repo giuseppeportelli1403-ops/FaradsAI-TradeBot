@@ -28,8 +28,7 @@ const submitLessonTool = {
   name: 'submit_lesson',
   description:
     'Submit the structured lesson learned from the closed trade. Call this tool exactly once. ' +
-    'Your full lesson text goes in the `lesson` field — do not write a separate text block. ' +
-    'Use null for position_c_outcome / pnl_c_r ONLY on legacy 2-leg trades; new 3-leg trades MUST populate them.',
+    'Your full lesson text goes in the `lesson` field — do not write a separate text block.',
   input_schema: {
     type: 'object' as const,
     properties: {
@@ -48,10 +47,8 @@ const submitLessonTool = {
       analyst_decision: { type: 'string', description: 'APPROVE / MODIFY — what the analyst returned.' },
       position_a_outcome: { type: 'string', description: 'e.g. "TP1 hit", "SL hit", "BE exit"' },
       position_b_outcome: { type: 'string' },
-      position_c_outcome: { type: ['string', 'null'], description: 'null only for legacy 2-leg trades' },
       pnl_a_r: { type: 'number', description: 'Leg A P&L in R units' },
       pnl_b_r: { type: 'number' },
-      pnl_c_r: { type: ['number', 'null'], description: 'null only for legacy 2-leg trades' },
       pnl_total_r: { type: 'number', description: 'Size-weighted total P&L in R' },
       was_bias_correct: { type: 'boolean' },
       was_trigger_valid: { type: 'boolean' },
@@ -69,8 +66,8 @@ const submitLessonTool = {
     required: [
       'strategy_tag', 'instrument', 'instrument_category', 'direction', 'setup_type',
       'kill_zone', 'hold_duration', 'news_category', 'news_description', 'composite_score',
-      'analyst_decision', 'position_a_outcome', 'position_b_outcome', 'position_c_outcome',
-      'pnl_a_r', 'pnl_b_r', 'pnl_c_r', 'pnl_total_r',
+      'analyst_decision', 'position_a_outcome', 'position_b_outcome',
+      'pnl_a_r', 'pnl_b_r', 'pnl_total_r',
       'was_bias_correct', 'was_trigger_valid', 'was_news_correctly_weighted', 'was_split_execution_clean',
       'score_accuracy_notes', 'lesson', 'rule_suggestion',
     ],
@@ -87,15 +84,6 @@ function coerceBool(v: unknown): boolean {
 /** Coerce a value to a finite number. Returns null on non-finite/non-numeric so the caller can fail-closed
  *  instead of writing falsified zero stats to the DB (Codex Round-1 review finding 2026-05-05). */
 function coerceFiniteNum(v: unknown): number | null {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-}
-
-/** Coerce a value to a finite number OR null (for the leg-C fields that legitimately can be null).
- *  Distinct from coerceFiniteNum: explicit null/undefined → null (legitimate legacy 2-leg signal).
- *  Non-finite numerics (NaN, Infinity) also map to null so we don't lie about leg-C P&L. */
-function coerceNumOrNull(v: unknown): number | null {
-  if (v === null || v === undefined) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
@@ -170,10 +158,10 @@ export function extractLessonFromTool(content: unknown[]): Lesson | null {
         analyst_decision: String(raw.analyst_decision),
         position_a_outcome: String(raw.position_a_outcome),
         position_b_outcome: String(raw.position_b_outcome),
-        position_c_outcome: typeof raw.position_c_outcome === 'string' ? raw.position_c_outcome : null,
+        position_c_outcome: null,
         pnl_a_r,
         pnl_b_r,
-        pnl_c_r: coerceNumOrNull(raw.pnl_c_r),
+        pnl_c_r: null,
         pnl_total_r,
         was_bias_correct: coerceBool(raw.was_bias_correct),
         was_trigger_valid: coerceBool(raw.was_trigger_valid),
@@ -215,7 +203,7 @@ export async function runReflectionAgent(tradeId: string): Promise<void> {
 TRADE RECORD:
 ${JSON.stringify(trade, null, 2)}
 
-Calculate hold_duration from opened_at → closed_at. Use null for position_c_outcome / pnl_c_r ONLY if the trade is a legacy 2-leg row. The lesson field must be SPECIFIC and ACTIONABLE — see the system prompt for examples.`,
+Calculate hold_duration from opened_at → closed_at. The lesson field must be SPECIFIC and ACTIONABLE — see the system prompt for examples.`,
           },
         ],
         tools: [submitLessonTool],

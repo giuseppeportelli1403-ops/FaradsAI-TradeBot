@@ -92,18 +92,6 @@ describe('extractLessonFromTool — read lesson from submit_lesson tool_use', ()
     expect(extractLessonFromTool(content as never)).toBeNull();
   });
 
-  it('coerces nullable position_c_outcome / pnl_c_r correctly', () => {
-    // Legacy 2-leg lesson — Leg C fields are explicit null per Lesson type.
-    const input = { ...validInput, position_c_outcome: null, pnl_c_r: null };
-    const content = [
-      { type: 'tool_use', id: 'x', name: 'submit_lesson', input },
-    ];
-    const lesson = extractLessonFromTool(content as never);
-    expect(lesson).not.toBeNull();
-    expect(lesson?.position_c_outcome).toBeNull();
-    expect(lesson?.pnl_c_r).toBeNull();
-  });
-
   it('coerces booleans defensively (LLM may emit "true" string)', () => {
     const input = { ...validInput, was_bias_correct: 'true', was_trigger_valid: 1 };
     const content = [
