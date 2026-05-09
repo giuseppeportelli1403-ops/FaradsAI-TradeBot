@@ -494,4 +494,83 @@ describe('parallel tool execution', () => {
     expect(byId.b).toMatch(/error.*news API down/);
     expect(byId.c).toMatch(/ok.*get_lessons/);
   });
+
+  it('mixed batch: read-only tools run concurrently; stateful tool runs after them sequentially', async () => {
+    // 2026-05-09: Codex flagged that Promise.all over ALL emitted tools is
+    // unsafe when stateful ones (place_split_trade, update_sl, etc.) appear
+    // alongside reads. Fix splits the batch: reads in parallel, statefuls
+    // sequential. This test pins the contract: when the model emits
+    // [get_prices, place_split_trade, get_lessons], get_prices and
+    // get_lessons start before place_split_trade begins.
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const order: string[] = [];
+
+    const resolvers: Record<string, () => void> = {};
+    const gates: Record<string, Promise<void>> = {};
+    for (const name of ['get_prices', 'get_lessons', 'place_split_trade']) {
+      gates[name] = new Promise<void>((r) => { resolvers[name] = r; });
+    }
+
+    _setExecuteToolImpl(async (name: string) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      order.push(`start:${name}`);
+      await gates[name];
+      inFlight -= 1;
+      order.push(`end:${name}`);
+      return JSON.stringify({ ok: true, tool: name });
+    });
+
+    let messagesCallCount = 0;
+    mockMessagesCreate.mockImplementation(async () => {
+      messagesCallCount += 1;
+      if (messagesCallCount === 1) {
+        return {
+          stop_reason: 'tool_use',
+          content: [
+            { type: 'tool_use', id: 'a', name: 'get_prices', input: {} },
+            { type: 'tool_use', id: 'b', name: 'place_split_trade', input: {} },
+            { type: 'tool_use', id: 'c', name: 'get_lessons', input: {} },
+          ],
+        };
+      }
+      return { stop_reason: 'end_turn', content: [] };
+    });
+
+    const cyclePromise = runTradingAgent();
+
+    // Drain microtasks. Read-only batch should now have 2 in-flight
+    // (get_prices + get_lessons). place_split_trade must NOT have started yet.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(inFlight).toBe(2);
+    expect(maxInFlight).toBe(2);
+    expect(order.filter((o) => o === 'start:get_prices')).toHaveLength(1);
+    expect(order.filter((o) => o === 'start:get_lessons')).toHaveLength(1);
+    expect(order.filter((o) => o === 'start:place_split_trade')).toHaveLength(0);
+
+    // Resolve the read-only batch. Stateful only starts AFTER both reads complete.
+    resolvers.get_prices();
+    resolvers.get_lessons();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(order).toContain('end:get_prices');
+    expect(order).toContain('end:get_lessons');
+    expect(order).toContain('start:place_split_trade');
+    expect(inFlight).toBe(1); // only the stateful is in-flight now
+
+    // Resolve the stateful so the cycle can complete.
+    resolvers.place_split_trade();
+    await cyclePromise;
+
+    // Final ordering invariant: both reads ended BEFORE the stateful started.
+    const startStateful = order.indexOf('start:place_split_trade');
+    const endPrices = order.indexOf('end:get_prices');
+    const endLessons = order.indexOf('end:get_lessons');
+    expect(endPrices).toBeLessThan(startStateful);
+    expect(endLessons).toBeLessThan(startStateful);
+  });
 });

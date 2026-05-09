@@ -572,6 +572,30 @@ export function validateWeeklyKillSwitch(input: WeeklyKillSwitchInput): WeeklyKi
 // ==================== MCP TOOL DEFINITIONS ====================
 // These are passed to Claude as tool schemas so it can call them
 
+/**
+ * Tools whose execution has no observable side effect on broker state, the
+ * trades DB, or the analyst sub-LLM — safe to run concurrently within a
+ * single agent turn via Promise.all. Stateful tools (anything not in this
+ * Set) are run sequentially to avoid races.
+ *
+ * Source-of-truth: each tool's `readOnlyHint` annotation in
+ * `src/mcp-server/tools/{db,market-data,trading}-tools.ts`. This Set must
+ * stay in sync with those annotations — the agent loop can't read the MCP
+ * registry directly because `MCP_TOOLS` (below) is a separate Anthropic-SDK
+ * tool definitions array that doesn't carry the hints. See
+ * `tests/trading-agent-loop.test.ts` for the contract test that pins
+ * read-only-batch-vs-stateful-sequential ordering.
+ */
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'get_daily_pnl',
+  'get_portfolio',
+  'get_ranked_instruments',
+  'get_prices',
+  'get_news_context',
+  'get_economic_calendar',
+  'get_lessons',
+]);
+
 const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   {
     name: 'get_daily_pnl',
@@ -1832,48 +1856,81 @@ Begin your 5-step decision cycle now. Start with Step 1 (check daily risk status
     if (response.stop_reason === 'tool_use') {
       lastStopReason = response.stop_reason;
 
-      // 2026-05-09: parallel tool execution. Pre-fix the for-await loop
-      // executed each tool serially even when the model emitted them as
-      // parallel tool_use blocks in one response. With multi-tool
-      // batches (4-5 reads in iter 1 of clean cycles) wall-time was
-      // dominated by the slowest tool × N. Now Promise.all runs them
-      // concurrently. Order is preserved (Promise.all keeps input
-      // order); Anthropic matches tool_use to tool_result by id anyway.
-      // Per-tool try/catch is preserved so one failed tool's error
-      // envelope reaches the model without poisoning siblings.
+      // 2026-05-09: parallel tool execution with stateful-tool race guard.
+      // Pre-fix (Spec 1, morning of 2026-05-09): for-await ran tools
+      // serially even when the model emitted parallel tool_use blocks; we
+      // moved to Promise.all to recover wall-time on multi-read batches.
+      // Codex post-merge audit (afternoon) flagged that Promise.all over
+      // ALL emitted tools is unsafe when stateful ones (place_split_trade,
+      // update_sl, close_position, request_analyst_review) are present —
+      // concurrent broker writes / DB writes / sub-LLM spawns could race.
+      // Fix: split the batch by READ_ONLY_TOOLS membership. Read-only
+      // blocks run concurrently via Promise.all; stateful blocks run
+      // sequentially in the model's emission order. Results are concatenated
+      // in original tool_use order (Anthropic matches by tool_use_id, but
+      // preserved order helps log readability).
       const toolUseBlocks = response.content.filter(
         (b): b is Anthropic.Messages.ToolUseBlock => b.type === 'tool_use',
       );
 
-      const toolResults: Anthropic.Messages.ToolResultBlockParam[] =
-        await Promise.all(
-          toolUseBlocks.map(async (block) => {
-            console.log(`[ICT Agent] Calling tool: ${block.name}`);
-            distinctTools.add(block.name);
-            totalToolCalls += 1;
-            let result: string;
-            try {
-              // _executeToolImpl is the test-seam-aware dispatcher; in
-              // production it's the real executeTool. See the seam decl
-              // below executeTool's body.
-              result = await _executeToolImpl(
-                block.name,
-                block.input as Record<string, unknown>,
-              );
-            } catch (err) {
-              const message = err instanceof Error ? err.message : String(err);
-              console.warn(
-                `[ICT Agent] Tool ${block.name} failed: ${message}`,
-              );
-              result = JSON.stringify({ error: message, tool: block.name });
-            }
-            return {
-              type: 'tool_result' as const,
-              tool_use_id: block.id,
-              content: result,
-            };
-          }),
+      const executeOne = async (
+        block: Anthropic.Messages.ToolUseBlock,
+      ): Promise<Anthropic.Messages.ToolResultBlockParam> => {
+        console.log(`[ICT Agent] Calling tool: ${block.name}`);
+        distinctTools.add(block.name);
+        totalToolCalls += 1;
+        let result: string;
+        try {
+          // _executeToolImpl is the test-seam-aware dispatcher; in
+          // production it's the real executeTool. See the seam decl
+          // below executeTool's body.
+          result = await _executeToolImpl(
+            block.name,
+            block.input as Record<string, unknown>,
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[ICT Agent] Tool ${block.name} failed: ${message}`);
+          result = JSON.stringify({ error: message, tool: block.name });
+        }
+        return {
+          type: 'tool_result' as const,
+          tool_use_id: block.id,
+          content: result,
+        };
+      };
+
+      const readOnlyBlocks = toolUseBlocks.filter((b) => READ_ONLY_TOOLS.has(b.name));
+      const statefulBlocks = toolUseBlocks.filter((b) => !READ_ONLY_TOOLS.has(b.name));
+
+      // Observability: log when a stateful tool appears alongside others
+      // in a single turn. This was previously invisible — the model rarely
+      // emits stateful + anything in one turn, but the race window matters
+      // when it does. If we see this fire often, raise it as a prompt fix.
+      if (statefulBlocks.length > 0 && toolUseBlocks.length > 1) {
+        console.log(
+          `[ICT Agent] Mixed batch detected: ${statefulBlocks.length} stateful + ${readOnlyBlocks.length} read-only tools in one turn. ` +
+            `Stateful tools: ${statefulBlocks.map((b) => b.name).join(', ')}. ` +
+            `Stateful will run sequentially after the read-only batch.`,
         );
+      }
+
+      // Run read-only batch concurrently (preserves the morning's parallel-
+      // exec optimization for the 4-5-read case which is the common path).
+      const readOnlyResults = await Promise.all(readOnlyBlocks.map(executeOne));
+      // Run stateful sequentially, in emission order.
+      const statefulResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+      for (const block of statefulBlocks) {
+        statefulResults.push(await executeOne(block));
+      }
+
+      // Reconstruct results in the model's original tool_use_id order.
+      const resultByToolUseId = new Map<string, Anthropic.Messages.ToolResultBlockParam>();
+      for (const r of readOnlyResults) resultByToolUseId.set(r.tool_use_id, r);
+      for (const r of statefulResults) resultByToolUseId.set(r.tool_use_id, r);
+      const toolResults: Anthropic.Messages.ToolResultBlockParam[] = toolUseBlocks.map(
+        (b) => resultByToolUseId.get(b.id)!,
+      );
 
       lastIterToolNames = toolUseBlocks.map((b) => b.name);
 
