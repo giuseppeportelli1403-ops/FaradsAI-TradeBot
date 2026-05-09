@@ -386,6 +386,8 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
             composite_score: Math.max(0, Math.min(100, score)),
             bias: biasResult.bias as 'bullish' | 'bearish' | 'neutral',
             tier,
+            // Placeholder — Task 3 wires this to a real cache fetch via capital.getMarketDetails().
+            min_deal_size: null,
           } satisfies RankedInstrument;
         } catch (err) {
           // Per-instrument failures are expected (TD outage on a single

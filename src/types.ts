@@ -433,4 +433,12 @@ export interface RankedInstrument {
   composite_score: number;
   bias: 'bullish' | 'bearish' | 'neutral';
   tier: 1 | 2 | 3 | null;  // null if score < 40. Tier 3 = 40-59, Tier 2 = 60-79, Tier 1 = 80-100. Range-mode setups capped at 59 by scanner.
+  /**
+   * Broker minimum deal size for this instrument (e.g. SILVER=5, USDJPY=1000,
+   * GOLD=0.1). Fetched from capital.getMarketDetails() at scanner load time
+   * and cached. `null` if the fetch failed for this ticker — the agent then
+   * falls through to the existing pre-check at `request_analyst_review` for
+   * authoritative live-fetched validation. Added 2026-05-09 for L3b-2.
+   */
+  min_deal_size: number | null;
 }

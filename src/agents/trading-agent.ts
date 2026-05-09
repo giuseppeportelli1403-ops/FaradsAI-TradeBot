@@ -764,7 +764,7 @@ import {
 } from '../database/index.js';
 import { CapitalClient } from '../mcp-server/capital-client.js';
 
-const capital = new CapitalClient({
+export const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
   identifier: process.env.CAPITAL_IDENTIFIER || '',
   password: process.env.CAPITAL_API_KEY_PASSWORD || '',
