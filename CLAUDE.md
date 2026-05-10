@@ -220,3 +220,8 @@ Full build history at: `C:\Users\user\Desktop\Brain\Trading Bot\Build Progress.m
 - Update this CLAUDE.md and the Obsidian log after completing work
 - This is a financial system — type safety and test coverage matter
 - Use the superpowers skills pipeline for major changes
+
+<!-- SPECKIT START -->
+For additional context about technologies to be used, project structure,
+shell commands, and other important information, read the current plan
+<!-- SPECKIT END -->

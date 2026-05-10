@@ -25,3 +25,6 @@ ecosystem.local.config.cjs
 BetterOpsAI_Trading_Bot_One_Pager.docx
 TRADING_BOT_SYSTEM_DEEP_DIVE.docx
 *.docx
+
+# Claude Code agent local settings (may contain credentials/tokens)
+.claude/settings.local.json
