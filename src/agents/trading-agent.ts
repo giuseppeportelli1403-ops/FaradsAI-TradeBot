@@ -586,8 +586,15 @@ export function validateWeeklyKillSwitch(input: WeeklyKillSwitchInput): WeeklyKi
  * `tests/trading-agent-loop.test.ts` for the contract test that pins
  * read-only-batch-vs-stateful-sequential ordering.
  */
-const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
-  'get_daily_pnl',
+// READ_ONLY_TOOLS — tools safe to run concurrently in Promise.all.
+// 'get_daily_pnl' is deliberately excluded (Phase 2 P2.1, 2026-05-10):
+// although the agent reads the value, the MCP tool implementation
+// upserts daily_pnl_log (mcp-server/tools/db-tools.ts:69-83).
+// Classifying it stateful keeps write semantics consistent across
+// layers and prevents future race conditions if the process model
+// ever moves off in-process single-threaded sql.js.
+// Exported so tests can pin membership against the contract.
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'get_portfolio',
   'get_ranked_instruments',
   'get_prices',
