@@ -1517,10 +1517,12 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // runtime shape is verified by insertTrade's own field-by-field
       // normalization in src/database/index.ts.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // 2026-05-07 — 2-TP restructure (Phase 2): legacy C-leg columns
-      // (tp3 / position_c_id / size_c / pnl_c) are omitted from the INSERT
-      // and default to NULL at the DB layer. Explicit-null writes were
-      // removed in Task 5 of the 3-leg removal plan (2026-05-09).
+      // 2026-05-09 — Phase 2 migration: legacy C-leg columns
+      // (tp3 / position_c_id / size_c / pnl_c) were DROPPED from the trades
+      // table (see database/index.ts:191-261). The INSERT shape below
+      // reflects the current 2-leg schema; historical breadcrumb retained
+      // so future readers understand why these field names appear in older
+      // commits / migrations.
       const tradeRow: any = {
         id: tradeId,
         strategy_tag: 'ICT_INTRADAY',

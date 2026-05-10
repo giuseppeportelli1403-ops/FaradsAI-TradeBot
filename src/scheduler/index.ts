@@ -2,15 +2,15 @@
 // The central nervous system that triggers all 6 agents at the right times.
 //
 // Capital.com executes SL/TP server-side, so the local monitoring loop is
-// ONLY responsible for our custom 3-leg split-position logic:
-//   Leg A hits TP1 → move Leg B + Leg C SL to break-even (entry)
-//   Leg B hits TP2 → move Leg C SL to TP1 level (trailing lock-in)
-//   Leg C hits TP3 → trade complete, trigger reflection
-//   Any leg hits SL → update status, finalise if all legs are closed
+// ONLY responsible for our custom 2-leg split-position logic:
+//   Leg A hits TP1 → move Leg B SL to break-even (entry)
+//   Leg B hits TP2 → trade complete, trigger reflection
+//   Any leg hits SL → update status, finalise if both legs are closed
 //
-// (Upgraded from 2-leg to 3-leg on 2026-04-21. Legacy 2-leg trades without
-// position_c_id are still supported — handleTp1Hit and downstream handlers
-// null-check position_c_id before attempting to move it.)
+// (History: upgraded from 2-leg to 3-leg on 2026-04-21, then reverted to
+// 2-leg on 2026-05-09 by Phase 2 migration — position_c_id / tp3 / size_c /
+// pnl_c columns were dropped from the trades table. handleTp1Hit now only
+// touches Leg B; there is no Leg C path.)
 //
 // Every 8 minutes we ping the Capital.com session to keep it warm (their
 // tokens idle out around 10 minutes).

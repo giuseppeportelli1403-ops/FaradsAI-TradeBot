@@ -13,10 +13,11 @@
 // The agents then take the top N and run their full analysis pipeline.
 //
 // NOTE: epic values on INSTRUMENT_UNIVERSE were verified live against the
-// Capital.com demo API on 2026-04-17. For all 20 instruments epic == ticker
-// verbatim. Ignore scripts/epic-mapping.json — that file was produced by the
-// older markets[0] heuristic and contains ETF/weekend contracts for 4 entries;
-// the epic field here is the source of truth.
+// Capital.com demo API on 2026-04-17. For all 7 instruments (post-2026-04-22
+// indices removal) epic == ticker verbatim. Ignore scripts/epic-mapping.json
+// — that file was produced by the older markets[0] heuristic and contains
+// ETF/weekend contracts for 4 entries; the epic field here is the source of
+// truth.
 
 import { fetchCandles, TwelveDataDailyCapError } from '../mcp-server/market-data.js';
 import { capital } from '../mcp-server/capital-singleton.js';
@@ -32,7 +33,7 @@ import type { Candle, RankedInstrument } from '../types.js';
 // for any Capital REST API call (searchMarkets, getMarketDetails,
 // openPosition, closePosition, getCandles, etc.).
 //
-// epic values verified live against Capital.com demo on 2026-04-17 — epic == ticker for all 20.
+// epic values verified live against Capital.com demo on 2026-04-17 — epic == ticker for all 7 (post-2026-04-22 indices removal).
 //
 // WARNING: do NOT add an instrument where epic !== ticker without first
 // refactoring src/agents/researcher-agent.ts. The researcher emits tickers
