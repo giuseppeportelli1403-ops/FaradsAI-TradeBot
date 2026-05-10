@@ -944,7 +944,7 @@ export function logAnalystDecision(tradeId: string, strategyTag: StrategyTag, de
 
 export function createSlTpOrder(params: {
   trade_id: string;
-  leg: 'A' | 'B' | 'C';        // NEW 2026-04-21: 'C' added for 3-leg split-position
+  leg: 'A' | 'B';
   instrument: string;
   direction: Direction;
   quantity: number;
