@@ -160,3 +160,50 @@ export async function alertResearchBrief(warnings: string[]): Promise<void> {
   if (warnings.length === 0) return;
   await send(`📋 *RESEARCH BRIEF WARNINGS*\n\n${warnings.map(w => `• ${w}`).join('\n')}`);
 }
+
+/**
+ * 2026-05-10 Phase-2 migration-drift cleanup, Task P3.1.
+ *
+ * Fired ONLY from the DB_LOG_FAILED_AFTER_PLACEMENT branch in
+ * `place_split_trade` — i.e. when both Capital legs filled but the
+ * subsequent DB write (`insertTrade` + `createSlTpOrder × 2`) threw.
+ * In this state the positions are LIVE on Capital with no DB row, the
+ * scheduler can't manage them, and silent failure means orphan risk
+ * compounds every cycle.
+ *
+ * Decision (locked): alert + log only — NO auto-close. A transient DB
+ * write timeout that auto-closed a real trade would lose more money
+ * than the manual-reconcile cost. The Telegram message gives Giuseppe
+ * both deal IDs so he can decide: close via Capital app, or insert
+ * the trade row by hand and let the scheduler take over.
+ *
+ * Markdown rules: deal IDs are wrapped in inline-code backticks for
+ * easy copy-paste; instrument and error string flow through mdEsc()
+ * because both can contain underscores or other Markdown metachars
+ * that would otherwise return Telegram 400 "can't parse entities" and
+ * silently drop the alert (audit-3 P1-6 lesson).
+ */
+export async function alertOrphanPositions(opts: {
+  instrument: string;
+  direction: 'BUY' | 'SELL';
+  legA: { dealId: string; size: number };
+  legB: { dealId: string; size: number };
+  errorMessage: string;
+}): Promise<void> {
+  const text = [
+    '🚨 *CRITICAL — ORPHAN POSITIONS*',
+    '',
+    'Trade row write failed AFTER both legs were placed on Capital.com.',
+    'Manual reconciliation required.',
+    '',
+    `Instrument: ${mdEsc(opts.instrument)}`,
+    `Direction: ${opts.direction}`,
+    `Leg A dealId: \`${mdEsc(opts.legA.dealId)}\` (size ${opts.legA.size})`,
+    `Leg B dealId: \`${mdEsc(opts.legB.dealId)}\` (size ${opts.legB.size})`,
+    `Error: ${mdEsc(opts.errorMessage)}`,
+    '',
+    'These positions are LIVE on Capital but NOT tracked by the bot.',
+    'Decide: close manually via Capital app, or insert trade row by hand.',
+  ].join('\n');
+  await send(text);
+}

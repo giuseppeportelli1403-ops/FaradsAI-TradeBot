@@ -14,7 +14,7 @@ import { runAnalystAgent, type TradeProposal } from './analyst-agent.js';
 import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
 import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument, getRealisedPnlSince } from '../database/index.js';
-import { alertTradePlaced, alertSystemWarning } from '../notifications/telegram.js';
+import { alertTradePlaced, alertSystemWarning, alertOrphanPositions } from '../notifications/telegram.js';
 
 const anthropic = new Anthropic();
 
@@ -1560,6 +1560,32 @@ export async function executeTool(name: string, input: Record<string, unknown>):
             `Orphan dealIds: ${placedDeals.map((p) => `${p.leg}=${p.dealId}`).join(', ')}\n` +
             `MANUAL RECONCILE REQUIRED.`,
         );
+        // 2026-05-10 P3.1: surface this to Giuseppe via Telegram so manual
+        // reconcile can happen in minutes, not on the next trading cycle when
+        // the scheduler stumbles over a position it doesn't recognise.
+        // Wrapped in its own try/catch — if Telegram send itself fails (rate
+        // limit, network blip, bad token) we MUST still return the error JSON
+        // to the LLM so the agent loop terminates this turn instead of hanging
+        // on an unhandled rejection. Console-log the Telegram failure so the
+        // signal isn't completely lost.
+        // Awaited (not fire-and-forget) so that a slow Telegram send can't
+        // race the LLM response — Giuseppe sees the alert before the agent
+        // moves on.
+        try {
+          await alertOrphanPositions({
+            instrument: splitInstrument,
+            direction: direction === 'long' ? 'BUY' : 'SELL',
+            legA: { dealId: placedDeals[0].dealId, size: sizeA },
+            legB: { dealId: placedDeals[1].dealId, size: sizeB },
+            errorMessage: dbErr,
+          });
+        } catch (alertErr) {
+          const alertMsg = alertErr instanceof Error ? alertErr.message : String(alertErr);
+          console.error(
+            `[ICT Agent] Telegram orphan-alert ALSO failed: ${alertMsg}. ` +
+              `Original DB error stands — orphan dealIds in console log above.`,
+          );
+        }
         exitCriticalSection();
         return JSON.stringify({
           error: 'DB_LOG_FAILED_AFTER_PLACEMENT',
