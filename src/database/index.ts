@@ -997,14 +997,17 @@ export function getActiveSlTpOrdersByTradeId(tradeId: string): ActiveSlTpOrder[]
 
 /**
  * Find which trade record (if any) owns this Capital deal_id by checking
- * the position_a_id / position_b_id / position_c_id columns. Used by the
- * `close_position` MCP tool so the LLM can pass the dealId and we can
- * find the corresponding trade row to mark closed_early.
+ * the position_a_id / position_b_id columns. Used by the `close_position`
+ * MCP tool so the LLM can pass the dealId and we can find the corresponding
+ * trade row to mark closed_early.
+ *
+ * (Pre-2026-05-09 this also checked position_c_id, dropped by the Phase 2
+ * 3-leg-removal migration at database/index.ts:191-261.)
  */
 export function getTradeByDealId(dealId: string): TradeRecord | null {
   const result = db.exec(
-    'SELECT * FROM trades WHERE position_a_id = ? OR position_b_id = ? OR position_c_id = ?',
-    [dealId, dealId, dealId],
+    'SELECT * FROM trades WHERE position_a_id = ? OR position_b_id = ?',
+    [dealId, dealId],
   );
   const rows = resultToObjects<TradeRecord>(result);
   return rows[0] || null;
