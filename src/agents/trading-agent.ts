@@ -1572,15 +1572,20 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         // signal isn't completely lost.
         // Awaited (not fire-and-forget) so that a slow Telegram send can't
         // race the LLM response — Giuseppe sees the alert before the agent
-        // moves on.
+        // moves on. Bounded by withTimeout(5s) so an offline Telegram can't
+        // hang the LLM tool call for ~30s on the underlying TCP timeout.
         try {
-          await alertOrphanPositions({
-            instrument: splitInstrument,
-            direction: direction === 'long' ? 'BUY' : 'SELL',
-            legA: { dealId: placedDeals[0].dealId, size: sizeA },
-            legB: { dealId: placedDeals[1].dealId, size: sizeB },
-            errorMessage: dbErr,
-          });
+          await withTimeout(
+            alertOrphanPositions({
+              instrument: splitInstrument,
+              direction: direction === 'long' ? 'BUY' : 'SELL',
+              legA: { dealId: placedDeals[0].dealId, size: sizeA },
+              legB: { dealId: placedDeals[1].dealId, size: sizeB },
+              errorMessage: dbErr,
+            }),
+            5000,
+            'OrphanAlert',
+          );
         } catch (alertErr) {
           const alertMsg = alertErr instanceof Error ? alertErr.message : String(alertErr);
           console.error(
