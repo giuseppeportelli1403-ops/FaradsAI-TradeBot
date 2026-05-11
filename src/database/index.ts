@@ -47,15 +47,14 @@ export async function initDatabaseAsync(): Promise<void> {
 }
 
 /**
- * Test-only helper: initialise a fresh in-memory database.
- * Pass ':memory:' (the conventional SQLite sentinel) to get a clean,
- * isolated DB with all tables created — no file I/O, no state bleed
- * between beforeEach calls.  Production code always uses
+ * TEST-ONLY. Resets the module-level db to a fresh blank sql.js
+ * in-memory database with all tables created — no file I/O, no
+ * state bleed between beforeEach calls. Production code must use
  * initDatabaseAsync() which loads/saves to DB_PATH.
  */
-export async function initDb(_path: ':memory:'): Promise<void> {
+export async function initDbForTests(): Promise<void> {
   const SQL = await initSqlJs();
-  db = new SQL.Database(); // always a fresh empty DB regardless of path arg
+  db = new SQL.Database();
   createTables();
 }
 
@@ -715,14 +714,19 @@ export function setTradePnl(
   if (!hasLeg && !hasTotal) return; // nothing to write
 
   if (hasLeg) {
-    const pnlTotal = (pnl.pnlA ?? 0) + (pnl.pnlB ?? 0);
+    // pnl_total must reflect post-COALESCE leg values: if a previous call
+    // wrote pnl_b and this call only changes pnl_a, the sum has to use
+    // the preserved pnl_b — not zero. Bind each leg twice so the SET
+    // expression for pnl_total sees the same COALESCE(new, stored) result.
+    const pnlAParam = pnl.pnlA ?? null;
+    const pnlBParam = pnl.pnlB ?? null;
     db.run(
       `UPDATE trades
          SET pnl_a = COALESCE(?, pnl_a),
              pnl_b = COALESCE(?, pnl_b),
-             pnl_total = ?
+             pnl_total = COALESCE(?, pnl_a, 0) + COALESCE(?, pnl_b, 0)
        WHERE id = ?`,
-      [pnl.pnlA ?? null, pnl.pnlB ?? null, pnlTotal, tradeId],
+      [pnlAParam, pnlBParam, pnlAParam, pnlBParam, tradeId],
     );
   } else {
     db.run(

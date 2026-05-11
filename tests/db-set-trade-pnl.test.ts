@@ -1,9 +1,9 @@
 // tests/db-set-trade-pnl.test.ts
 import { describe, it, expect, beforeEach } from 'vitest';
-import { initDb, insertTrade, getTradeById, setTradePnl } from '../src/database/index.js';
+import { initDbForTests, insertTrade, getTradeById, setTradePnl } from '../src/database/index.js';
 
 describe('setTradePnl', () => {
-  beforeEach(async () => { await initDb(':memory:'); });
+  beforeEach(async () => { await initDbForTests(); });
 
   it('writes pnl_a, pnl_b, and derives pnl_total when both legs provided', () => {
     insertTrade({
@@ -39,7 +39,7 @@ describe('setTradePnl', () => {
     expect(t?.pnl_total).toBeCloseTo(12.01);
   });
 
-  it('is idempotent: re-applying the same values is a no-op', () => {
+  it('partial re-application preserves prior leg values via COALESCE', () => {
     insertTrade({
       id: 'trade-C', strategy_tag: 'ICT_INTRADAY', instrument: 'GOLD',
       instrument_category: 'COMMODITY', direction: 'long', setup_type: 'OB_RETEST',
@@ -49,9 +49,14 @@ describe('setTradePnl', () => {
       news_category: null, analyst_decision: 'APPROVE', reasoning: '',
       closure_reason: null, opened_at: '2026-05-07T13:16:50.502Z',
     } as never);
+    // First call: write both legs.
     setTradePnl('trade-C', { pnlA: 10.5, pnlB: 8.72 });
-    setTradePnl('trade-C', { pnlA: 10.5, pnlB: 8.72 });
+    // Second call: only pnlA changes. pnl_b must be preserved by COALESCE.
+    setTradePnl('trade-C', { pnlA: 11 });
     const t = getTradeById('trade-C');
-    expect(t?.pnl_total).toBeCloseTo(19.22);
+    expect(t?.pnl_a).toBeCloseTo(11);
+    expect(t?.pnl_b).toBeCloseTo(8.72);
+    // pnl_total recomputed from the new pnlA + the preserved pnlB.
+    expect(t?.pnl_total).toBeCloseTo(19.72);
   });
 });
