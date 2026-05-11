@@ -441,4 +441,24 @@ export interface RankedInstrument {
    * authoritative live-fetched validation. Added 2026-05-09 for L3b-2.
    */
   min_deal_size: number | null;
+  /**
+   * Per-component breakdown of how `composite_score` was assembled. Audit
+   * trail introduced 2026-05-12 by Migration 007 (US-1 — deterministic
+   * scoring). Lets the owner reconstruct WHY a setup scored 78 vs 82 weeks
+   * after the fact via the score_breakdowns DB table. Optional during
+   * rollout: scanner emits it; agent passes it through; executor persists
+   * if present. See specs/001-scoring-pipeline-audit/data-model.md E-1.
+   */
+  score_breakdown?: {
+    base: number;
+    bias_clarity: number;
+    ict_array: number;
+    news: number;
+    history: number;
+    spread: number;
+    range_mode_baseline?: number;
+    range_cap_applied?: boolean;
+  };
+  /** Scoring rule version. Bumped on every scoring math change. */
+  scorer_version?: string;
 }

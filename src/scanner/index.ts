@@ -23,6 +23,7 @@ import { fetchCandles, TwelveDataDailyCapError } from '../mcp-server/market-data
 import { capital } from '../mcp-server/capital-singleton.js';
 import { getNewsScore } from '../news/index.js';
 import { tier3FloorFor } from '../agents/spread.js';
+import { composeScore } from '../scoring/compose.js';
 import type { Candle, RankedInstrument } from '../types.js';
 
 // ==================== INSTRUMENT UNIVERSE ====================
@@ -377,75 +378,38 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           }
           const rawNewsScore = newsResult.score;
 
-          // 2026-04-29 structural-overhaul rebalance (item 3 from
-          // strategy.md Section 5):
-          //   - base 30 → 25
-          //   - bias clarity scale lifted 0/10/15/20 → 0/15/20/25
-          //   - kill zone REMOVED as score component (now hard gate only)
-          //   - news capped at +10 / -15 (was +20 / -15) to prevent
-          //     news-pump on no-structure setups
-          //   - spread bonus unchanged at +5 tight / 0 medium
-          //   - history adjustment is applied LATER inside the agent
-          //     prompt (not in scanner) and is unchanged here
-          let score = 0;
-          // Lift the legacy clarity scale 0/10/15/20 to the new
-          // 0/15/20/25 by remapping. detectBias.clarity returns the
-          // legacy scale; we convert deterministically here so the
-          // bias-detector code stays unchanged.
-          const remappedClarity =
-            biasResult.clarity >= 20 ? 25 :
-            biasResult.clarity >= 15 ? 20 :
-            biasResult.clarity >= 10 ? 15 :
-            0;
-          score += remappedClarity;                                              // 0/15/20/25
-          // News contribution is now emitted directly at -15/+10 (Cat A) and
-          // -5/+5 (Cat B) by src/news/index.ts. Phase A2 (2026-05-04, audit
-          // Finding #5): pre-fix the function emitted +20/+10 and the
-          // scanner capped here. Now redundant — source-side fix in
-          // news/index.ts:135-141 means rawNewsScore is already bounded.
-          score += rawNewsScore;                                                  // -15 to +10
-          score += inst.spread_quality === 'tight' ? 5 : 0;                      // 0 / +5
-          score += 25;                                                            // base (was 30)
-          // NOTE: kill_zone score component intentionally removed.
-          // killZone.inKillZone === true is enforced as a hard gate
-          // earlier in this function (line 272 `if (!killZone.inKillZone) return []`).
-
-          // Range-mode handling (codex review of 7b6db35):
-          //
-          // Pre-fix: range-mode max scanner output was 25 (base) + 0 (no
-          // bias clarity, neutral always) + 0 (no ICT array — that's the
-          // agent's job in trigger 5) + 10 (news) + 5 (spread) = 40.
-          // Below the 45 floor. Bot would never propose a range trade.
-          //
-          // Post-fix: range-mode gets a +20 "range candidate" baseline
-          // representing "this instrument is range-eligible — pre-screen
-          // pass". The AGENT validates the actual range quality in Step
-          // 3I (trigger 5 criteria) and rejects if the range / sweep /
-          // reversal conditions aren't met. The +20 represents the
-          // "structural payment" the agent would have earned via the
-          // ICT array score in trend-mode; range-mode equivalent is the
-          // range itself being a valid setup framework.
-          //
-          // Net range-mode max: 25 + 20 + 10 + 5 = 60 → capped at 59.
-          // Net range-mode floor (no news, no spread bonus): 25 + 20 = 45.
-          // Just above the executor floor — qualifies for Tier 3.
-          if (isRangeMode) {
-            score += 20;                                                          // range-candidate baseline
-            score = Math.min(score, 59);                                          // Tier 3 cap
-          }
-
-          const tier: 1 | 2 | 3 | null =
-            score >= TIER_1_THRESHOLD ? 1 :
-            score >= TIER_2_THRESHOLD ? 2 :
-            score >= tier3FloorFor(inst.ticker) ? 3 :
-            null;
+          // 2026-05-12 — US-1 deterministic scoring rewrite (Migration 007).
+          // The 35-line inline rubric below was lifted into the dedicated
+          // src/scoring/ module so the live scanner AND the backtest engine
+          // share one source of truth. Numerical output is unchanged versus
+          // the legacy inline math (component-by-component identity verified
+          // in tests/scoring/compose.test.ts). The prompt-side ICT-array
+          // contribution (+0/+15/+25/+35) is currently a stub returning 0;
+          // it lands deterministically in PR 2 / US-5 / T066. The history
+          // component (±10) is also 0 here because history depends on
+          // setup_type, which only the agent knows after trigger detection;
+          // the agent continues to compute its own history adjustment per
+          // prompts/ict-agent.md §G (rewrite to executor-side calculation
+          // is on the PR 2 backlog).
+          const composed = composeScore({
+            ticker: inst.ticker,
+            rawBiasClarity: biasResult.clarity,
+            rawNewsScore,
+            spreadQuality: inst.spread_quality,
+            historyWinRate: undefined,    // see comment above — agent-side until PR 2
+            historySampleSize: undefined,
+            isRangeMode,
+            ictArrayInputs: undefined,    // stub returns 0 — full impl in PR 2 / T066
+          });
 
           return {
             ticker: inst.ticker,
             name: inst.name,
-            composite_score: Math.max(0, Math.min(100, score)),
+            composite_score: composed.composite_score,
             bias: biasResult.bias as 'bullish' | 'bearish' | 'neutral',
-            tier,
+            tier: composed.tier,
+            score_breakdown: composed.score_breakdown,
+            scorer_version: composed.scorer_version,
             // min_deal_size populated post-loop via getMinDealSizeFor (L3b-2).
             // Double-cast bridges the partial literal through the
             // RankedInstrument type until the Promise.all augmentation
