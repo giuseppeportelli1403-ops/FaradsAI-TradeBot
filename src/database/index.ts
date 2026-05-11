@@ -46,6 +46,19 @@ export async function initDatabaseAsync(): Promise<void> {
   console.log(`Database initialised at ${DB_PATH}`);
 }
 
+/**
+ * Test-only helper: initialise a fresh in-memory database.
+ * Pass ':memory:' (the conventional SQLite sentinel) to get a clean,
+ * isolated DB with all tables created — no file I/O, no state bleed
+ * between beforeEach calls.  Production code always uses
+ * initDatabaseAsync() which loads/saves to DB_PATH.
+ */
+export async function initDb(_path: ':memory:'): Promise<void> {
+  const SQL = await initSqlJs();
+  db = new SQL.Database(); // always a fresh empty DB regardless of path arg
+  createTables();
+}
+
 // Exported as of 2026-04-29 (audit-3 fix scanner+misc P0-1) so the entry
 // point can flush the in-memory sql.js database to disk on SIGTERM/SIGINT.
 export function saveToFile(): void {
@@ -675,6 +688,50 @@ export function updateTradeStatus(
         closed_at = COALESCE(?, closed_at)
     WHERE id = ?
   `, [status, pnlA ?? null, pnlB ?? null, closedAt, tradeId]);
+  saveToFile();
+}
+
+/**
+ * Persist realised P&L for a trade. Separate from updateTradeStatus
+ * so the status update remains atomic and not dependent on broker
+ * round-trips. Two modes:
+ *   - pnlA / pnlB provided: leg-level attribution. pnl_total is
+ *     computed deterministically from the legs.
+ *   - pnlTotalOverride provided: aggregate-only attribution (used
+ *     when transaction → leg matching is ambiguous). pnl_a / pnl_b
+ *     stay NULL — we don't fabricate a split.
+ *
+ * Caller must choose ONE mode per call. Mixing yields an error.
+ */
+export function setTradePnl(
+  tradeId: string,
+  pnl: { pnlA?: number; pnlB?: number; pnlTotalOverride?: number },
+): void {
+  const hasLeg = pnl.pnlA !== undefined || pnl.pnlB !== undefined;
+  const hasTotal = pnl.pnlTotalOverride !== undefined;
+  if (hasLeg && hasTotal) {
+    throw new Error('setTradePnl: pass leg pnls OR pnlTotalOverride, not both');
+  }
+  if (!hasLeg && !hasTotal) return; // nothing to write
+
+  if (hasLeg) {
+    const pnlTotal = (pnl.pnlA ?? 0) + (pnl.pnlB ?? 0);
+    db.run(
+      `UPDATE trades
+         SET pnl_a = COALESCE(?, pnl_a),
+             pnl_b = COALESCE(?, pnl_b),
+             pnl_total = ?
+       WHERE id = ?`,
+      [pnl.pnlA ?? null, pnl.pnlB ?? null, pnlTotal, tradeId],
+    );
+  } else {
+    db.run(
+      `UPDATE trades
+         SET pnl_total = ?
+       WHERE id = ?`,
+      [pnl.pnlTotalOverride, tradeId],
+    );
+  }
   saveToFile();
 }
 
