@@ -53,6 +53,18 @@ const capital = new CapitalClient({
   baseURL: process.env.CAPITAL_API_URL || 'https://demo-api-capital.backend-capital.com',
 });
 
+// 2026-05-11: Monitor failure-tracking. Transient Capital.com timeouts
+// on read-only polls happen ~14×/day in production. Each one was a
+// stderr ERROR that drowned real signal in pm2-err.log. We now demote
+// the first few consecutive failures to stdout info — graceful
+// fallback already covers them — and only escalate to stderr ERROR if
+// the streak hits MONITOR_FAILURE_ESCALATE_AT, which would indicate a
+// real outage worth paging on. The counter resets to 0 on the next
+// successful tick (with a one-line recovery breadcrumb so outage
+// windows are still reconstructible from logs).
+let consecutiveMonitorFailures = 0;
+const MONITOR_FAILURE_ESCALATE_AT = 3;
+
 // ==================== DEPENDENCY-INJECTION SURFACE ====================
 // monitorSplitPositions() is called in production from the cron loop with no
 // arguments — it then uses the real Capital client, real DB, real Telegram.
@@ -309,8 +321,33 @@ export async function monitorSplitPositions(deps?: MonitorDeps): Promise<void> {
     // AxiosError leaks live auth headers (CST / X-SECURITY-TOKEN /
     // X-CAP-API-KEY) into pm2-err.log. summarizeError keeps the HTTP
     // signal but drops headers and the ClientRequest chain.
-    console.error(`[Monitor] Failed to fetch Capital state this tick: ${summarizeError(error)}`);
+    consecutiveMonitorFailures += 1;
+    const summary = summarizeError(error);
+    const isTransientTimeout = summary.startsWith('ECONNABORTED timeout');
+    // Transient single-tick timeouts: graceful fallback (skip this
+    // tick, retry on next cron) already handles them. Log at info
+    // level so they go to stdout, not stderr, until the streak crosses
+    // the escalation threshold.
+    if (isTransientTimeout && consecutiveMonitorFailures < MONITOR_FAILURE_ESCALATE_AT) {
+      console.info(
+        `[Monitor] Skipped tick (transient): ${summary} (failure ${consecutiveMonitorFailures}/${MONITOR_FAILURE_ESCALATE_AT})`,
+      );
+    } else {
+      console.error(
+        `[Monitor] Failed to fetch Capital state this tick: ${summary} (consecutive failures: ${consecutiveMonitorFailures})`,
+      );
+    }
     return;
+  }
+
+  // Tick succeeded — reset the failure streak. If we were tracking a
+  // run of failures, leave a one-line breadcrumb so outage windows
+  // remain reconstructible from logs.
+  if (consecutiveMonitorFailures > 0) {
+    console.info(
+      `[Monitor] Recovered after ${consecutiveMonitorFailures} consecutive failure(s)`,
+    );
+    consecutiveMonitorFailures = 0;
   }
 
   const openDealIds = new Set(openPositions.map((p) => p.position.dealId));

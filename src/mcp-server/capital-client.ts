@@ -84,6 +84,28 @@ const DEAL_CONFIRM_MAX_ATTEMPTS = 25;
 const DEAL_CONFIRM_BACKOFF_FACTOR = 1.08; // mild backoff: 200, 216, 233, ... up to ~1300ms by attempt 25
 const AUTH_RETRY_BACKOFF_MS = 50;
 
+// 2026-05-11 Monitor-polling resilience pass.
+//
+// Per-method request timeouts. The original 15s blanket caused ~14
+// ECONNABORTED timeouts/day on read-only Monitor polls (/positions,
+// /history/activity, /ping) in production — graceful fallback masks
+// them but the noise drowned real signal in pm2-err.log (100
+// timeouts/7 days, 75% on /positions).
+//
+// Reads now get 30s — Monitor doesn't need to fail-fast. Writes keep
+// 15s — order placement / amendment must surface latency promptly so
+// the caller can reconcile rather than block the agent loop.
+const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
+const READ_REQUEST_TIMEOUT_MS = 30000;
+
+// Single retry with 1s backoff on transient timeouts. Strictly
+// idempotent methods only (GET / HEAD / OPTIONS / DELETE). POST and
+// PUT are NEVER retried automatically — they could have hit Capital's
+// trading engine even when the response timed out, and a blind retry
+// would double-place / double-amend (we have a production memory of
+// this exact failure mode: see DEAL_CONFIRM_POLL_BASE_MS comment).
+const TIMEOUT_RETRY_BACKOFF_MS = 1000;
+
 // ==================== TIMEFRAME MAP ====================
 
 const TIMEFRAME_TO_RESOLUTION: Record<Timeframe, Resolution> = {
@@ -227,13 +249,45 @@ export class CapitalClient {
    * inside ensureSession's own idle-check path).
    */
   private async pingRaw(): Promise<void> {
-    const res = await this.http.request({
+    const res = await this.httpRequestWithRetry({
       method: 'GET',
       url: '/api/v1/ping',
       headers: this.authHeaders(),
+      timeout: READ_REQUEST_TIMEOUT_MS,
     });
     if (res.status !== 200) {
       throw new CapitalAuthError(`Ping failed: HTTP ${res.status}`);
+    }
+  }
+
+  /**
+   * Wraps this.http.request with a single retry on transient timeouts.
+   * Only idempotent methods (GET / HEAD / OPTIONS / DELETE) are retried;
+   * non-idempotent methods (POST / PUT) propagate the timeout to the
+   * caller so they can reconcile broker state before deciding what to do
+   * — a blind retry could double-place an order. The retry triggers only
+   * on ECONNABORTED (axios's timeout signal); network errors, 5xx after
+   * validation, and any other failure mode propagate immediately so the
+   * existing failure paths (re-auth, partial-close fallback, etc.) stay
+   * intact.
+   */
+  private async httpRequestWithRetry(
+    config: AxiosRequestConfig,
+  ): Promise<AxiosResponse> {
+    const method = (config.method ?? 'GET').toString().toUpperCase();
+    const isIdempotent =
+      method === 'GET' ||
+      method === 'HEAD' ||
+      method === 'OPTIONS' ||
+      method === 'DELETE';
+
+    try {
+      return await this.http.request(config);
+    } catch (err) {
+      if (!isIdempotent) throw err;
+      if (!axios.isAxiosError(err) || err.code !== 'ECONNABORTED') throw err;
+      await this.sleep(TIMEOUT_RETRY_BACKOFF_MS);
+      return this.http.request(config);
     }
   }
 
@@ -279,6 +333,15 @@ export class CapitalClient {
   private async request<T>(method: Method, path: string, body?: unknown): Promise<T> {
     await this.ensureSession();
 
+    // Reads get the longer Monitor-friendly timeout; writes keep the
+    // 15s default so order placement / amendment still fails fast.
+    const upperMethod = method.toString().toUpperCase();
+    const isReadMethod =
+      upperMethod === 'GET' || upperMethod === 'HEAD' || upperMethod === 'OPTIONS';
+    const requestTimeoutMs = isReadMethod
+      ? READ_REQUEST_TIMEOUT_MS
+      : DEFAULT_REQUEST_TIMEOUT_MS;
+
     const config: AxiosRequestConfig = {
       method,
       url: path,
@@ -287,9 +350,10 @@ export class CapitalClient {
         'Content-Type': 'application/json',
       },
       data: body,
+      timeout: requestTimeoutMs,
     };
 
-    let res = await this.http.request(config);
+    let res = await this.httpRequestWithRetry(config);
 
     if (res.status === 401) {
       const isIdempotent = method === 'GET' || method === 'DELETE';
@@ -312,7 +376,7 @@ export class CapitalClient {
         ...this.authHeaders(),
         'Content-Type': 'application/json',
       };
-      res = await this.http.request(config);
+      res = await this.httpRequestWithRetry(config);
 
       if (res.status === 401) {
         throw new CapitalAuthError(
