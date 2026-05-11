@@ -3,6 +3,12 @@
 // REJECT 100% of trades when adaptive thinking placed a thinking block
 // at content[0] (extracting '' as the text). Now extractText handles
 // that and parseAnalystResponse strictly validates the shape.
+//
+// 2026-05-11: binary contract — APPROVE | REJECT only. Legacy MODIFY
+// is coerced to fail-closed REJECT (with 'Legacy MODIFY rejected' reason)
+// for any prompt regression / model drift. The 'modifications' field
+// no longer exists in AnalystDecision; input fixtures may still carry
+// it (the parser ignores it on input) but expected outputs do not.
 import { describe, it, expect } from 'vitest';
 import { parseAnalystResponse } from '../src/agents/analyst-agent.js';
 
@@ -13,7 +19,6 @@ describe('parseAnalystResponse', () => {
     expect(out).toEqual({
       decision: 'APPROVE',
       reason: 'all checks pass',
-      modifications: {},
       confidence: 0.85,
     });
   });
@@ -31,7 +36,7 @@ describe('parseAnalystResponse', () => {
     expect(out.decision).toBe('APPROVE');
   });
 
-  it('fail-closed REJECT on invalid decision value (not APPROVE/REJECT/MODIFY)', () => {
+  it('fail-closed REJECT on invalid decision value (not APPROVE/REJECT)', () => {
     const input = '{"decision":"maybe","reason":"unsure","modifications":{},"confidence":0.6}';
     const out = parseAnalystResponse(input);
     expect(out.decision).toBe('REJECT');
@@ -78,18 +83,6 @@ describe('parseAnalystResponse', () => {
     expect(out.confidence).toBe(0); // not 0.5 — we don't know
   });
 
-  it('defaults modifications to {} when not an object', () => {
-    const input = '{"decision":"APPROVE","reason":"ok","modifications":"none","confidence":0.5}';
-    const out = parseAnalystResponse(input);
-    expect(out.modifications).toEqual({});
-  });
-
-  it('defaults modifications to {} when array', () => {
-    const input = '{"decision":"APPROVE","reason":"ok","modifications":[],"confidence":0.5}';
-    const out = parseAnalystResponse(input);
-    expect(out.modifications).toEqual({});
-  });
-
   it('returns fail-closed REJECT on unparseable text', () => {
     const out = parseAnalystResponse('this is not JSON at all');
     expect(out.decision).toBe('REJECT');
@@ -108,13 +101,6 @@ describe('parseAnalystResponse', () => {
     const out = parseAnalystResponse(input);
     expect(out.decision).toBe('APPROVE');
     expect(out.confidence).toBe(0.95);
-  });
-
-  it('handles MODIFY with size adjustment in modifications', () => {
-    const input = '{"decision":"MODIFY","reason":"size too high","modifications":{"size_per_leg":0.5},"confidence":0.8}';
-    const out = parseAnalystResponse(input);
-    expect(out.decision).toBe('MODIFY');
-    expect(out.modifications).toEqual({ size_per_leg: 0.5 });
   });
 
   it('treats missing reason as empty string', () => {
