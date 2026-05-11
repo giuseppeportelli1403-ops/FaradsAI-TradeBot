@@ -15,10 +15,15 @@
 - Three close paths to wire: `scheduler/index.ts:563` (handleTp2Hit), `scheduler/index.ts:602` (handleSlOnLeg terminal), `agents/trading-agent.ts:1722` (markTradeClosedEarly).
 
 **Capital.com transaction matching strategy:** The `Transaction` type (`src/types.ts:217`) lacks `dealId` and `instrument`. Match by:
-1. Query window `[opened_at, closed_at + 5min]`.
+1. Query window depends on capture variant:
+   - **Terminal capture** (TP2 / terminal SL / fully-closed early): `[opened_at, now+5min]` — catches all legs that closed during the trade's lifetime.
+   - **Partial capture** (TP1 leg-A close / agent partial leg close while other legs still active): `[now−1min, now+5min]` — tight window isolates the single close transaction that just landed, avoiding accidentally absorbing other trades' P&L on the same account.
 2. Filter to entries where `profitAndLoss != null && currency === accountCurrency`.
 3. Match by `size` against `trade.size_a` / `trade.size_b` where possible; tag remainder as `unmatched`.
-4. **MVP fallback:** if leg-level split fails, sum all P&Ls in window and write to `pnl_total` directly via the new `pnlTotalOverride` path. Leg-level `pnl_a` / `pnl_b` stay null in this fallback — better incomplete than wrong.
+4. **Aggregate fallback:** if leg-level split fails, sum all P&Ls in window and write to `pnl_total` directly via the new `pnlTotalOverride` path. Leg-level `pnl_a` / `pnl_b` stay null in this fallback — better incomplete than wrong.
+5. **Self-healing retry:** any close that fails to capture P&L (broker error, no match in window) leaves `pnl_total = 0`. The daily aggregator (Task 8) scans the past 7 days for such rows pre-aggregation and re-attempts capture. This is the "dead-letter queue" — the trade row itself is the queue.
+
+**Capital `/history/transactions` range/pagination — unverifiable locally:** the bot's client at `src/mcp-server/capital-client.ts:788-796` passes `from`/`to` straight through with no pagination handling. Capital's documented page cap and per-request range limit are not testable from local files. **Gate:** Task 3 cannot be marked done until a live dry-run against the demo API confirms the window strategy returns the expected transaction(s) for a recent closed trade (instructions in Task 3 step 5).
 
 ---
 
@@ -32,10 +37,10 @@
 - `scripts/backfill-trade-pnl.ts` — one-shot CLI script (dry-run by default).
 
 **Modify:**
-- `src/database/index.ts` — add `setTradePnl()` writer; add `aggregateAndUpsertDailyPnl(date, equity)`.
-- `src/scheduler/index.ts` — wire `handleTp2Hit` (line 563), `handleSlOnLeg` (line 602); add daily aggregator cron.
-- `src/agents/trading-agent.ts` — wire `close_position` tool (line 1722) to capture P&L post-close.
-- `src/scheduler/index.ts` (MonitorDeps) — add `capturePnlForTrade` to the DI surface so tests can stub it.
+- `src/database/index.ts` — add `setTradePnl()` writer; add `aggregateAndUpsertDailyPnl(date, equity)`; add `getTradesWithMissingPnl(sinceDays)` helper used by the self-healing retry path.
+- `src/scheduler/index.ts` — wire `handleTp1Hit` (line ~494, leg-A partial), `handleTp2Hit` (line 563, terminal), `handleSlOnLeg` (line 602, terminal); add daily aggregator cron that pre-runs P&L retry on the last 7 days.
+- `src/agents/trading-agent.ts` — wire `close_position` tool (line 1722) — both partial (line ~1715 deactivate path) and terminal (line ~1722 markTradeClosedEarly path) — to capture P&L post-close.
+- `src/scheduler/index.ts` (MonitorDeps) — add `capturePnl` to the DI surface so tests can stub it; supports both `terminal` and `partial` window modes.
 
 ---
 
@@ -422,6 +427,16 @@ export interface PnlCaptureDeps {
   trade: TradeRecord;
   capital: { getTransactionHistory: (from?: string, to?: string) => Promise<Transaction[]> };
   accountCurrency: string;
+  /**
+   * `terminal` — query [opened_at, now+5min]. Used by TP2 and the
+   *   terminal SL branch — wants to catch every leg-close that
+   *   happened during the trade's lifetime.
+   * `partial` — query [now−1min, now+5min]. Used by TP1 leg-A close
+   *   and agent-initiated partial leg close — isolates the single
+   *   transaction that just landed.
+   * Default: 'terminal'.
+   */
+  windowMode?: 'terminal' | 'partial';
   now?: () => Date;
 }
 
@@ -453,7 +468,11 @@ export async function capturePnlForTrade(deps: PnlCaptureDeps): Promise<PnlCaptu
   const toCapitalDateFmt = (iso: string): string =>
     iso.replace(/\.\d{3}Z$/, '').replace(/Z$/, '');
 
-  const from = toCapitalDateFmt(trade.opened_at);
+  const windowMode = deps.windowMode ?? 'terminal';
+  const from =
+    windowMode === 'terminal'
+      ? toCapitalDateFmt(trade.opened_at)
+      : toCapitalDateFmt(new Date(now.getTime() - 60_000).toISOString());
   const toDate = new Date(now.getTime() + 5 * 60_000);
   const to = toCapitalDateFmt(toDate.toISOString());
 
@@ -481,13 +500,46 @@ export async function capturePnlForTrade(deps: PnlCaptureDeps): Promise<PnlCaptu
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `npx vitest run tests/pnl-capture.test.ts`
-Expected: PASS (13 tests total)
+Expected: PASS (13 tests total, includes terminal + partial windowMode variants)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Live dry-run against Capital demo API (gate before commit)**
+
+The `Transaction` API's pagination + range limits are not testable from local fixtures. Validate against the real demo endpoint before marking this task done:
+
+```bash
+# Pick the most recent CLOSED trade from production DB and dry-run capture against it.
+ssh bot@162.55.212.198 "cd /home/bot/trading-bot && node --input-type=module -e \"
+import 'dotenv/config';
+import initSqlJs from 'sql.js';
+import fs from 'fs';
+import { CapitalClient } from './dist/mcp-server/capital-client.js';
+import { capturePnlForTrade } from './dist/scheduler/pnl-capture.js';
+
+const SQL = await initSqlJs();
+const db = new SQL.Database(new Uint8Array(fs.readFileSync('./data/trading-bot.db')));
+const r = db.exec(\\\"SELECT * FROM trades WHERE status IN ('complete','sl_hit','closed_early') ORDER BY closed_at DESC LIMIT 1\\\");
+const cols = r[0].columns;
+const trade = Object.fromEntries(cols.map((c,i) => [c, r[0].values[0][i]]));
+const capital = new CapitalClient({
+  apiKey: process.env.CAPITAL_API_KEY,
+  identifier: process.env.CAPITAL_IDENTIFIER,
+  password: process.env.CAPITAL_API_KEY_PASSWORD,
+  baseURL: process.env.CAPITAL_API_URL,
+});
+const result = await capturePnlForTrade({ trade, capital, accountCurrency: 'EUR', windowMode: 'terminal' });
+console.log('trade:', trade.id, trade.instrument, 'closed_at:', trade.closed_at);
+console.log('capture result:', JSON.stringify(result, null, 2));
+await capital.logout();
+\""
+```
+
+Expected: `capture result` shows `matched >= 1` and a `pnlTotal` close to what Capital's UI reports for that trade. If `matched === 0`, investigate whether Capital is returning the transaction within the window (may need to widen `to` beyond +5min, or check pagination).
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/scheduler/pnl-capture.ts tests/pnl-capture.test.ts
-git commit -m "feat(pnl): capturePnlForTrade orchestrator with bounded query window"
+git commit -m "feat(pnl): capturePnlForTrade orchestrator with terminal+partial windows"
 ```
 
 ---
@@ -629,11 +681,13 @@ git commit -m "feat(db): setTradePnl writer with leg / aggregate-override modes"
 
 ---
 
-## Task 5: Wire handleTp2Hit + handleSlOnLeg to capture P&L
+## Task 5: Wire handleTp1Hit + handleTp2Hit + handleSlOnLeg to capture P&L
 
 **Files:**
-- Modify: `src/scheduler/index.ts:556-615` (handleTp2Hit + handleSlOnLeg terminal branch)
+- Modify: `src/scheduler/index.ts` — `handleTp1Hit` (~line 494, partial capture for leg A), `handleTp2Hit` (~line 556, terminal), `handleSlOnLeg` (~line 579, terminal branch only — interim leg-B SL still skipped from capture).
 - Test: `tests/scheduler-pnl-wire.test.ts` (new)
+
+**Why TP1 leg-A capture:** `handleTp1Hit` deactivates leg A and moves leg B's SL to break-even. Leg A is permanently closed at this point with realised P&L — but the trade row stays at `tp1_hit` (still has live exposure on leg B). If we wait until terminal close to capture, leg A's P&L is at risk of being lost (broker-side transaction history may have rolled off / pagination boundary / unrelated audit). Capturing now is correct and matches the closure semantics.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -772,7 +826,53 @@ export async function handleTp2Hit(
 }
 ```
 
-Same pattern in `handleSlOnLeg` AFTER the terminal `d.updateTradeStatus(tradeId, finalStatus)` at line 602 — wrap the capture in the same try block.
+Same pattern in `handleSlOnLeg` AFTER the terminal `d.updateTradeStatus(tradeId, finalStatus)` at line 602 — wrap the capture in the same try block. **Important:** only fire capture inside the terminal branch — the interim "still legs active" branch at line 591-596 should NOT capture (the trade isn't closed).
+
+**For `handleTp1Hit`** (line ~494): after `d.updateTradeStatus(tradeId, 'tp1_hit')` and the `moveLegSlToBe('B', ...)` call, add a partial capture targeting leg A only:
+
+```typescript
+if (d.capturePnl) {
+  try {
+    const result = await d.capturePnl(trade, 'partial');
+    // Partial windowMode → expect at most 1 transaction matching size_a.
+    // Leg B stays open; don't overwrite its (null) pnl_b.
+    if (result.found && result.pnlA !== null) {
+      realSetTradePnl(tradeId, { pnlA: result.pnlA });
+      console.log(`[TP1] P&L captured for ${tradeId} leg A: ${result.pnlA}`);
+    } else if (result.found && result.pnlA === null && result.pnlTotal !== 0) {
+      // Size-ambiguous fallback (size_a === size_b) — write total-only,
+      // pnl_b remains null until leg B closes.
+      realSetTradePnl(tradeId, { pnlTotalOverride: result.pnlTotal });
+      console.log(`[TP1] P&L captured for ${tradeId} (total-only): ${result.pnlTotal}`);
+    } else {
+      console.warn(`[TP1] No broker P&L found for ${tradeId} leg A: ${result.note}`);
+    }
+  } catch (err) {
+    console.error(`[TP1] P&L capture failed for ${tradeId}: ${summarizeError(err)}`);
+  }
+}
+```
+
+Update MonitorDeps `capturePnl` signature to accept the windowMode arg:
+
+```typescript
+  capturePnl?: (trade: TradeRecord, windowMode?: 'terminal' | 'partial') => Promise<{
+    pnlA: number | null; pnlB: number | null;
+    pnlTotal: number; matched: number; note: string; found: boolean;
+  }>;
+```
+
+Update `defaultMonitorDeps()` to forward the arg:
+
+```typescript
+  capturePnl: (trade: TradeRecord, windowMode: 'terminal' | 'partial' = 'terminal') =>
+    capturePnlForTrade({
+      trade,
+      capital,
+      accountCurrency: process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR',
+      windowMode,
+    }),
+```
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -793,11 +893,13 @@ git commit -m "feat(pnl): capture realised P&L on TP2 + terminal SL closes"
 
 ---
 
-## Task 6: Wire close_position MCP tool to capture P&L
+## Task 6: Wire close_position MCP tool to capture P&L (terminal + partial)
 
 **Files:**
-- Modify: `src/agents/trading-agent.ts:1716-1723` (the markTradeClosedEarly call site)
+- Modify: `src/agents/trading-agent.ts:1712-1723` (both the partial-leg deactivate branch and the terminal markTradeClosedEarly branch)
 - Test: `tests/scheduler-pnl-wire.test.ts` (extend)
+
+**Why both branches:** if the agent closes leg A while leg B is still active (`remainingActive.length > 0` at line 1720), the trade stays in its prior status and `markTradeClosedEarly` is skipped — but leg A is permanently closed with realised P&L. Without capture at this branch, leg-A P&L vanishes when leg B later closes (the broker's transaction will be for B at that time, and leg A's earlier transaction may be outside any future window). Capture both: partial leg close → write `pnlA` or `pnlB` based on the matched leg; terminal → standard pattern.
 
 - [ ] **Step 1: Add failing test**
 
@@ -825,18 +927,18 @@ Expected: FAIL (placeholder).
 
 - [ ] **Step 3: Wire close_position**
 
-Modify `src/agents/trading-agent.ts` close_position handler (line 1717-1723) to:
+Modify `src/agents/trading-agent.ts` close_position handler around line 1712-1723:
 
 ```typescript
 const remainingActive = getActiveSlTpOrdersByTradeId(trade.id);
+const accountCurrency = process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR';
+
 if (remainingActive.length === 0) {
+  // Terminal close.
   markTradeClosedEarly(trade.id, `${reasonText} (deal=${dealId}, leg=${matchedLeg?.leg ?? '?'})`);
-  // Capture broker P&L (best-effort).
   try {
     const result = await capturePnlForTrade({
-      trade,
-      capital,
-      accountCurrency: process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR',
+      trade, capital, accountCurrency, windowMode: 'terminal',
     });
     if (result.found) {
       if (result.pnlA !== null || result.pnlB !== null) {
@@ -845,10 +947,37 @@ if (remainingActive.length === 0) {
         setTradePnl(trade.id, { pnlTotalOverride: result.pnlTotal });
       }
     } else {
-      console.warn(`[close_position] No broker P&L found for ${trade.id}: ${result.note}`);
+      console.warn(`[close_position] No broker P&L found for ${trade.id} (terminal): ${result.note}`);
     }
   } catch (err) {
-    console.error(`[close_position] P&L capture failed for ${trade.id}: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[close_position] Terminal P&L capture failed for ${trade.id}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+} else if (matchedLeg) {
+  // Partial leg close — other legs still live. Capture this leg's
+  // realised P&L now; trade status unchanged.
+  try {
+    const result = await capturePnlForTrade({
+      trade, capital, accountCurrency, windowMode: 'partial',
+    });
+    if (result.found) {
+      // Map matchedLeg.leg → pnlA / pnlB. matchTransactionsToLegs may
+      // have already attributed via size; if it did, use that. Else
+      // attribute the total to the matched leg directly.
+      const pnlForLeg =
+        matchedLeg.leg === 'A'
+          ? (result.pnlA ?? result.pnlTotal)
+          : (result.pnlB ?? result.pnlTotal);
+      if (matchedLeg.leg === 'A') {
+        setTradePnl(trade.id, { pnlA: pnlForLeg });
+      } else {
+        setTradePnl(trade.id, { pnlB: pnlForLeg });
+      }
+      console.log(`[close_position] Partial P&L captured for ${trade.id} leg ${matchedLeg.leg}: ${pnlForLeg}`);
+    } else {
+      console.warn(`[close_position] No broker P&L found for ${trade.id} leg ${matchedLeg.leg}: ${result.note}`);
+    }
+  } catch (err) {
+    console.error(`[close_position] Partial P&L capture failed for ${trade.id}: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 ```
@@ -928,7 +1057,53 @@ describe('aggregateAndUpsertDailyPnl', () => {
     const row = getDailyPnl('2026-05-11');
     expect(row?.realised_pnl).toBe(0);
   });
+
+  it('aggregates trades whose closed_at uses ISO-Z format', () => {
+    // Real production format from updateTradeStatus: toISOString() →
+    // '2026-05-07T13:35:01.106Z'
+    seedClosedTradeRaw('iso-1', 4.50, '2026-05-07T13:35:01.106Z');
+    seedClosedTradeRaw('iso-2', 6.00, '2026-05-07T07:20:00.000Z');
+    aggregateAndUpsertDailyPnl('2026-05-07', 5000);
+    expect(getDailyPnl('2026-05-07')?.realised_pnl).toBeCloseTo(10.5);
+  });
+
+  it('aggregates trades whose closed_at uses space-separator format', () => {
+    // Real production format from markTradeClosedEarly: datetime('now')
+    // → '2026-05-06 15:16:43'
+    seedClosedTradeRaw('space-1', 3.21, '2026-05-06 15:16:43');
+    seedClosedTradeRaw('space-2', 1.79, '2026-05-06 09:02:34');
+    aggregateAndUpsertDailyPnl('2026-05-06', 5000);
+    expect(getDailyPnl('2026-05-06')?.realised_pnl).toBeCloseTo(5.0);
+  });
+
+  it('aggregates mixed ISO + space-separator format trades on the same date', () => {
+    seedClosedTradeRaw('mix-iso', 2.50, '2026-05-05T08:15:00.000Z');
+    seedClosedTradeRaw('mix-space', 4.00, '2026-05-05 14:30:22');
+    aggregateAndUpsertDailyPnl('2026-05-05', 5000);
+    expect(getDailyPnl('2026-05-05')?.realised_pnl).toBeCloseTo(6.5);
+  });
 });
+
+// Helper that inserts a closed trade with an EXPLICIT closed_at value.
+// Required because the standard updateTradeStatus auto-stamps closed_at
+// from new Date().toISOString() — we need to control the date format
+// for these tests.
+function seedClosedTradeRaw(id: string, pnlTotal: number, closedAt: string): void {
+  insertTrade({
+    id, strategy_tag: 'ICT_INTRADAY', instrument: 'GOLD',
+    instrument_category: 'COMMODITY', direction: 'long', setup_type: 'OB_RETEST',
+    entry: 4735, sl: 4723, tp1: 4748, tp2: 4760,
+    position_a_id: 'D-A', position_b_id: 'D-B', size_a: 0.5, size_b: 0.3,
+    status: 'tp1_hit', composite_score: 65, kill_zone: 'NY_OPEN',
+    news_category: null, analyst_decision: 'APPROVE', reasoning: '',
+    closure_reason: null, opened_at: '2026-05-05T07:00:00.000Z',
+  } as never);
+  // Direct SQL to bypass auto-stamping in updateTradeStatus.
+  // Exposed via initDb returning a `db` handle for tests, or via a
+  // test-only helper exported from src/database/index.ts.
+  setTradeStatusAndClosedAt(id, 'complete', closedAt);
+  setTradePnl(id, { pnlTotalOverride: pnlTotal });
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -977,22 +1152,85 @@ git commit -m "feat(pnl): aggregateAndUpsertDailyPnl — daily realised P&L roll
 
 ---
 
-## Task 8: Daily aggregator cron job
+## Task 8: Daily aggregator cron + self-healing P&L retry
 
 **Files:**
-- Modify: `src/scheduler/index.ts` (add new cron entry near line 829-950)
-- Test: `tests/daily-pnl-aggregator.test.ts` (extend with cron registration check — or skip cron-timing test since node-cron is hard to test)
+- Modify: `src/database/index.ts` — add `getTradesWithMissingPnl(sinceDays)` helper.
+- Modify: `src/scheduler/index.ts` — add new cron entry near line 829-950 that retries missing P&L on the past 7 days BEFORE aggregating.
+- Test: extend `tests/daily-pnl-aggregator.test.ts` with `getTradesWithMissingPnl` cases.
 
-- [ ] **Step 1: Add cron entry**
+**Why retry in the aggregator:** Codex flagged that best-effort try/catch alone is insufficient for accounting data — the original production bug was exactly silent capture gaps. Rather than spawn a new cron, fold the dead-letter retry into the daily aggregator: scan the last 7 days for trades with status terminal + `pnl_total IS NULL OR pnl_total = 0`, retry capture, THEN sum. The trade row itself is the dead-letter queue — no new table.
+
+- [ ] **Step 1: Add `getTradesWithMissingPnl` helper**
+
+In `src/database/index.ts` after `getTradeHistory`:
+
+```typescript
+/**
+ * Returns terminal-status trades whose pnl_total is NULL or 0 and that
+ * closed within the last `sinceDays` days. Used by the daily aggregator
+ * to retry P&L capture for any trades whose synchronous close-path
+ * capture failed (broker outage, no transactions in window, etc.).
+ *
+ * Why 7 days: Capital's transaction history is reliably available for
+ * at least 30 days, but we don't want unbounded backfill on every cron.
+ * 7 days is enough to cover weekend / multi-day outages.
+ */
+export function getTradesWithMissingPnl(sinceDays: number): TradeRecord[] {
+  const result = db.exec(
+    `SELECT * FROM trades
+       WHERE status IN ('complete', 'sl_hit', 'closed_early')
+         AND (pnl_total IS NULL OR pnl_total = 0)
+         AND date(closed_at) >= date('now', ?)
+       ORDER BY closed_at DESC`,
+    [`-${sinceDays} days`],
+  );
+  return resultToObjects<TradeRecord>(result);
+}
+```
+
+Add a passing test for it before continuing.
+
+- [ ] **Step 2: Add cron entry with retry + aggregate**
 
 In `src/scheduler/index.ts` near the other daily cron jobs (around the EOD journal entry at line ~928), add:
 
 ```typescript
-// 2026-05-11: Daily realised-P&L roll-up. Runs at 00:05 UTC for the
-// previous UTC day. Uses Capital's live balance as the equity snapshot.
-// If Capital is unreachable, falls back to the last known equity from
-// daily_pnl_log so we still record realised P&L.
+// 2026-05-11: Daily realised-P&L roll-up + self-healing retry. Runs at
+// 00:05 UTC. First retries P&L capture for any terminal trades from
+// the past 7 days whose pnl_total is still NULL/0 — this is the
+// dead-letter recovery loop. Then aggregates yesterday's realised P&L
+// into daily_pnl_log.
 cron.schedule('5 0 * * *', async () => {
+  // ---- Step A: self-healing retry on missing P&L ----
+  const stragglers = getTradesWithMissingPnl(7);
+  if (stragglers.length > 0) {
+    console.log(`[DailyPnl] Retrying P&L capture for ${stragglers.length} trade(s) with missing pnl_total`);
+  }
+  for (const trade of stragglers) {
+    try {
+      const result = await capturePnlForTrade({
+        trade,
+        capital,
+        accountCurrency: process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR',
+        windowMode: 'terminal',
+      });
+      if (result.found) {
+        if (result.pnlA !== null || result.pnlB !== null) {
+          setTradePnl(trade.id, { pnlA: result.pnlA ?? undefined, pnlB: result.pnlB ?? undefined });
+        } else {
+          setTradePnl(trade.id, { pnlTotalOverride: result.pnlTotal });
+        }
+        console.log(`[DailyPnl] Retry succeeded for ${trade.id}: total=${result.pnlTotal}`);
+      } else {
+        console.warn(`[DailyPnl] Retry still no data for ${trade.id}: ${result.note}`);
+      }
+    } catch (err) {
+      console.error(`[DailyPnl] Retry failed for ${trade.id}: ${summarizeError(err)}`);
+    }
+  }
+
+  // ---- Step B: aggregate yesterday ----
   const yesterday = new Date(Date.now() - 24 * 60 * 60_000)
     .toISOString()
     .substring(0, 10); // YYYY-MM-DD
@@ -1017,7 +1255,12 @@ cron.schedule('5 0 * * *', async () => {
 Add imports at top of `src/scheduler/index.ts`:
 
 ```typescript
-import { aggregateAndUpsertDailyPnl, getDailyPnl } from '../database/index.js';
+import {
+  aggregateAndUpsertDailyPnl,
+  getDailyPnl,
+  getTradesWithMissingPnl,
+  setTradePnl,
+} from '../database/index.js';
 ```
 
 - [ ] **Step 2: Run full test suite**
@@ -1163,26 +1406,39 @@ ssh bot@162.55.212.198 "cd /home/bot/trading-bot && \
 
 ---
 
+## Codex Plan-Review Amendments (2026-05-11)
+
+This plan was reviewed by `codex:rescue` after the initial draft. All 5 findings were folded in:
+
+1. **TP1 leg-A capture** → Task 5 now wires `handleTp1Hit` with `windowMode: 'partial'` and writes `pnl_a` only (no `closed_at` mutation).
+2. **Partial `close_position` capture** → Task 6 now handles both terminal and partial branches; partial writes `pnl_a` or `pnl_b` to whichever leg's dealId just closed.
+3. **Mixed `closed_at` format aggregation tests** → Task 7 now has explicit tests for ISO-Z, space-separator, and mixed-day formats from the production DB.
+4. **Self-healing retry instead of best-effort-only** → Task 8 now retries missing P&L for the past 7 days *before* daily aggregation. The trade row itself is the dead-letter queue (`pnl_total IS NULL OR 0`), avoiding a new table.
+5. **Capital pagination/range unverifiable locally** → Task 3 step 5 added: live dry-run against demo API gates the commit.
+
 ## Self-Review
 
 **Spec coverage:**
-- ✅ Fetch broker P&L on close → Task 5 (TP2 + SL terminal), Task 6 (close_position)
-- ✅ Write to pnl_total → Task 4 (setTradePnl), invoked by Tasks 5+6
-- ✅ Daily aggregator → Tasks 7+8
-- ✅ Backfill → Task 9
+- ✅ Fetch broker P&L on every close (terminal + partial) → Task 5 (TP1 partial + TP2 terminal + SL terminal), Task 6 (close_position terminal + partial)
+- ✅ Write to pnl_total → Task 4 (setTradePnl), invoked by Tasks 5+6+8
+- ✅ Daily aggregator + self-healing retry → Tasks 7+8
+- ✅ Mixed format handling → Task 7 covers both `'2026-05-07T13:35:01.106Z'` (toISOString) and `'2026-05-06 15:16:43'` (sqlite datetime('now'))
+- ✅ Backfill (historical) → Task 9
+- ✅ Live dry-run gate before merging → Task 3 step 5
 
-**Placeholder scan:** None. Task 6 step 1 uses a placeholder `expect(true).toBe(false)` to start TDD, replaced with real mock in step 4.
+**Placeholder scan:** None. Task 6 step 1 uses a placeholder `expect(true).toBe(false)` to start TDD, replaced with real mock in step 4. Task 7's `setTradeStatusAndClosedAt` helper needs an export from `src/database/index.ts` — implementer adds it as the first sub-step.
 
 **Type consistency:**
-- `PnlCaptureResult`, `MatchResult` types defined in Task 2-3, used unchanged in Tasks 5-6.
-- `setTradePnl` signature `{ pnlA?, pnlB?, pnlTotalOverride? }` used consistently in Tasks 4, 5, 6, 9.
-- `capturePnlForTrade()` deps shape `{ trade, capital, accountCurrency, now? }` consistent across Tasks 3, 5, 6, 9.
+- `PnlCaptureResult`, `MatchResult` types defined in Task 2-3, used unchanged in Tasks 5-6-8.
+- `setTradePnl` signature `{ pnlA?, pnlB?, pnlTotalOverride? }` used consistently in Tasks 4, 5, 6, 8, 9.
+- `capturePnlForTrade()` deps shape `{ trade, capital, accountCurrency, windowMode?, now? }` consistent across Tasks 3, 5, 6, 8, 9.
 
 **Known risks:**
-1. **Transaction matching may underperform on real Capital data.** Mitigation: total-only fallback (Task 2) means we still capture *aggregate* P&L even if leg-split fails. Monitor production logs after deploy.
-2. **Capital `getTransactionHistory` may return >2 transactions** if there's overlap (e.g., adjacent trades on the same instrument). The window is bounded by `[opened_at, closed_at + 5min]` per trade — should give acceptable isolation, but worth reviewing dry-run output.
-3. **2-leg trades with equal sizes** fall back to total-only. Acceptable.
-4. **Backfill writes to live VPS DB.** Script defaults to dry-run; manual `--apply` review required.
+1. **Transaction matching may underperform on real Capital data.** Mitigation: total-only fallback + self-healing retry (Task 8) re-attempts for 7 days post-close.
+2. **Capital `/history/transactions` pagination/range limit** — unverifiable locally. Mitigation: Task 3 step 5 dry-run gate must pass on demo API before merge.
+3. **Adjacent same-currency same-size trades** — Capital `Transaction` lacks dealId, so two simultaneous trades with same size on different instruments could swap-attribute. Mitigation: narrow `partial` window (1 min) reduces overlap probability to near-zero. Document as known limitation; if it bites, add dealId-via-note parsing.
+4. **2-leg trades with equal sizes** fall back to total-only. Acceptable.
+5. **Backfill writes to live VPS DB.** Script defaults to dry-run; manual `--apply` review required.
 
 ---
 
