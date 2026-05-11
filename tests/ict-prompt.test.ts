@@ -3,6 +3,12 @@
 // the prompt file STILL contains the literal directives we shipped, NOT
 // behavioral correctness of the agent (which is only validatable in
 // production).
+//
+// 2026-05-11: binary contract — APPROVE | REJECT only. The
+// MODIFY-resubmit assertions were removed; new tests assert the prompt
+// does NOT teach modification-and-resubmit (the next 15M scheduler tick
+// is the only retry path) and does NOT contain any modif* word form
+// (codex finding 7 + spec-reviewer catch — broader than Group B's grep).
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -51,20 +57,23 @@ describe('ict-agent.md L3 directives', () => {
     );
   });
 
-  it('analyst response interpretation rule (2026-05-08 incident guard)', () => {
-    // Structured-field-only rule must be present so the agent doesn't
-    // misread MODIFY prose as APPROVE.
-    expect(promptText).toContain(
-      'structured `decision` field is the ONLY authority',
-    );
-    // MODIFY-must-resubmit rule must be present so the agent applies
-    // modifications and resubmits instead of giving up.
-    expect(promptText).toContain(
-      'the `modifications` field is your action list',
-    );
-    // The 2026-05-08 incident reference tells future readers what bug
-    // this guard exists for (9 MODIFYs misread or abandoned, 0 trades).
-    expect(promptText).toContain('2026-05-08');
+  it('does NOT instruct the agent to resubmit on REJECT (contract is binary 2026-05-11)', () => {
+    // The ICT prompt must not tell the agent to apply modifications and
+    // re-request — the next 15M scheduler tick is the only path to retry.
+    expect(promptText).not.toMatch(/modifications` field is your action list/);
+    expect(promptText).not.toMatch(/apply the modifications and re-submit/);
+  });
+
+  it('keeps the anti-pattern rule that decision-field is sole authority', () => {
+    // The 2026-05-08 incident rule (do not act on prose if decision !== APPROVE)
+    // is still load-bearing — keep asserting it.
+    expect(promptText).toMatch(/structured `decision` field is the ONLY authority/);
+  });
+
+  it('ict prompt does NOT contain any modif* word form (codex finding 7 + spec-reviewer catch)', () => {
+    // Broader pattern than the narrow Group B grep — guards against any
+    // future leak via modified, modifying, modifier, etc.
+    expect(promptText).not.toMatch(/modif/i);
   });
 
   it('STEP 3 contains L0 feasibility pre-flight directive', () => {
