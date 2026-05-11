@@ -4,7 +4,12 @@
 // The module uses an isMain guard so importing it here does NOT call main().
 
 import { describe, it, expect } from 'vitest';
-import { filterCandidates, FROM, TO } from '../scripts/backfill-trade-pnl.js';
+import {
+  filterCandidates,
+  isPm2BotRunning,
+  FROM,
+  TO,
+} from '../scripts/backfill-trade-pnl.js';
 import type { TradeRecord } from '../src/types.js';
 
 // ==================== HELPERS ====================
@@ -89,11 +94,14 @@ describe('filterCandidates', () => {
     const t = makeTrade({ pnl_total: null, closed_at: null });
     expect(filterCandidates([t], FROM, TO)).toHaveLength(0);
   });
+});
 
-  it('--apply flag gate: process.argv.includes is the sole write guard', () => {
-    // This is a smoke check: the flag string used in the script.
-    // If someone renames the flag, this test will remind them to update docs.
-    expect('--apply').toBe('--apply');
-    expect(process.argv.includes('--apply')).toBe(false); // vitest doesn't pass --apply
+describe('isPm2BotRunning', () => {
+  it('returns false when pm2 is not installed or unavailable (safe default)', () => {
+    // This test runs in CI / dev environments where pm2 is NOT present
+    // (Windows laptop, GitHub Actions). The function MUST swallow the
+    // ENOENT / "command not found" from execSync and return false so
+    // --apply isn't blocked in environments where there's no live bot.
+    expect(isPm2BotRunning()).toBe(false);
   });
 });

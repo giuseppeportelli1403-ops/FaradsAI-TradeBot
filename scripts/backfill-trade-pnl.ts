@@ -11,6 +11,18 @@
 //   npx tsx scripts/backfill-trade-pnl.ts            # dry-run (no DB writes)
 //   npx tsx scripts/backfill-trade-pnl.ts --apply    # commit changes to DB
 //
+// IMPORTANT — concurrent-write safety:
+//   sql.js DB image is written via writeFileSync. If the live pm2 bot
+//   is running while this script --applys, both processes hold their
+//   own in-memory image and the last writer wins, silently clobbering
+//   the other's writes. Before --apply on the VPS:
+//     pm2 stop trading-bot
+//     npx tsx scripts/backfill-trade-pnl.ts --apply
+//     pm2 start trading-bot
+//   Dry-run mode is read-only and safe to run anytime.
+//   --apply also has a runtime guard below that refuses to run if it
+//   detects the pm2 trading-bot process is online.
+//
 // After --apply, re-run the daily aggregator for each backfilled date:
 //   for d in 2026-04-21 ... 2026-05-08; do
 //     npx tsx -e "import('./src/database/index.js').then(m => \
@@ -18,6 +30,7 @@
 //   done
 
 import 'dotenv/config';
+import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initDatabaseAsync, getTradeHistory, setTradePnl } from '../src/database/index.js';
@@ -64,6 +77,37 @@ export function filterCandidates(
   });
 }
 
+/**
+ * Returns true if the live pm2 trading-bot process is online. Used to
+ * prevent --apply runs from racing with the live bot's own DB writes
+ * (sql.js writeFileSync clobbers cross-process changes silently).
+ *
+ * Failure modes (pm2 not installed, not on PATH, jlist crashes, JSON
+ * parse fails) all return false — safe default: assume no bot running
+ * and allow --apply. This matches the local-dev / Windows case where
+ * pm2 isn't present at all.
+ */
+export function isPm2BotRunning(): boolean {
+  try {
+    const out = execSync('pm2 jlist', {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const procs = JSON.parse(out) as Array<{
+      name: string;
+      pm2_env?: { status?: string };
+    }>;
+    return procs.some(
+      (p) =>
+        (p.name === 'trading-bot' || p.name === 'farad-bot') &&
+        p.pm2_env?.status === 'online',
+    );
+  } catch {
+    // pm2 not installed, not on PATH, or jlist failed — assume safe.
+    return false;
+  }
+}
+
 // ==================== MAIN ====================
 
 export async function main(): Promise<void> {
@@ -73,6 +117,19 @@ export async function main(): Promise<void> {
   console.log(`  Window  : ${FROM} → ${TO} (exclusive upper bound, so ${FROM} to 2026-05-08 inclusive)`);
   console.log(`  Mode    : ${apply ? 'APPLY (DB writes enabled)' : 'DRY-RUN (no DB writes)'}`);
   console.log('');
+
+  // --- Concurrent-write guard ---
+  // Only blocks --apply runs. Dry-run is read-only and safe even with
+  // the live bot running.
+  if (apply && isPm2BotRunning()) {
+    console.error('[backfill-trade-pnl] ABORT: pm2 trading-bot process is online.');
+    console.error('  Concurrent writes to data/trading-bot.db would corrupt state.');
+    console.error('  sql.js writeFileSync replaces the entire DB image, so whichever');
+    console.error('  process writes last silently clobbers the other\'s mutations.');
+    console.error('');
+    console.error('  Fix: pm2 stop trading-bot   then re-run with --apply.');
+    process.exit(1);
+  }
 
   // --- DB init ---
   // initDatabaseAsync() uses the hardcoded DB_PATH from src/database/index.ts
