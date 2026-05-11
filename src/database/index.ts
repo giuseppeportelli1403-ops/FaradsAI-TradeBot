@@ -509,6 +509,19 @@ function createTables(): void {
     )
   `);
 
+  // analyst_log: historical record of every analyst decision.
+  //
+  // 2026-05-11: MODIFY removed from the application contract (binary
+  // APPROVE/REJECT). The CHECK constraint below intentionally keeps
+  // MODIFY as a valid value so historical rows (pre-2026-05-11) remain
+  // readable. The application layer (src/agents/analyst-agent.ts) coerces
+  // any new MODIFY input to REJECT, so no new MODIFY rows can be written.
+  // The `modifications` TEXT column is also kept for historical rows —
+  // new rows write '{}' via the INSERT path (see logAnalystDecision below).
+  //
+  // If/when a future migration prunes pre-2026-05-11 rows, the CHECK
+  // constraint and modifications column can be dropped together. Until
+  // then: leave both alone.
   db.run(`
     CREATE TABLE IF NOT EXISTS analyst_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
