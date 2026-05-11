@@ -419,9 +419,8 @@ export interface ResearchBrief {
 // ==================== ANALYST ====================
 
 export interface AnalystDecision {
-  decision: 'APPROVE' | 'REJECT' | 'MODIFY';
+  decision: 'APPROVE' | 'REJECT';
   reason: string;
-  modifications: Record<string, unknown>;
   confidence: number;
 }
 

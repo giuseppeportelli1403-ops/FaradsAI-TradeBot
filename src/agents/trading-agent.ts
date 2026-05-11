@@ -683,7 +683,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   {
     name: 'request_analyst_review',
     description:
-      'MANDATORY before place_split_trade. Submits the full 2-leg trade proposal to the Trade Analyst Agent. Returns { decision: APPROVE|REJECT|MODIFY, reason, analyst_token, proposal_hash, computed_sizes }. The analyst_token is a hash of the canonicalised proposal — place_split_trade rejects unless the supplied token matches a same-cycle approval AND the proposal hash matches. You CANNOT mutate SL/TP/score/risk_pct between approval and placement. **Sizing (size_a / size_b) is COMPUTED SERVER-SIDE** from total_risk_pct, balance, and the broker tick rule — any size_a/size_b you supply is IGNORED and replaced with the server values. Inspect computed_sizes in the response if you need them for logging.',
+      'MANDATORY before place_split_trade. Submits the full 2-leg trade proposal to the Trade Analyst Agent. Returns { decision: APPROVE|REJECT, reason, analyst_token, proposal_hash, computed_sizes }. analyst_token is empty string \'\' for any REJECT — only APPROVE returns a usable token. place_split_trade validates the token; an empty token causes that call to fail closed. The analyst_token (on APPROVE) is a hash of the canonicalised proposal — place_split_trade rejects unless the supplied token matches a same-cycle approval AND the proposal hash matches. You CANNOT mutate SL/TP/score/risk_pct between approval and placement. **Sizing (size_a / size_b) is COMPUTED SERVER-SIDE** from total_risk_pct, balance, and the broker tick rule — any size_a/size_b you supply is IGNORED and replaced with the server values. Inspect computed_sizes in the response if you need them for logging.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -889,8 +889,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
             proposal_hash: '',
             trade_id: '',
             confidence: 0,
-            modifications: {},
-          });
+            });
         }
         serverSizing = computeServerSizing({
           balance: balance.balance,
@@ -909,7 +908,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           proposal_hash: '',
           trade_id: '',
           confidence: 0,
-          modifications: {},
         });
       }
       if (!serverSizing.ok) {
@@ -921,7 +919,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           proposal_hash: '',
           trade_id: '',
           confidence: 0,
-          modifications: {},
         });
       }
       const { sizeA: serverSizeA, sizeB: serverSizeB } = serverSizing;
@@ -993,7 +990,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           proposal_hash: hash,
           trade_id: proposal.trade_id,
           confidence: 0,
-          modifications: {},
         });
       }
 
@@ -1018,7 +1014,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           proposal_hash: hash,
           trade_id: proposal.trade_id,
           confidence: 0,
-          modifications: {},
         });
       }
 
@@ -1027,7 +1022,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         approvedProposals.set(hash, { approvedAt: Date.now(), proposal });
       } else {
         // 2026-04-29 audit-3 fix (P0-3): invalidate any prior APPROVE on a
-        // REJECT/MODIFY for the same proposal hash. Pre-fix scenario: the
+        // REJECT for the same proposal hash. Pre-fix scenario: the
         // agent calls request_analyst_review twice in the same cycle (e.g.
         // re-asking after a fresh news fetch); first call APPROVEs and
         // stores the token, second call REJECTs but the OLD APPROVE token
@@ -1038,14 +1033,20 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         // explicitly invalidates any prior approval for that same hash.
         approvedProposals.delete(hash);
       }
+      // 2026-05-11 hardening: analyst_token is empty string for any
+      // non-APPROVE decision. A caller that ignores the `decision` field
+      // and passes this token to place_split_trade will fail the token
+      // validation gate — defense-in-depth against agent-side misreads
+      // (the 2026-05-11 incident class). Hash is still returned in
+      // proposal_hash for log correlation.
+      const isApproved = decision.decision === 'APPROVE';
       return JSON.stringify({
         decision: decision.decision,
         reason: decision.reason,
-        analyst_token: hash,
+        analyst_token: isApproved ? hash : '',
         proposal_hash: hash,
         trade_id: proposal.trade_id,
         confidence: decision.confidence,
-        modifications: decision.modifications,
         // 2026-05-07 — Codex follow-up: surface server-computed sizes so the
         // LLM can log them in its decision-cycle output. Any size_a/size_b
         // values the LLM supplied to this tool were ignored and replaced

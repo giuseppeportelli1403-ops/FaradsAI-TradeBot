@@ -1,6 +1,7 @@
 // Trade Analyst Agent — Pre-Trade Approval Gate
 // Called by ICT/Swing agents before every trade execution.
-// Must respond APPROVE, REJECT, or MODIFY within 15 seconds.
+// Must respond APPROVE or REJECT within 15 seconds. MODIFY removed 2026-05-11
+// — see docs/superpowers/plans/2026-05-11-remove-modify-decision.md
 //
 // 6-Check Approval Sequence:
 //   1. Sanity (SL side, TP order, SL distance, size)
@@ -19,17 +20,53 @@ import type { AnalystDecision, StrategyTag } from '../types.js';
 const anthropic = new Anthropic();
 
 /**
+ * Tool schema for the analyst's forced submit_decision call. Hoisted to module
+ * scope (2026-05-11) so tests can introspect the decision enum to assert the
+ * MODIFY-removal invariant. The decision enum MUST remain ['APPROVE','REJECT'].
+ */
+const SUBMIT_DECISION_TOOL = {
+  name: 'submit_decision',
+  description:
+    'Submit your final approval decision for the proposed trade after running the 6-check sequence. ' +
+    'Binary contract: APPROVE if all 6 checks pass (or pass with caveats — put caveats in `reason`); REJECT if any check fails or the trade should be deferred to a later cycle.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      decision: {
+        type: 'string',
+        enum: ['APPROVE', 'REJECT'],
+        description: 'APPROVE = all 6 checks pass (caveats OK in reason). REJECT = any check fails, banned pattern, calendar veto, or wait-for-event defer.',
+      },
+      reason: {
+        type: 'string',
+        description: 'Plain-English summary of the decision rationale. For APPROVE: 1-2 sentences confirming the checks. For REJECT: name the failing check + the specific reason. Caveats and non-blocking concerns go here on APPROVE.',
+      },
+      confidence: {
+        type: 'number',
+        description: 'How confident you are in this decision, 0-1. Use 0 only on fail-closed; reserve >0.9 for unambiguous cases.',
+      },
+    },
+    required: ['decision', 'reason', 'confidence'],
+  },
+};
+
+/** Test-only export — Group C reads this to assert the decision enum is binary. */
+export function getSubmitDecisionToolForTest() {
+  return SUBMIT_DECISION_TOOL;
+}
+
+/**
  * Parse the Analyst's free-form response into a structured AnalystDecision.
  * Audit fixes 2026-04-29:
  *   - Use parseLastJsonObject (balanced-brace, last-object-wins) — the prior
  *     greedy regex /\{[\s\S]*\}/ spliced trailing prose into the parse target
  *     and could match a prose example object before the real decision.
  *   - VALIDATE the parsed shape rather than blindly trusting whatever the
- *     LLM emitted. `decision` must be one of the three string literals
- *     (case-insensitive, normalised to uppercase). `confidence` must be a
- *     finite number in [0,1] — coerced from string-number if needed,
- *     defaulted to 0 on any other shape. `modifications` must be a plain
- *     object — defaulted to {}. `reason` must be a string — defaulted to ''.
+ *     LLM emitted. `decision` must be APPROVE or REJECT (case-insensitive,
+ *     normalised to uppercase; legacy MODIFY is coerced to fail-closed REJECT
+ *     as of 2026-05-11). `confidence` must be a finite number in [0,1] —
+ *     coerced from string-number if needed, defaulted to 0 on any other shape.
+ *     `reason` must be a string — defaulted to ''.
  *   - Fail-closed default uses confidence 0.0 (not 0.5) — pre-fix the 0.5
  *     polluted Weekly Review calibration metrics by anchoring parse-failure
  *     events to the middle of the confidence distribution. 0.0 is honest:
@@ -39,7 +76,6 @@ export function parseAnalystResponse(text: string): AnalystDecision {
   const failClosed = (reason: string): AnalystDecision => ({
     decision: 'REJECT',
     reason,
-    modifications: {},
     confidence: 0,
   });
 
@@ -49,23 +85,28 @@ export function parseAnalystResponse(text: string): AnalystDecision {
   }
 
   const decisionRaw = String(raw.decision ?? '').toUpperCase();
-  if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT' && decisionRaw !== 'MODIFY') {
-    return failClosed(`Invalid decision value '${raw.decision}' — expected APPROVE/REJECT/MODIFY.`);
+
+  // 2026-05-11: MODIFY removed from the contract. Coerce any rogue MODIFY
+  // (from prompt regressions or model drift) to fail-closed REJECT so the
+  // bot can never act on a contradictory response. The console.warn line
+  // is the monitoring signal — grep pm2-out.log for '[analyst-coercion]'
+  // to track post-rollout frequency.
+  if (decisionRaw === 'MODIFY') {
+    console.warn('[analyst-coercion] legacy MODIFY -> REJECT (raw decision rejected by binary contract)');
+    return failClosed('Legacy MODIFY rejected — analyst contract is binary (APPROVE/REJECT) as of 2026-05-11.');
+  }
+
+  if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT') {
+    return failClosed(`Invalid decision value '${raw.decision}' — expected APPROVE/REJECT.`);
   }
 
   const confRaw = Number(raw.confidence);
   const confidence = Number.isFinite(confRaw) ? Math.max(0, Math.min(1, confRaw)) : 0;
-
-  const modifications = (raw.modifications && typeof raw.modifications === 'object' && !Array.isArray(raw.modifications))
-    ? (raw.modifications as Record<string, unknown>)
-    : {};
-
   const reason = typeof raw.reason === 'string' ? raw.reason : '';
 
   return {
-    decision: decisionRaw as 'APPROVE' | 'REJECT' | 'MODIFY',
+    decision: decisionRaw as 'APPROVE' | 'REJECT',
     reason,
-    modifications,
     confidence,
   };
 }
@@ -88,7 +129,6 @@ export function extractAnalystDecisionFromTool(content: unknown[]): AnalystDecis
   const failClosed = (reason: string): AnalystDecision => ({
     decision: 'REJECT',
     reason,
-    modifications: {},
     confidence: 0,
   });
 
@@ -110,24 +150,25 @@ export function extractAnalystDecisionFromTool(content: unknown[]): AnalystDecis
       const raw = rawInput as Record<string, unknown>;
 
       const decisionRaw = String(raw.decision ?? '').toUpperCase();
-      if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT' && decisionRaw !== 'MODIFY') {
+
+      // 2026-05-11: coerce legacy MODIFY to fail-closed REJECT. Monitoring
+      // tag '[analyst-coercion]' — see parseAnalystResponse above.
+      if (decisionRaw === 'MODIFY') {
+        console.warn('[analyst-coercion] legacy MODIFY -> REJECT (tool-use path)');
+        return failClosed('Legacy MODIFY rejected — analyst contract is binary (APPROVE/REJECT) as of 2026-05-11.');
+      }
+
+      if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT') {
         return failClosed(`Invalid decision in tool input: '${raw.decision}'.`);
       }
 
       const confRaw = Number(raw.confidence);
       const confidence = Number.isFinite(confRaw) ? Math.max(0, Math.min(1, confRaw)) : 0;
-
-      const modifications =
-        raw.modifications && typeof raw.modifications === 'object' && !Array.isArray(raw.modifications)
-          ? (raw.modifications as Record<string, unknown>)
-          : {};
-
       const reason = typeof raw.reason === 'string' ? raw.reason : '';
 
       return {
-        decision: decisionRaw as 'APPROVE' | 'REJECT' | 'MODIFY',
+        decision: decisionRaw as 'APPROVE' | 'REJECT',
         reason,
-        modifications,
         confidence,
       };
     }
@@ -248,42 +289,10 @@ Run your 6-check sequence and respond with your decision JSON.`;
   // input object regardless of how much prose precedes it; the analyst's
   // analysis goes in the `reason` field where length doesn't compete with
   // a separate JSON block at the end of the response.
-  const submitDecisionTool = {
-    name: 'submit_decision',
-    description:
-      'Submit your final approval decision for the proposed trade after running the 6-check sequence. ' +
-      'Call this tool exactly once. Your full prose analysis goes in the `reason` field — do not write a ' +
-      'separate text block; everything you want logged for the trade record should be in `reason`.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        decision: {
-          type: 'string',
-          enum: ['APPROVE', 'REJECT', 'MODIFY'],
-          description: 'The verdict on the proposal.',
-        },
-        reason: {
-          type: 'string',
-          description:
-            'Full analysis text. Cite specific check numbers (1-6) and quote relevant evidence (price levels, news headlines, lessons).',
-        },
-        confidence: {
-          type: 'number',
-          minimum: 0,
-          maximum: 1,
-          description:
-            'How confident you are in this decision, 0-1. Use 0 only on fail-closed; reserve >0.9 for unambiguous cases.',
-        },
-        modifications: {
-          type: 'object',
-          description:
-            'Required only when decision=MODIFY. Keys: sl, tp1, tp2, total_risk_pct (numeric overrides). Empty object {} otherwise.',
-          additionalProperties: true,
-        },
-      },
-      required: ['decision', 'reason', 'confidence', 'modifications'],
-    },
-  };
+  //
+  // 2026-05-11: schema literal hoisted to module scope (SUBMIT_DECISION_TOOL)
+  // so Group C tests can read the enum directly via getSubmitDecisionToolForTest().
+  const submitDecisionTool = SUBMIT_DECISION_TOOL;
 
   // Hard timeout via Promise.race. SDK default is 10 minutes — far too long
   // for a per-trade gate. 60s headroom for Sonnet 4.6 + cold cache +
@@ -322,7 +331,6 @@ Run your 6-check sequence and respond with your decision JSON.`;
     const failClosed: AnalystDecision = {
       decision: 'REJECT',
       reason: `Analyst API failure — ${msg}. Fail-closed REJECT.`,
-      modifications: {},
       confidence: 0,
     };
     logAnalystDecision(proposal.trade_id, proposal.strategy_tag, failClosed);

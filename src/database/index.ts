@@ -1052,9 +1052,14 @@ export function getLatestBrief(): ResearchBrief | null {
 // ==================== ANALYST LOG ====================
 
 export function logAnalystDecision(tradeId: string, strategyTag: StrategyTag, decision: AnalystDecision): void {
+  // 2026-05-11: `modifications` removed from AnalystDecision (MODIFY decision
+  // also removed from the contract — see analyst-agent.ts). The DB column is
+  // kept for now to preserve historical rows; Group D will drop / alter the
+  // schema. Writes carry an empty-object literal to keep the column populated
+  // with valid JSON until then.
   db.run(
     'INSERT INTO analyst_log (trade_id, strategy_tag, decision, reason, modifications, confidence) VALUES (?, ?, ?, ?, ?, ?)',
-    [tradeId, strategyTag, decision.decision, decision.reason, JSON.stringify(decision.modifications), decision.confidence]
+    [tradeId, strategyTag, decision.decision, decision.reason, '{}', decision.confidence]
   );
   saveToFile();
 }
