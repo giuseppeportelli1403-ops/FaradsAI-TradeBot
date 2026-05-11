@@ -889,7 +889,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
             proposal_hash: '',
             trade_id: '',
             confidence: 0,
-            });
+          });
         }
         serverSizing = computeServerSizing({
           balance: balance.balance,

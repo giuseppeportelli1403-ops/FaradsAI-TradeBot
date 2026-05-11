@@ -158,6 +158,9 @@ describe('request_analyst_review — analyst_token hardening (2026-05-11)', () =
     // hash still returned for log correlation
     expect(typeof parsed.proposal_hash).toBe('string');
     expect(parsed.proposal_hash.length).toBeGreaterThan(0);
+    // Defense against a future pre-check short-circuit that would silently
+    // bypass the analyst call and still return the shape we assert above.
+    expect(mockRunAnalystAgent).toHaveBeenCalledTimes(1);
   });
 
   it('returns hash as analyst_token on APPROVE', async () => {
@@ -173,5 +176,6 @@ describe('request_analyst_review — analyst_token hardening (2026-05-11)', () =
     expect(parsed.decision).toBe('APPROVE');
     expect(parsed.analyst_token).toBe(parsed.proposal_hash);
     expect(parsed.analyst_token.length).toBeGreaterThan(0);
+    expect(mockRunAnalystAgent).toHaveBeenCalledTimes(1);
   });
 });

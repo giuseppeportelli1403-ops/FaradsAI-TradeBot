@@ -50,8 +50,12 @@ const SUBMIT_DECISION_TOOL = {
   },
 };
 
-/** Test-only export — Group C reads this to assert the decision enum is binary. */
-export function getSubmitDecisionToolForTest() {
+/**
+ * Returns the submit_decision tool schema used by the analyst LLM. Exposed at module
+ * scope so tests (and future health-check / schema-drift consumers) can read the
+ * enum and required-field shape directly.
+ */
+export function getSubmitDecisionTool() {
   return SUBMIT_DECISION_TOOL;
 }
 
@@ -291,7 +295,7 @@ Run your 6-check sequence and respond with your decision JSON.`;
   // a separate JSON block at the end of the response.
   //
   // 2026-05-11: schema literal hoisted to module scope (SUBMIT_DECISION_TOOL)
-  // so Group C tests can read the enum directly via getSubmitDecisionToolForTest().
+  // so tests can read the enum directly via getSubmitDecisionTool().
   const submitDecisionTool = SUBMIT_DECISION_TOOL;
 
   // Hard timeout via Promise.race. SDK default is 10 minutes — far too long
