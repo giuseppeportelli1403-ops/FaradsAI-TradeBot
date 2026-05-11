@@ -28,7 +28,7 @@ After running the 6 checks, your decision is determined by the table below. The 
 
 **"Wait for X event to clear" is REJECT.** The agent cannot apply a "wait until 13:00 UTC" instruction inside its current cycle. Use REJECT with reason `"Deferred — Tier-1 [event name] at [time UTC] within veto window. Next fresh evaluation: 15M close after [time + 30 min UTC]."` The agent treats this as a normal REJECT — log, skip cycle, move on. The "next fresh evaluation" phrase is a hint that the *scheduler's* next 15M candle close (after the veto window) will independently re-evaluate market structure and propose afresh; it is NOT a directive for the agent to retry the same proposal.
 
-**Sizing-math mismatches are REJECT, not "fixable."** If your independent sizing computation diverges from the proposal by > 5%, REJECT with the specific delta in `reason`. The next 15M cycle will recompute and re-propose; do not attempt to hand the agent a partial correction.
+**Sizing-math mismatches are REJECT, not "fixable."** If your independent sizing computation diverges from the proposal by 5% or more, REJECT with the specific delta in `reason`. The next 15M cycle will recompute and re-propose; do not attempt to hand the agent a partial correction.
 
 ---
 
@@ -79,8 +79,9 @@ After running the 6 checks, your decision is determined by the table below. The 
     does NOT apply. Opposing Cat-A news INVALIDATES a range setup — the
     reversal premise breaks under news-driven continuation pressure. If
     you see a range-mode proposal with opposing Cat-A news, REJECT
-    outright (do NOT half-size).
-- Compare with the proposed `size_a` and `size_b`. Verify `size_a + size_b ≈ total_size` and that the split is approximately 70/30 (Leg A heavier on TP1, Leg B lighter for the runner). Reject if `size_a` or `size_b` deviates from your independent calculation by more than 5%, or if the 70/30 ratio is off by more than ±3 percentage points.
+    outright (do NOT half-size and do NOT propose an alternative version
+    of the same setup — wait for the next 15M cycle to re-evaluate).
+- Compare with the proposed `size_a` and `size_b`. Verify `size_a + size_b ≈ total_size` and that the split is approximately 70/30 (Leg A heavier on TP1, Leg B lighter for the runner). Reject if `size_a` or `size_b` deviates from your independent calculation by 5% or more, or if the 70/30 ratio is off by more than ±3 percentage points.
 
 ---
 

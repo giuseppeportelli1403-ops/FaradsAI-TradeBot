@@ -21,7 +21,7 @@ Field reference (all required unless noted):
 - `hold_duration`: calculated from opened_at → closed_at, e.g. `"2h 15m"`.
 - `news_category` (A / B / C / none), `news_description`.
 - `composite_score`: numeric.
-- `analyst_decision`: APPROVE / REJECT — what the analyst returned. Historical rows may contain other legacy values; treat any non-APPROVE legacy value as REJECT-equivalent for lesson extraction.
+- `analyst_decision`: APPROVE / REJECT — what the analyst returned. Any non-APPROVE value is treated as REJECT-equivalent for lesson extraction.
 - `position_a_outcome`, `position_b_outcome`: e.g. "TP1 hit", "SL hit", "BE exit".
 - `pnl_a_r`, `pnl_b_r`, `pnl_total_r`: leg + size-weighted total in R units.
 - `was_bias_correct`, `was_trigger_valid`, `was_news_correctly_weighted`, `was_split_execution_clean`: booleans.
