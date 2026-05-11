@@ -39,6 +39,21 @@ describe('parseAnalystResponse', () => {
     expect(out.reason).toMatch(/invalid decision/i);
   });
 
+  it('fail-closed REJECT on legacy MODIFY (binary contract as of 2026-05-11)', () => {
+    const input = '{"decision":"MODIFY","reason":"size off","modifications":{"size_per_leg":0.5},"confidence":0.8}';
+    const out = parseAnalystResponse(input);
+    expect(out.decision).toBe('REJECT');
+    expect(out.confidence).toBe(0);
+    expect(out.reason).toMatch(/Legacy MODIFY rejected/);
+  });
+
+  it('fail-closed REJECT on empty-mods MODIFY (the 2026-05-11 bug shape)', () => {
+    const input = '{"decision":"MODIFY","reason":"All checks pass. Returning APPROVE.","modifications":{},"confidence":0.82}';
+    const out = parseAnalystResponse(input);
+    expect(out.decision).toBe('REJECT');
+    expect(out.reason).toMatch(/Legacy MODIFY rejected/);
+  });
+
   it('clamps confidence > 1 to 1', () => {
     const input = '{"decision":"APPROVE","reason":"ok","modifications":{},"confidence":2.5}';
     const out = parseAnalystResponse(input);
