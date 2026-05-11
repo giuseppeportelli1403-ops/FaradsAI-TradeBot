@@ -45,7 +45,7 @@ import {
 import type { CapitalPosition, Activity, TradeRecord, TradeStatus } from '../types.js';
 import { summarizeError } from './error-summary.js';
 import { typicalSpread } from '../backtest/realism.js';
-import { capturePnlForTrade, type PnlCaptureResult } from './pnl-capture.js';
+import { capturePnlForTrade, captureAndPersistPnl, type PnlCaptureResult } from './pnl-capture.js';
 import {
   setTradePnl as realSetTradePnl,
   aggregateAndUpsertDailyPnl,
@@ -530,25 +530,13 @@ export async function handleTp1Hit(
   // window isolates only the just-landed leg-A close transaction. Leg B stays
   // open — don't write pnlB here.
   if (d.capturePnl) {
-    try {
-      const result = await d.capturePnl(trade, 'partial');
-      if (result.found) {
-        if (result.pnlA !== null) {
-          (d.setTradePnl ?? realSetTradePnl)(tradeId, { pnlA: result.pnlA });
-          console.log(`[TP1] P&L captured for ${tradeId} leg A: ${result.pnlA}`);
-        } else if (result.pnlTotal !== 0) {
-          // Ambiguous leg sizes — write total-only; pnl_b stays null until leg B closes.
-          (d.setTradePnl ?? realSetTradePnl)(tradeId, { pnlTotalOverride: result.pnlTotal });
-          console.log(`[TP1] P&L captured for ${tradeId} (total-only fallback): ${result.pnlTotal}`);
-        } else {
-          console.warn(`[TP1] No broker P&L found for ${tradeId} leg A: ${result.note}`);
-        }
-      } else {
-        console.warn(`[TP1] No broker P&L found for ${tradeId} leg A: ${result.note}`);
-      }
-    } catch (err) {
-      console.error(`[TP1] P&L capture failed for ${tradeId}: ${summarizeError(err)}`);
-    }
+    await captureAndPersistPnl({
+      trade,
+      capture: () => d.capturePnl!(trade, 'partial'),
+      persist: d.setTradePnl ?? realSetTradePnl,
+      logTag: '[pnl-capture:tp1]',
+      legHint: 'A',
+    });
   }
 
   try {
@@ -574,24 +562,12 @@ export async function handleTp2Hit(
   // has already landed; the daily aggregator's self-healing retry will
   // re-attempt on the next run.
   if (d.capturePnl) {
-    try {
-      const result = await d.capturePnl(trade, 'terminal');
-      if (result.found) {
-        if (result.pnlA !== null || result.pnlB !== null) {
-          (d.setTradePnl ?? realSetTradePnl)(tradeId, {
-            pnlA: result.pnlA ?? undefined,
-            pnlB: result.pnlB ?? undefined,
-          });
-        } else {
-          (d.setTradePnl ?? realSetTradePnl)(tradeId, { pnlTotalOverride: result.pnlTotal });
-        }
-        console.log(`[Monitor] P&L captured for ${tradeId} after TP2: total=${result.pnlTotal} (matched=${result.matched})`);
-      } else {
-        console.warn(`[Monitor] No broker P&L found for ${tradeId} after TP2 close: ${result.note}`);
-      }
-    } catch (err) {
-      console.error(`[Monitor] P&L capture failed for ${tradeId} (TP2): ${summarizeError(err)}`);
-    }
+    await captureAndPersistPnl({
+      trade,
+      capture: () => d.capturePnl!(trade, 'terminal'),
+      persist: d.setTradePnl ?? realSetTradePnl,
+      logTag: '[pnl-capture:tp2]',
+    });
   }
 
   try {
@@ -637,24 +613,12 @@ export async function handleSlOnLeg(
   // Capture realised broker P&L for the fully-closed trade. Terminal window:
   // [opened_at, now+5min] to catch all legs that closed during the trade's lifetime.
   if (d.capturePnl) {
-    try {
-      const result = await d.capturePnl(trade, 'terminal');
-      if (result.found) {
-        if (result.pnlA !== null || result.pnlB !== null) {
-          (d.setTradePnl ?? realSetTradePnl)(tradeId, {
-            pnlA: result.pnlA ?? undefined,
-            pnlB: result.pnlB ?? undefined,
-          });
-        } else {
-          (d.setTradePnl ?? realSetTradePnl)(tradeId, { pnlTotalOverride: result.pnlTotal });
-        }
-        console.log(`[Monitor] P&L captured for ${tradeId} after SL close: total=${result.pnlTotal} (matched=${result.matched})`);
-      } else {
-        console.warn(`[Monitor] No broker P&L found for ${tradeId} after SL close: ${result.note}`);
-      }
-    } catch (err) {
-      console.error(`[Monitor] P&L capture failed for ${tradeId} (SL): ${summarizeError(err)}`);
-    }
+    await captureAndPersistPnl({
+      trade,
+      capture: () => d.capturePnl!(trade, 'terminal'),
+      persist: d.setTradePnl ?? realSetTradePnl,
+      logTag: '[pnl-capture:sl]',
+    });
   }
 
   try {
@@ -1073,26 +1037,17 @@ export function startScheduler(): void {
       console.log(`[DailyPnl] Retrying P&L capture for ${stragglers.length} trade(s) with missing pnl_total`);
     }
     for (const trade of stragglers) {
-      try {
-        const result = await capturePnlForTrade({
+      await captureAndPersistPnl({
+        trade,
+        capture: () => capturePnlForTrade({
           trade,
           capital,
           accountCurrency: process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR',
           windowMode: 'terminal',
-        });
-        if (result.found) {
-          if (result.pnlA !== null || result.pnlB !== null) {
-            realSetTradePnl(trade.id, { pnlA: result.pnlA ?? undefined, pnlB: result.pnlB ?? undefined });
-          } else {
-            realSetTradePnl(trade.id, { pnlTotalOverride: result.pnlTotal });
-          }
-          console.log(`[DailyPnl] Retry succeeded for ${trade.id}: total=${result.pnlTotal}`);
-        } else {
-          console.warn(`[DailyPnl] Retry still no data for ${trade.id}: ${result.note}`);
-        }
-      } catch (err) {
-        console.error(`[DailyPnl] Retry failed for ${trade.id}: ${summarizeError(err)}`);
-      }
+        }),
+        persist: realSetTradePnl,
+        logTag: '[pnl-capture:retry]',
+      });
     }
 
     // ---- Step B: aggregate yesterday ----

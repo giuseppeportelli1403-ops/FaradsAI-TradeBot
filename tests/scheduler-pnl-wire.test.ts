@@ -142,13 +142,13 @@ describe('handleTp1Hit + P&L capture (TP1 partial)', () => {
     expect(setTradePnlStub).toHaveBeenCalledWith('trade-tp1', { pnlA: 10.5 });
   });
 
-  it('falls back to pnlTotalOverride when pnlA is null (ambiguous leg sizes)', async () => {
+  it('attributes pnlTotal to leg A when pnlA is null (ambiguous leg sizes fallback)', async () => {
     seedTrade('trade-tp1-ambig');
     seedOrders('trade-tp1-ambig');
     const trade = getTradeById('trade-tp1-ambig')!;
 
     const setTradePnlStub = vi.fn();
-    // pnlA is null — ambiguous sizes scenario
+    // pnlA is null — ambiguous sizes scenario; helper falls back to pnlTotal attributed to leg A
     const capturePnl = vi.fn().mockResolvedValue(
       foundResult({ pnlA: null, pnlB: null, pnlTotal: 10.5, matched: 1 }),
     );
@@ -166,7 +166,7 @@ describe('handleTp1Hit + P&L capture (TP1 partial)', () => {
       setTradePnl: setTradePnlStub,
     } as never);
 
-    expect(setTradePnlStub).toHaveBeenCalledWith('trade-tp1-ambig', { pnlTotalOverride: 10.5 });
+    expect(setTradePnlStub).toHaveBeenCalledWith('trade-tp1-ambig', { pnlA: 10.5 });
   });
 });
 
@@ -349,6 +349,10 @@ describe('close_position + P&L capture (terminal)', () => {
     await initDbForTests();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('calls capturePnlForTrade with windowMode=terminal and setTradePnl after markTradeClosedEarly', async () => {
     seedTrade('trade-ce');
     seedLegA('trade-ce');
@@ -396,6 +400,10 @@ describe('close_position + P&L capture (terminal)', () => {
 describe('close_position + P&L capture (partial)', () => {
   beforeEach(async () => {
     await initDbForTests();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('captures partial P&L for the just-closed leg when other legs remain active', async () => {

@@ -25,6 +25,7 @@ export function parsePnlString(raw: string | undefined): number | null {
 }
 
 import type { Transaction, TradeRecord } from '../types.js';
+import { summarizeError } from './error-summary.js';
 
 export interface MatchResult {
   /** Realised P&L attributed to leg A, or null if unmatched. */
@@ -191,4 +192,62 @@ export async function capturePnlForTrade(deps: PnlCaptureDeps): Promise<PnlCaptu
 
   const match = matchTransactionsToLegs(txs, trade, accountCurrency);
   return { ...match, found: match.matched > 0 };
+}
+
+/**
+ * Capture + persist orchestrator. Encapsulates the
+ * try → if-found → leg-vs-total branching → log pattern that all
+ * close paths (scheduler handlers + agent close_position + daily
+ * retry cron) share. Never throws — broker / DB exceptions are
+ * caught and logged via summarizeError. The status update / trade
+ * mutation is the caller's responsibility — this only writes pnl.
+ *
+ * `legHint` overrides leg attribution for partial close_position
+ * (the matched leg's pnl is written regardless of size-match).
+ * When absent (terminal closes), normal pnlA/pnlB attribution
+ * applies.
+ *
+ * `logTag` is the prefix for all console output — use the
+ * standardised `[pnl-capture:*]` namespace (see below).
+ */
+export async function captureAndPersistPnl(opts: {
+  trade: TradeRecord;
+  capture: () => Promise<PnlCaptureResult>;
+  persist: (tradeId: string, patch: { pnlA?: number; pnlB?: number; pnlTotalOverride?: number }) => void;
+  logTag: string;
+  legHint?: 'A' | 'B';
+}): Promise<void> {
+  try {
+    const result = await opts.capture();
+    if (!result.found) {
+      console.warn(`${opts.logTag} No broker P&L found for ${opts.trade.id}: ${result.note}`);
+      return;
+    }
+    if (opts.legHint) {
+      // Partial close: attribute the matched leg specifically.
+      const pnlForLeg =
+        opts.legHint === 'A'
+          ? (result.pnlA ?? result.pnlTotal)
+          : (result.pnlB ?? result.pnlTotal);
+      if (opts.legHint === 'A') {
+        opts.persist(opts.trade.id, { pnlA: pnlForLeg });
+      } else {
+        opts.persist(opts.trade.id, { pnlB: pnlForLeg });
+      }
+      console.log(`${opts.logTag} Partial P&L captured for ${opts.trade.id} leg ${opts.legHint}: ${pnlForLeg}`);
+      return;
+    }
+    // Terminal: write both legs if any attributed, else total override.
+    if (result.pnlA !== null || result.pnlB !== null) {
+      opts.persist(opts.trade.id, {
+        pnlA: result.pnlA ?? undefined,
+        pnlB: result.pnlB ?? undefined,
+      });
+    } else {
+      opts.persist(opts.trade.id, { pnlTotalOverride: result.pnlTotal });
+    }
+    console.log(`${opts.logTag} P&L captured for ${opts.trade.id}: total=${result.pnlTotal} (matched=${result.matched})`);
+  } catch (err) {
+    console.error(`${opts.logTag} P&L capture failed for ${opts.trade.id}: ${summarizeError(err)}`);
+  }
 }
