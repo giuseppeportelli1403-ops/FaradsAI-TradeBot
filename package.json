@@ -12,7 +12,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "backtest": "tsx scripts/run-backtest.ts",
-    "backtest:refresh": "tsx scripts/run-backtest.ts --refresh"
+    "backtest:refresh": "tsx scripts/run-backtest.ts --refresh",
+    "backtest:range-mode": "tsx scripts/backtest-range-mode.ts",
+    "scoring-regression": "tsx scripts/scoring-regression.ts",
+    "digest": "tsx scripts/digest.ts",
+    "trade-cycle-once": "tsx scripts/trade-cycle-once.ts",
+    "plant-trades": "tsx scripts/plant-trades.ts",
+    "plant-approval": "tsx scripts/plant-approval.ts",
+    "place-pending": "tsx scripts/place-pending.ts",
+    "submit-proposal": "tsx scripts/submit-proposal.ts"
   },
   "engines": {
     "node": ">=22.0.0"

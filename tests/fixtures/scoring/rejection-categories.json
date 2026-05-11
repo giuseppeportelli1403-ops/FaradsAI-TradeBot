@@ -1,0 +1,4 @@
+{
+  "_comment": "One minimal payload per category, used by tests/rejection-log/categories.test.ts to assert every category is reachable. Populated as each category is implemented in T032-T037, T045-T047.",
+  "categories": {}
+}

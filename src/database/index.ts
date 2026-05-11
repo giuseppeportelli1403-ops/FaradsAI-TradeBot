@@ -542,6 +542,89 @@ function createTables(): void {
     )
   `);
 
+  // ==================== MIGRATION 007 (2026-05-12) ====================
+  // Scoring pipeline audit + silent-rejection fix.
+  // Spec: specs/001-scoring-pipeline-audit/spec.md
+  // Adds:
+  //   - score_breakdowns         (US-1: deterministic scoring audit trail)
+  //   - trade_rejections         (US-2: categorised rejections at all 4 layers)
+  //   - pm_state                 (key/value config — was implicit before)
+  //   - 3 columns on analyst_log (category, is_fail_closed, subcategory)
+  //   - 3 default pm_state rows  (cooldown + risk-budget config)
+  // All operations idempotent. Safe to re-run on every boot.
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS score_breakdowns (
+      trade_id TEXT PRIMARY KEY,
+      instrument TEXT NOT NULL,
+      composite_score INTEGER NOT NULL,
+      tier INTEGER,
+      breakdown_json TEXT NOT NULL,
+      scored_at TEXT NOT NULL DEFAULT (datetime('now')),
+      scorer_version TEXT NOT NULL,
+      FOREIGN KEY (trade_id) REFERENCES trades(id)
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS trade_rejections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts TEXT NOT NULL DEFAULT (datetime('now')),
+      instrument TEXT NOT NULL,
+      layer TEXT NOT NULL CHECK(layer IN ('scanner', 'executor', 'post_approval')),
+      category TEXT NOT NULL,
+      subcategory TEXT,
+      reason_text TEXT NOT NULL,
+      proposed_score INTEGER,
+      proposed_tier INTEGER,
+      request_id TEXT
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS pm_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+
+  // analyst_log columns — idempotent ADD COLUMN (mirrors the deal_id /
+  // closure_reason pattern at lines 486-508 of this file).
+  const analystLogCols = db.exec('PRAGMA table_info(analyst_log)');
+  const existingAnalystLogCols = analystLogCols[0]
+    ? analystLogCols[0].values.map((row) => row[1] as string)
+    : [];
+  if (!existingAnalystLogCols.includes('category')) {
+    db.run('ALTER TABLE analyst_log ADD COLUMN category TEXT');
+  }
+  if (!existingAnalystLogCols.includes('is_fail_closed')) {
+    db.run('ALTER TABLE analyst_log ADD COLUMN is_fail_closed INTEGER DEFAULT 0');
+  }
+  if (!existingAnalystLogCols.includes('subcategory')) {
+    db.run('ALTER TABLE analyst_log ADD COLUMN subcategory TEXT');
+  }
+
+  // pm_state defaults — INSERT OR IGNORE preserves owner's custom values
+  // across restarts.
+  db.run(
+    "INSERT OR IGNORE INTO pm_state (key, value) VALUES ('cooldown_max_consecutive_losses', '3')"
+  );
+  db.run(
+    "INSERT OR IGNORE INTO pm_state (key, value) VALUES ('cooldown_clear_after_hours', '24')"
+  );
+  db.run(
+    "INSERT OR IGNORE INTO pm_state (key, value) VALUES ('max_total_risk_pct', '0.0')"
+  );
+
+  // Indexes for the new tables
+  db.run('CREATE INDEX IF NOT EXISTS idx_rejections_ts_layer ON trade_rejections (ts, layer)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_rejections_instrument_ts ON trade_rejections (instrument, ts)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_rejections_category ON trade_rejections (category)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_analyst_log_category ON analyst_log (category)');
+
+  // ==================== END MIGRATION 007 ====================
+
   // Indexes for common query patterns
   db.run('CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)');
   db.run('CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_tag)');
@@ -1126,6 +1209,185 @@ function resultToObjects<T>(result: Array<{ columns: string[]; values: unknown[]
     return obj as T;
   });
 }
+
+// ==================== SCORING-AUDIT HELPERS (Migration 007 / Spec 001) ====================
+// Inserts and queries for the score_breakdowns + trade_rejections tables.
+// Used by src/scoring/, src/rejection-log/, and the daily digest.
+
+export interface ScoreBreakdownRow {
+  trade_id: string;
+  instrument: string;
+  composite_score: number;
+  tier: 1 | 2 | 3 | null;
+  breakdown_json: string;     // JSON.stringify(breakdown)
+  scorer_version: string;
+  scored_at?: string;          // defaults to now() in SQL
+}
+
+export function insertScoreBreakdown(row: ScoreBreakdownRow): void {
+  db.run(
+    `INSERT OR REPLACE INTO score_breakdowns
+       (trade_id, instrument, composite_score, tier, breakdown_json, scorer_version, scored_at)
+     VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))`,
+    [
+      row.trade_id,
+      row.instrument,
+      row.composite_score,
+      row.tier ?? null,
+      row.breakdown_json,
+      row.scorer_version,
+      row.scored_at ?? null,
+    ]
+  );
+  saveToFile();
+}
+
+export interface TradeRejectionRow {
+  instrument: string;
+  layer: 'scanner' | 'executor' | 'post_approval';
+  category: string;
+  subcategory?: string | null;
+  reason_text: string;
+  proposed_score?: number | null;
+  proposed_tier?: number | null;
+  request_id?: string | null;
+  ts?: string;  // defaults to now() in SQL
+}
+
+export function insertRejection(row: TradeRejectionRow): void {
+  db.run(
+    `INSERT INTO trade_rejections
+       (ts, instrument, layer, category, subcategory, reason_text, proposed_score, proposed_tier, request_id)
+     VALUES (COALESCE(?, datetime('now')), ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      row.ts ?? null,
+      row.instrument,
+      row.layer,
+      row.category,
+      row.subcategory ?? null,
+      row.reason_text,
+      row.proposed_score ?? null,
+      row.proposed_tier ?? null,
+      row.request_id ?? null,
+    ]
+  );
+  saveToFile();
+}
+
+/**
+ * Update an existing analyst_log row with category metadata after the
+ * verdict is logged. Called by analyst layer to attach the categorised
+ * rejection class to the existing decision row (avoids a second table).
+ */
+export function updateAnalystLogCategory(
+  analystLogId: number,
+  category: string,
+  isFailClosed: boolean,
+  subcategory?: string | null
+): void {
+  db.run(
+    'UPDATE analyst_log SET category = ?, is_fail_closed = ?, subcategory = ? WHERE id = ?',
+    [category, isFailClosed ? 1 : 0, subcategory ?? null, analystLogId]
+  );
+  saveToFile();
+}
+
+/**
+ * Get the rowid of the most recently inserted analyst_log row in this
+ * session. Helper for the analyst-side categoriser which needs to attach
+ * a category to the row it just wrote via logAnalystDecision().
+ */
+export function getLastInsertedAnalystLogId(): number | null {
+  const result = db.exec('SELECT last_insert_rowid() AS id');
+  const id = result[0]?.values[0]?.[0];
+  return typeof id === 'number' ? id : null;
+}
+
+export interface DailyRejectionRow {
+  category: string;
+  count: number;
+  is_fail_closed: 0 | 1;
+}
+
+/**
+ * Sum rejections for a given UTC date (YYYY-MM-DD) across both
+ * trade_rejections and analyst_log. Returns one row per category with
+ * its count and fail-closed flag.
+ */
+export function getDailyRejections(dateUtc: string): DailyRejectionRow[] {
+  const result = db.exec(
+    `SELECT category, COUNT(*) as count, 0 as is_fail_closed
+       FROM trade_rejections
+      WHERE substr(ts, 1, 10) = ?
+   GROUP BY category
+      UNION ALL
+     SELECT category, COUNT(*) as count, COALESCE(is_fail_closed, 0) as is_fail_closed
+       FROM analyst_log
+      WHERE substr(created_at, 1, 10) = ?
+        AND category IS NOT NULL
+   GROUP BY category, is_fail_closed`,
+    [dateUtc, dateUtc]
+  );
+  if (!result[0]) return [];
+  return result[0].values.map((row) => ({
+    category: String(row[0]),
+    count: Number(row[1]),
+    is_fail_closed: (Number(row[2]) === 1 ? 1 : 0) as 0 | 1,
+  }));
+}
+
+export interface PmStateRow {
+  key: string;
+  value: string;
+}
+
+export function getPmState(key: string): string | null {
+  const result = db.exec('SELECT value FROM pm_state WHERE key = ?', [key]);
+  const value = result[0]?.values[0]?.[0];
+  return value === undefined || value === null ? null : String(value);
+}
+
+export function setPmState(key: string, value: string): void {
+  db.run(
+    `INSERT INTO pm_state (key, value, updated_at)
+     VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+    [key, value]
+  );
+  saveToFile();
+}
+
+/**
+ * For US-7: sum the deployed risk-pct of all currently-open trades.
+ * The trades table has no explicit risk_pct column (yet) — it's derived
+ * from the tier mapping at execution time. We approximate by joining to
+ * score_breakdowns for new trades; for legacy trades without a breakdown
+ * we infer from composite_score using the same tier mapping the scanner
+ * uses. Range-mode setups deploy 0.25% (half-size); detect from setup_type.
+ */
+export function getOpenTradesRiskPctSum(): number {
+  const result = db.exec(`
+    SELECT t.composite_score, t.setup_type
+      FROM trades t
+     WHERE t.closed_at IS NULL
+  `);
+  const rows = result[0]?.values ?? [];
+  let total = 0;
+  for (const [scoreVal, setupTypeVal] of rows) {
+    const score = Number(scoreVal);
+    const setupType = String(setupTypeVal ?? '').toLowerCase();
+    const isRange = setupType.startsWith('range');
+    if (isRange) {
+      total += 0.25;
+      continue;
+    }
+    if (score >= 80) total += 1.5;
+    else if (score >= 60) total += 1.0;
+    else total += 0.5;
+  }
+  return total;
+}
+// ==================== END SCORING-AUDIT HELPERS ====================
 
 // ==================== EXPORT DB REFERENCE ====================
 
