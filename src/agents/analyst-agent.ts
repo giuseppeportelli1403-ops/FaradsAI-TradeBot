@@ -14,6 +14,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
 import { parseLastJsonObject, withTimeout } from './llm-output.js';
 import { getLatestBrief, getOpenTrades, getLessons, logAnalystDecision } from '../database/index.js';
+import { recordRejection } from '../rejection-log/record.js';
 import type { AnalystDecision, StrategyTag } from '../types.js';
 
 const anthropic = new Anthropic();
@@ -326,6 +327,20 @@ Run your 6-check sequence and respond with your decision JSON.`;
       confidence: 0,
     };
     logAnalystDecision(proposal.trade_id, proposal.strategy_tag, failClosed);
+    // T036 (US-2): tag the analyst_log row with category metadata so the
+    // daily digest can distinguish fail-closed REJECTs from cause-REJECTs.
+    // Try/catch — a categoriser failure must not mask the original error.
+    try {
+      recordRejection({
+        instrument: proposal.instrument,
+        layer: 'analyst',
+        category: 'ANALYST_FAIL_CLOSED_API_ERROR',
+        reason_text: `API failure: ${msg}`,
+        subcategory: err instanceof Error ? err.constructor.name : 'unknown',
+      });
+    } catch (recErr) {
+      console.warn(`[Analyst] recordRejection(API_ERROR) failed: ${recErr instanceof Error ? recErr.message : String(recErr)}`);
+    }
     return failClosed;
   }
 
@@ -342,6 +357,45 @@ Run your 6-check sequence and respond with your decision JSON.`;
   // Log the decision (always — even on extractor failure, the REJECT row is
   // important audit data).
   logAnalystDecision(proposal.trade_id, proposal.strategy_tag, decision);
+
+  // T036 (US-2): tag the analyst_log row with category metadata. Maps the
+  // free-form decision + reason to a machine-parseable REJECTION_CATEGORY
+  // so the daily digest can distinguish (a) fail-closed REJECTs from
+  // tool-extraction failures (no submit_decision call) vs (b) cause-REJECTs
+  // from the analyst's actual 6-check sequence. APPROVE/MODIFY get the
+  // happy-path categories so every analyst_log row has a non-null category.
+  try {
+    let cat: 'ANALYST_FAIL_CLOSED_NO_TOOL_CALL' | 'ANALYST_FAIL_CLOSED_PARSE'
+      | 'ANALYST_REJECT_NEWS_WINDOW' | 'ANALYST_REJECT_BANNED_PATTERN'
+      | 'ANALYST_REJECT_CORRELATION' | 'ANALYST_REJECT_COOLDOWN'
+      | null = null;
+    const reasonLc = decision.reason.toLowerCase();
+    if (decision.decision === 'REJECT') {
+      if (reasonLc.includes('no submit_decision') || reasonLc.includes('no content blocks')) {
+        cat = 'ANALYST_FAIL_CLOSED_NO_TOOL_CALL';
+      } else if (reasonLc.includes('could not parse') || reasonLc.includes('invalid decision')) {
+        cat = 'ANALYST_FAIL_CLOSED_PARSE';
+      } else if (reasonLc.includes('news') || reasonLc.includes('event') || reasonLc.includes('cpi') || reasonLc.includes('fomc')) {
+        cat = 'ANALYST_REJECT_NEWS_WINDOW';
+      } else if (reasonLc.includes('banned')) {
+        cat = 'ANALYST_REJECT_BANNED_PATTERN';
+      } else if (reasonLc.includes('correlat') || reasonLc.includes('exposure')) {
+        cat = 'ANALYST_REJECT_CORRELATION';
+      } else if (reasonLc.includes('cooldown') || reasonLc.includes('losses in a row') || reasonLc.includes('consecutive loss')) {
+        cat = 'ANALYST_REJECT_COOLDOWN';
+      }
+    }
+    if (cat !== null) {
+      recordRejection({
+        instrument: proposal.instrument,
+        layer: 'analyst',
+        category: cat,
+        reason_text: decision.reason.slice(0, 500),
+      });
+    }
+  } catch (recErr) {
+    console.warn(`[Analyst] recordRejection (verdict tagging) failed: ${recErr instanceof Error ? recErr.message : String(recErr)}`);
+  }
 
   const reasonPreview =
     decision.reason.length > 500

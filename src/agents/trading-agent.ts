@@ -13,6 +13,7 @@ import { withTimeout } from './llm-output.js';
 import { runAnalystAgent, type TradeProposal } from './analyst-agent.js';
 import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
 import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
+import { recordRejection } from '../rejection-log/record.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument, getRealisedPnlSince } from '../database/index.js';
 import { alertTradePlaced, alertSystemWarning, alertOrphanPositions } from '../notifications/telegram.js';
 
@@ -1123,12 +1124,34 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // eliminates the race.
       const approval = approvedProposals.get(tokenStr);
       if (!approval) {
+        // T045 (US-6): post-approval drop — TTL expired or never issued.
+        try {
+          recordRejection({
+            instrument: String(input.instrument ?? 'unknown'),
+            layer: 'post_approval',
+            category: 'POST_APPROVAL_TTL_EXPIRED',
+            reason_text: `No approval found for token ${String(input.analyst_token).slice(0, 16)}... — likely TTL expired or never issued.`,
+            request_id: String(input.analyst_token),
+          });
+        } catch (e) { console.warn(`[Executor] recordRejection failed: ${e instanceof Error ? e.message : String(e)}`); }
         return JSON.stringify({
           error: 'ANALYST_NOT_APPROVED',
           reason: 'No analyst approval found for the supplied analyst_token. Call request_analyst_review first.',
         });
       }
       if (tokenStr !== hash) {
+        // T046 (US-6): hash mismatch — proposal mutated between approval
+        // and placement (or wrong token).
+        try {
+          recordRejection({
+            instrument: String(input.instrument ?? 'unknown'),
+            layer: 'post_approval',
+            category: 'POST_APPROVAL_HASH_MISMATCH',
+            reason_text: 'Proposal hash differs from approved hash.',
+            subcategory: JSON.stringify({ approved_hash: tokenStr.slice(0, 16), current_hash: hash.slice(0, 16) }),
+            request_id: String(input.analyst_token),
+          });
+        } catch (e) { console.warn(`[Executor] recordRejection failed: ${e instanceof Error ? e.message : String(e)}`); }
         return JSON.stringify({
           error: 'PROPOSAL_HASH_MISMATCH',
           reason: 'analyst_token was issued for a different proposal. The trade params must match exactly what was approved (entry, SL, TP1/TP2, score, tier, total_risk_pct, setup_type, kill_zone, instrument/epic). Note: size_a and size_b are NOT part of the hash post-2026-05-07 — sizing is computed server-side from total_risk_pct + balance + minDealSize. Re-request analyst_review with the current proposal.',
@@ -1155,26 +1178,41 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       const setupTypeNorm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_');
       const isRangeMode = /^range_/.test(setupTypeNorm);
       const tier3Floor = tier3FloorFor(proposalForVerify.instrument);
+      // T037 (US-2): each error return now also writes a categorised
+      // rejection record so the daily digest sees the breakdown.
+      const recordExecRejection = (category: 'EXECUTOR_REJECT_SCORE_BELOW_TIER_MIN' | 'EXECUTOR_REJECT_TIER_SCORE_MISMATCH' | 'EXECUTOR_REJECT_RANGE_MODE_TIER_MISMATCH' | 'EXECUTOR_REJECT_RISK_PCT_TIER_MISMATCH' | 'EXECUTOR_REJECT_INVALID_ORDER_SIDE', reason_text: string): void => {
+        try {
+          recordRejection({
+            instrument: proposalForVerify.instrument,
+            layer: 'executor',
+            category,
+            reason_text,
+            proposed_score: Number.isFinite(score) ? score : undefined,
+            proposed_tier: Number.isFinite(tier) ? tier : undefined,
+            request_id: String(input.analyst_token ?? ''),
+          });
+        } catch (e) {
+          console.warn(`[Executor] recordRejection failed: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      };
+
       if (!Number.isFinite(score) || score < tier3Floor) {
-        return JSON.stringify({
-          error: 'SCORE_BELOW_TIER_MIN',
-          reason: `composite_score ${score} is below Tier 3 floor ${tier3Floor} for ${proposalForVerify.instrument}. No trade.`,
-        });
+        const reason = `composite_score ${score} is below Tier 3 floor ${tier3Floor} for ${proposalForVerify.instrument}. No trade.`;
+        recordExecRejection('EXECUTOR_REJECT_SCORE_BELOW_TIER_MIN', reason);
+        return JSON.stringify({ error: 'SCORE_BELOW_TIER_MIN', reason });
       }
       const expectedTier = score >= 80 ? 1 : score >= 60 ? 2 : 3;
       if (tier !== expectedTier) {
-        return JSON.stringify({
-          error: 'TIER_SCORE_MISMATCH',
-          reason: `composite_score ${score} maps to Tier ${expectedTier}, but proposal claims Tier ${tier}.`,
-        });
+        const reason = `composite_score ${score} maps to Tier ${expectedTier}, but proposal claims Tier ${tier}.`;
+        recordExecRejection('EXECUTOR_REJECT_TIER_SCORE_MISMATCH', reason);
+        return JSON.stringify({ error: 'TIER_SCORE_MISMATCH', reason });
       }
       // Range-mode is structurally Tier 3 only — reject T1/T2 proposals
       // that try to use a Range_* setup_type.
       if (isRangeMode && tier !== 3) {
-        return JSON.stringify({
-          error: 'RANGE_MODE_TIER_MISMATCH',
-          reason: `setup_type "${setupType}" is range-mode and Tier 3 only. Proposal has Tier ${tier}.`,
-        });
+        const reason = `setup_type "${setupType}" is range-mode and Tier 3 only. Proposal has Tier ${tier}.`;
+        recordExecRejection('EXECUTOR_REJECT_RANGE_MODE_TIER_MISMATCH', reason);
+        return JSON.stringify({ error: 'RANGE_MODE_TIER_MISMATCH', reason });
       }
       const expectedRiskPct = isRangeMode ? 0.25
         : expectedTier === 1 ? 1.5
@@ -1182,10 +1220,9 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         : 0.5;
       const riskPctCheck = validateRiskPct({ riskPct, expectedRiskPct });
       if (!riskPctCheck.ok) {
-        return JSON.stringify({
-          error: 'RISK_PCT_TIER_MISMATCH',
-          reason: `${isRangeMode ? 'Range-mode' : `Tier ${expectedTier}`} requires risk ${expectedRiskPct}%. ${riskPctCheck.reason}.`,
-        });
+        const reason = `${isRangeMode ? 'Range-mode' : `Tier ${expectedTier}`} requires risk ${expectedRiskPct}%. ${riskPctCheck.reason}.`;
+        recordExecRejection('EXECUTOR_REJECT_RISK_PCT_TIER_MISMATCH', reason);
+        return JSON.stringify({ error: 'RISK_PCT_TIER_MISMATCH', reason });
       }
 
       // === Step 3: order-side + finite-numbers

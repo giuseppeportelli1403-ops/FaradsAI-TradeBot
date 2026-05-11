@@ -24,6 +24,7 @@ import { capital } from '../mcp-server/capital-singleton.js';
 import { getNewsScore } from '../news/index.js';
 import { tier3FloorFor } from '../agents/spread.js';
 import { composeScore } from '../scoring/compose.js';
+import { recordRejection } from '../rejection-log/record.js';
 import type { Candle, RankedInstrument } from '../types.js';
 
 // ==================== INSTRUMENT UNIVERSE ====================
@@ -331,6 +332,22 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
   // Hard gate — no scanning outside kill zones
   if (!killZone.inKillZone) {
     console.log('[Scanner] Outside kill zone — no instruments ranked.');
+    // T032 (US-2): record one KILL_ZONE_OUT rejection per instrument so the
+    // daily digest accurately reflects what was skipped. Wrapped in
+    // try/catch because a DB hiccup must not break the scanner's hard gate.
+    try {
+      for (const inst of INSTRUMENT_UNIVERSE) {
+        recordRejection({
+          instrument: inst.ticker,
+          layer: 'scanner',
+          category: 'KILL_ZONE_OUT',
+          reason_text: `Outside kill zones (current zone: ${killZone.zone}). Active windows: London Open 07-10 UTC, NY Open 13-16 UTC, London Close 16-17 UTC.`,
+          subcategory: killZone.zone,
+        });
+      }
+    } catch (err) {
+      console.warn(`[Scanner] recordRejection(KILL_ZONE_OUT) failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return [];
   }
 
