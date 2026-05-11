@@ -770,6 +770,8 @@ import {
   enterCriticalSection, exitCriticalSection,
 } from '../database/index.js';
 import { capital } from '../mcp-server/capital-singleton.js';
+import { capturePnlForTrade } from '../scheduler/pnl-capture.js';
+import { setTradePnl } from '../database/index.js';
 
 async function getPreferredAccountBalance(): Promise<{ balance: number; deposit: number; profitLoss: number; available: number }> {
   const accounts = await capital.getAccounts();
@@ -1718,9 +1720,66 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // (i.e. this close finishes off the trade). Otherwise the trade
       // is still partially live.
       const remainingActive = getActiveSlTpOrdersByTradeId(trade.id);
+      const accountCurrency = process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR';
+
       if (remainingActive.length === 0) {
+        // Terminal close — all legs done.
         markTradeClosedEarly(trade.id, `${reasonText} (deal=${dealId}, leg=${matchedLeg?.leg ?? '?'})`);
+        try {
+          const result = await capturePnlForTrade({
+            trade,
+            capital,
+            accountCurrency,
+            windowMode: 'terminal',
+          });
+          if (result.found) {
+            if (result.pnlA !== null || result.pnlB !== null) {
+              setTradePnl(trade.id, {
+                pnlA: result.pnlA ?? undefined,
+                pnlB: result.pnlB ?? undefined,
+              });
+            } else {
+              setTradePnl(trade.id, { pnlTotalOverride: result.pnlTotal });
+            }
+            console.log(`[close_position] Terminal P&L captured for ${trade.id}: total=${result.pnlTotal}`);
+          } else {
+            console.warn(`[close_position] No broker P&L found for ${trade.id} (terminal): ${result.note}`);
+          }
+        } catch (err) {
+          console.error(`[close_position] Terminal P&L capture failed for ${trade.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      } else if (matchedLeg) {
+        // Partial leg close — other legs still live. Capture this leg's
+        // realised P&L now; trade status remains unchanged.
+        try {
+          const result = await capturePnlForTrade({
+            trade,
+            capital,
+            accountCurrency,
+            windowMode: 'partial',
+          });
+          if (result.found) {
+            // Attribute via matchedLeg.leg. matchTransactionsToLegs may already
+            // have split by size; if it did, use that. Else attribute the total
+            // to the matched leg directly (ambiguous-size fallback).
+            const pnlForLeg =
+              matchedLeg.leg === 'A'
+                ? (result.pnlA ?? result.pnlTotal)
+                : (result.pnlB ?? result.pnlTotal);
+            if (matchedLeg.leg === 'A') {
+              setTradePnl(trade.id, { pnlA: pnlForLeg });
+            } else {
+              setTradePnl(trade.id, { pnlB: pnlForLeg });
+            }
+            console.log(`[close_position] Partial P&L captured for ${trade.id} leg ${matchedLeg.leg}: ${pnlForLeg}`);
+          } else {
+            console.warn(`[close_position] No broker P&L found for ${trade.id} leg ${matchedLeg.leg}: ${result.note}`);
+          }
+        } catch (err) {
+          console.error(`[close_position] Partial P&L capture failed for ${trade.id}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
+
       return JSON.stringify({
         status: 'closed',
         trade_id: trade.id,

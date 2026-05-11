@@ -1,7 +1,6 @@
 // tests/scheduler-pnl-wire.test.ts
-// Integration tests: verify that each scheduler close path (TP1 partial,
-// TP2 terminal, SL terminal) persists realised P&L after the handler runs.
-// close_position paths are tested in the next commit (Task 6).
+// Integration tests: verify that each close path (TP1 partial, TP2 terminal,
+// SL terminal, close_position terminal) persists realised P&L after the handler.
 //
 // Strategy: seed a real in-memory DB via initDbForTests + insertTrade; inject
 // vi.fn() stubs for capturePnl and setTradePnl into MonitorDeps (no Capital
@@ -337,5 +336,46 @@ describe('P&L capture error handling (scheduler)', () => {
     // capturePnl was called but found=false → no write.
     expect(capturePnl).toHaveBeenCalledOnce();
     expect(setTradePnlStub).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PATH 4 — close_position terminal (trading-agent executeTool)
+// Test via vi.spyOn on the pnl-capture and database modules. The trading-agent
+// uses module-level imports (no DI surface), so we spy on the real exports.
+// ---------------------------------------------------------------------------
+describe('close_position + P&L capture (terminal)', () => {
+  beforeEach(async () => {
+    await initDbForTests();
+  });
+
+  it('calls capturePnlForTrade with windowMode=terminal and setTradePnl after markTradeClosedEarly', async () => {
+    seedTrade('trade-ce');
+    seedLegA('trade-ce');
+
+    const pnlCapture = await import('../src/scheduler/pnl-capture.js');
+    const dbModule = await import('../src/database/index.js');
+
+    const captureSpy = vi.spyOn(pnlCapture, 'capturePnlForTrade').mockResolvedValue(
+      foundResult({ pnlB: null, pnlTotal: 10.5, matched: 1, unmatched: 0 }),
+    );
+    const setPnlSpy = vi.spyOn(dbModule, 'setTradePnl');
+
+    // Stub the capital singleton used by trading-agent
+    const capitalModule = await import('../src/mcp-server/capital-singleton.js');
+    const capitalSpy = vi.spyOn(capitalModule, 'capital', 'get').mockReturnValue({
+      closePosition: async () => ({ status: 'CLOSED', dealId: 'D-A' }),
+    } as never);
+
+    const { executeTool } = await import('../src/agents/trading-agent.js');
+    await executeTool('close_position', { dealId: 'D-A', reason: 'manual test' });
+
+    expect(captureSpy).toHaveBeenCalledOnce();
+    expect(captureSpy.mock.calls[0][0]).toMatchObject({ windowMode: 'terminal' });
+    expect(setPnlSpy).toHaveBeenCalled();
+
+    captureSpy.mockRestore();
+    setPnlSpy.mockRestore();
+    capitalSpy.mockRestore();
   });
 });
