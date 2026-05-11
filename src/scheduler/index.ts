@@ -46,7 +46,12 @@ import type { CapitalPosition, Activity, TradeRecord, TradeStatus } from '../typ
 import { summarizeError } from './error-summary.js';
 import { typicalSpread } from '../backtest/realism.js';
 import { capturePnlForTrade, type PnlCaptureResult } from './pnl-capture.js';
-import { setTradePnl as realSetTradePnl } from '../database/index.js';
+import {
+  setTradePnl as realSetTradePnl,
+  aggregateAndUpsertDailyPnl,
+  getDailyPnl,
+  getTradesWithMissingPnl,
+} from '../database/index.js';
 
 const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
@@ -1047,6 +1052,62 @@ export function startScheduler(): void {
     });
   }, CRON_UTC);
 
+  // 2026-05-11: Daily realised-P&L roll-up + self-healing retry. Runs at
+  // 00:05 UTC (same minute as the reject-metrics dump, different async path).
+  // Step A retries P&L capture for any terminal trades from the past 7 days
+  // whose pnl_total is still NULL/0 — this is the dead-letter recovery loop.
+  // The trade row itself is the dead-letter queue; no extra table needed.
+  // Step B then aggregates yesterday's realised P&L into daily_pnl_log.
+  cron.schedule('5 0 * * *', async () => {
+    // ---- Step A: self-healing retry on missing P&L (past 7 days) ----
+    const stragglers = getTradesWithMissingPnl(7);
+    if (stragglers.length > 0) {
+      console.log(`[DailyPnl] Retrying P&L capture for ${stragglers.length} trade(s) with missing pnl_total`);
+    }
+    for (const trade of stragglers) {
+      try {
+        const result = await capturePnlForTrade({
+          trade,
+          capital,
+          accountCurrency: process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR',
+          windowMode: 'terminal',
+        });
+        if (result.found) {
+          if (result.pnlA !== null || result.pnlB !== null) {
+            realSetTradePnl(trade.id, { pnlA: result.pnlA ?? undefined, pnlB: result.pnlB ?? undefined });
+          } else {
+            realSetTradePnl(trade.id, { pnlTotalOverride: result.pnlTotal });
+          }
+          console.log(`[DailyPnl] Retry succeeded for ${trade.id}: total=${result.pnlTotal}`);
+        } else {
+          console.warn(`[DailyPnl] Retry still no data for ${trade.id}: ${result.note}`);
+        }
+      } catch (err) {
+        console.error(`[DailyPnl] Retry failed for ${trade.id}: ${summarizeError(err)}`);
+      }
+    }
+
+    // ---- Step B: aggregate yesterday ----
+    const yesterday = new Date(Date.now() - 24 * 60 * 60_000)
+      .toISOString()
+      .substring(0, 10); // YYYY-MM-DD UTC
+    let equity = 0;
+    try {
+      const accounts = await capital.getAccounts();
+      equity = accounts[0]?.balance?.balance ?? 0;
+    } catch (err) {
+      console.warn(`[DailyPnl] Could not fetch live equity for ${yesterday}: ${summarizeError(err)}`);
+      const last = getDailyPnl(yesterday);
+      equity = last?.equity ?? 0;
+    }
+    try {
+      aggregateAndUpsertDailyPnl(yesterday, equity);
+      console.log(`[DailyPnl] Aggregated realised P&L for ${yesterday} (equity=${equity})`);
+    } catch (err) {
+      console.error(`[DailyPnl] Aggregation failed for ${yesterday}: ${summarizeError(err)}`);
+    }
+  }, CRON_UTC);
+
   console.log('Scheduler started. Cron jobs active:');
   console.log('  */1 * * * *           — Split-position monitor (every minute) + 15m/1h candle detection → ICT Agent');
   console.log('  */8 * * * *           — Capital.com session keep-alive ping');
@@ -1055,5 +1116,5 @@ export function startScheduler(): void {
   console.log('  0 0 * * 0             — Weekly Review Agent');
   console.log('  30 21 * * 1-5         — EOD Journal Agent (Mon-Fri after US close)');
   console.log('  */10 * * * *          — RSS news poll (18 feeds, Tier 1/2/3)');
-  console.log('  5 0 * * *             — Reject metrics dump (previous UTC day)');
+  console.log('  5 0 * * *             — Reject metrics dump (previous UTC day) + Daily P&L aggregator (self-healing retry + roll-up)');
 }
