@@ -116,6 +116,21 @@ describe('matchTransactionsToLegs', () => {
     expect(result.pnlTotal).toBe(0);
     expect(result.matched).toBe(0);
   });
+
+  it('tags transactions whose size matches neither leg as unmatched (avoids polluting pnlTotal from adjacent trades)', () => {
+    const trade = baseTrade({});  // size_a=0.5, size_b=0.3
+    const txs = [
+      baseTx({ size: 0.5, profitAndLoss: '10.50' }),       // leg A
+      baseTx({ size: 0.3, profitAndLoss: '8.72' }),        // leg B
+      baseTx({ size: 1.7, profitAndLoss: '99.99' }),       // unrelated trade
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlA).toBeCloseTo(10.5);
+    expect(result.pnlB).toBeCloseTo(8.72);
+    expect(result.pnlTotal).toBeCloseTo(19.22);
+    expect(result.matched).toBe(2);
+    expect(result.unmatched).toBe(1);
+  });
 });
 
 describe('capturePnlForTrade', () => {
@@ -177,5 +192,27 @@ describe('capturePnlForTrade', () => {
     // Capital format strips milliseconds and Z (see scheduler/index.ts:299-301).
     expect(capturedFrom).toBe('2026-05-07T13:16:50');
     expect(capturedTo).toBe('2026-05-07T13:45:00');
+  });
+
+  it('partial windowMode uses [now-1min, now+5min] for tight isolation', async () => {
+    const trade = baseTrade({});
+    let capturedFrom = '';
+    let capturedTo = '';
+    const capital = {
+      getTransactionHistory: async (from?: string, to?: string) => {
+        capturedFrom = from ?? '';
+        capturedTo = to ?? '';
+        return [];
+      },
+    };
+    await capturePnlForTrade({
+      trade,
+      capital,
+      accountCurrency: 'EUR',
+      windowMode: 'partial',
+      now: () => new Date('2026-05-07T13:40:00.000Z'),
+    });
+    expect(capturedFrom).toBe('2026-05-07T13:39:00');  // now - 1min
+    expect(capturedTo).toBe('2026-05-07T13:45:00');    // now + 5min
   });
 });

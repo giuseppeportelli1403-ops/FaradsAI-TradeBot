@@ -75,16 +75,36 @@ export function matchTransactionsToLegs(
       unmatched += 1;
       continue;
     }
-    pnlTotal += pnl;
-    matched += 1;
+
+    const sizeMatchesA = Number.isFinite(sizeA) && tx.size === sizeA;
+    const sizeMatchesB = Number.isFinite(sizeB) && tx.size === sizeB;
 
     if (ambiguousSizes) {
-      continue; // can't attribute to a specific leg — pnlTotal still updated
+      // Same-size legs — can't attribute by size. Still trust the
+      // transaction's currency + non-null P&L and aggregate, but only
+      // when the size matches the leg size (else it's a different trade).
+      if (sizeMatchesA || sizeMatchesB) {
+        pnlTotal += pnl;
+        matched += 1;
+      } else {
+        unmatched += 1;
+      }
+      continue;
     }
-    if (Number.isFinite(sizeA) && tx.size === sizeA && pnlA === null) {
+
+    if (sizeMatchesA && pnlA === null) {
       pnlA = pnl;
-    } else if (Number.isFinite(sizeB) && tx.size === sizeB && pnlB === null) {
+      pnlTotal += pnl;
+      matched += 1;
+    } else if (sizeMatchesB && pnlB === null) {
       pnlB = pnl;
+      pnlTotal += pnl;
+      matched += 1;
+    } else {
+      // Size matches neither leg (or that leg already filled) — this
+      // transaction belongs to a different trade. Tag it for
+      // diagnostics, don't pollute pnlTotal.
+      unmatched += 1;
     }
   }
 
