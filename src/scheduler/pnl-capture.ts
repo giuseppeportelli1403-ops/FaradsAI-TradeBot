@@ -101,3 +101,74 @@ export function matchTransactionsToLegs(
     note: notes.join('; '),
   };
 }
+
+export interface PnlCaptureDeps {
+  trade: TradeRecord;
+  capital: { getTransactionHistory: (from?: string, to?: string) => Promise<Transaction[]> };
+  accountCurrency: string;
+  /**
+   * `terminal` — query [opened_at, now+5min]. Used by TP2 and the
+   *   terminal SL branch — wants to catch every leg-close that
+   *   happened during the trade's lifetime.
+   * `partial` — query [now−1min, now+5min]. Used by TP1 leg-A close
+   *   and agent-initiated partial leg close — isolates the single
+   *   transaction that just landed.
+   * Default: 'terminal'.
+   */
+  windowMode?: 'terminal' | 'partial';
+  now?: () => Date;
+}
+
+export interface PnlCaptureResult extends MatchResult {
+  /** Whether anything was found at all — drives whether the caller writes to DB. */
+  found: boolean;
+}
+
+/**
+ * Orchestrator: query Capital transactions in a window around the
+ * trade's open + close, match to legs, return the result. Never
+ * throws — broker errors are caught and surfaced via note. Caller
+ * decides what to do with a zero-match result.
+ *
+ * Window:
+ *   terminal: from = trade.opened_at (truncated to Capital's strict
+ *             YYYY-MM-DDTHH:mm:ss format), to = now + 5min
+ *   partial:  from = now - 1min, to = now + 5min
+ */
+export async function capturePnlForTrade(deps: PnlCaptureDeps): Promise<PnlCaptureResult> {
+  const { trade, capital, accountCurrency } = deps;
+  const now = deps.now ? deps.now() : new Date();
+
+  // Capital's /history/transactions rejects ISO with milliseconds or Z
+  // suffix (`error.invalid.from`). The Monitor uses the same strip
+  // pattern at scheduler/index.ts:299-301; replicated here.
+  const toCapitalDateFmt = (iso: string): string =>
+    iso.replace(/\.\d{3}Z$/, '').replace(/Z$/, '');
+
+  const windowMode = deps.windowMode ?? 'terminal';
+  const from =
+    windowMode === 'terminal'
+      ? toCapitalDateFmt(trade.opened_at)
+      : toCapitalDateFmt(new Date(now.getTime() - 60_000).toISOString());
+  const toDate = new Date(now.getTime() + 5 * 60_000);
+  const to = toCapitalDateFmt(toDate.toISOString());
+
+  let txs: Transaction[] = [];
+  try {
+    txs = await capital.getTransactionHistory(from, to);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return {
+      pnlA: null,
+      pnlB: null,
+      pnlTotal: 0,
+      matched: 0,
+      unmatched: 0,
+      note: `capital error: ${msg}`,
+      found: false,
+    };
+  }
+
+  const match = matchTransactionsToLegs(txs, trade, accountCurrency);
+  return { ...match, found: match.matched > 0 };
+}

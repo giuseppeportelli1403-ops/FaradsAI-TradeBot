@@ -1,6 +1,6 @@
 // tests/pnl-capture.test.ts
 import { describe, it, expect } from 'vitest';
-import { parsePnlString, matchTransactionsToLegs } from '../src/scheduler/pnl-capture.js';
+import { parsePnlString, matchTransactionsToLegs, capturePnlForTrade } from '../src/scheduler/pnl-capture.js';
 import type { Transaction, TradeRecord } from '../src/types.js';
 
 describe('parsePnlString', () => {
@@ -115,5 +115,67 @@ describe('matchTransactionsToLegs', () => {
     const result = matchTransactionsToLegs([], trade, 'EUR');
     expect(result.pnlTotal).toBe(0);
     expect(result.matched).toBe(0);
+  });
+});
+
+describe('capturePnlForTrade', () => {
+  it('returns pnl from broker transactions for a closed trade', async () => {
+    const trade = baseTrade({});
+    const capital = {
+      getTransactionHistory: async (_from?: string, _to?: string) => ([
+        baseTx({ size: 0.5, profitAndLoss: '10.50' }),
+        baseTx({ size: 0.3, profitAndLoss: '8.72' }),
+      ]),
+    };
+    const result = await capturePnlForTrade({
+      trade,
+      capital,
+      accountCurrency: 'EUR',
+      now: () => new Date('2026-05-07T13:40:00.000Z'),
+    });
+    expect(result.pnlTotal).toBeCloseTo(19.22);
+    expect(result.pnlA).toBeCloseTo(10.5);
+    expect(result.pnlB).toBeCloseTo(8.72);
+    expect(result.matched).toBe(2);
+  });
+
+  it('returns zero-match result without throwing on Capital error', async () => {
+    const trade = baseTrade({});
+    const capital = {
+      getTransactionHistory: async () => {
+        throw new Error('Capital API down');
+      },
+    };
+    const result = await capturePnlForTrade({
+      trade,
+      capital,
+      accountCurrency: 'EUR',
+      now: () => new Date('2026-05-07T13:40:00.000Z'),
+    });
+    expect(result.pnlTotal).toBe(0);
+    expect(result.matched).toBe(0);
+    expect(result.note).toContain('Capital API down');
+  });
+
+  it('uses [opened_at, now+5min] as the query window', async () => {
+    const trade = baseTrade({});
+    let capturedFrom = '';
+    let capturedTo = '';
+    const capital = {
+      getTransactionHistory: async (from?: string, to?: string) => {
+        capturedFrom = from ?? '';
+        capturedTo = to ?? '';
+        return [];
+      },
+    };
+    await capturePnlForTrade({
+      trade,
+      capital,
+      accountCurrency: 'EUR',
+      now: () => new Date('2026-05-07T13:40:00.000Z'),
+    });
+    // Capital format strips milliseconds and Z (see scheduler/index.ts:299-301).
+    expect(capturedFrom).toBe('2026-05-07T13:16:50');
+    expect(capturedTo).toBe('2026-05-07T13:45:00');
   });
 });
