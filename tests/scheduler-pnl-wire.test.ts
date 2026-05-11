@@ -379,3 +379,90 @@ describe('close_position + P&L capture (terminal)', () => {
     capitalSpy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// PATH 5 — close_position partial (codex plan-review amendment, mandated test)
+//
+// Trigger: agent closes one leg via close_position while the OTHER leg's
+// sl_tp_order is still active. The handler must:
+//   (a) deactivate only the matched leg's order (not markTradeClosedEarly)
+//   (b) call capturePnlForTrade with windowMode='partial'
+//   (c) write setTradePnl({ pnlA: x }) when the matched leg is 'A', else { pnlB: x }
+//   (d) leave the trade's status untouched (still 'open' or whatever it was)
+//
+// We use the same vi.spyOn pattern as the terminal test — seeding BOTH legs
+// in sl_tp_orders is what makes remainingActive.length > 0 → partial branch.
+// ---------------------------------------------------------------------------
+describe('close_position + P&L capture (partial)', () => {
+  beforeEach(async () => {
+    await initDbForTests();
+  });
+
+  it('captures partial P&L for the just-closed leg when other legs remain active', async () => {
+    seedTrade('trade-partial');
+    // BOTH legs active → closing leg A leaves leg B running → partial branch.
+    seedOrders('trade-partial');
+
+    const pnlCapture = await import('../src/scheduler/pnl-capture.js');
+    const dbModule = await import('../src/database/index.js');
+
+    const captureSpy = vi.spyOn(pnlCapture, 'capturePnlForTrade').mockResolvedValue(
+      foundResult({ pnlA: 10.5, pnlB: null, pnlTotal: 10.5, matched: 1, unmatched: 0 }),
+    );
+    const setPnlSpy = vi.spyOn(dbModule, 'setTradePnl');
+
+    const capitalModule = await import('../src/mcp-server/capital-singleton.js');
+    const capitalSpy = vi.spyOn(capitalModule, 'capital', 'get').mockReturnValue({
+      closePosition: async () => ({ status: 'CLOSED', dealId: 'D-A' }),
+    } as never);
+
+    const { executeTool } = await import('../src/agents/trading-agent.js');
+    const resultJson = await executeTool('close_position', { dealId: 'D-A', reason: 'manual partial' });
+    const result = JSON.parse(resultJson);
+
+    // (a) capturePnlForTrade was called with windowMode='partial'
+    expect(captureSpy).toHaveBeenCalledOnce();
+    expect(captureSpy.mock.calls[0][0]).toMatchObject({ windowMode: 'partial' });
+
+    // (b) setTradePnl was called with pnlA only (matched leg = A)
+    expect(setPnlSpy).toHaveBeenCalledWith('trade-partial', { pnlA: 10.5 });
+
+    // (c) trade is NOT closed_early — leg B still active
+    expect(result.trade_status).not.toBe('closed_early');
+    expect(result.remaining_legs).toBe(1);
+    const trade = getTradeById('trade-partial');
+    expect(trade?.status).toBe('open');
+
+    captureSpy.mockRestore();
+    setPnlSpy.mockRestore();
+    capitalSpy.mockRestore();
+  });
+
+  it('attributes P&L to leg B when matched leg is B', async () => {
+    seedTrade('trade-partial-b');
+    seedOrders('trade-partial-b');
+
+    const pnlCapture = await import('../src/scheduler/pnl-capture.js');
+    const dbModule = await import('../src/database/index.js');
+
+    const captureSpy = vi.spyOn(pnlCapture, 'capturePnlForTrade').mockResolvedValue(
+      foundResult({ pnlA: null, pnlB: 8.72, pnlTotal: 8.72, matched: 1, unmatched: 0 }),
+    );
+    const setPnlSpy = vi.spyOn(dbModule, 'setTradePnl');
+
+    const capitalModule = await import('../src/mcp-server/capital-singleton.js');
+    const capitalSpy = vi.spyOn(capitalModule, 'capital', 'get').mockReturnValue({
+      closePosition: async () => ({ status: 'CLOSED', dealId: 'D-B' }),
+    } as never);
+
+    const { executeTool } = await import('../src/agents/trading-agent.js');
+    await executeTool('close_position', { dealId: 'D-B', reason: 'manual partial leg B' });
+
+    expect(captureSpy.mock.calls[0][0]).toMatchObject({ windowMode: 'partial' });
+    expect(setPnlSpy).toHaveBeenCalledWith('trade-partial-b', { pnlB: 8.72 });
+
+    captureSpy.mockRestore();
+    setPnlSpy.mockRestore();
+    capitalSpy.mockRestore();
+  });
+});

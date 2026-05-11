@@ -772,6 +772,7 @@ import {
 import { capital } from '../mcp-server/capital-singleton.js';
 import { capturePnlForTrade } from '../scheduler/pnl-capture.js';
 import { setTradePnl } from '../database/index.js';
+import { summarizeError } from '../scheduler/error-summary.js';
 
 async function getPreferredAccountBalance(): Promise<{ balance: number; deposit: number; profitLoss: number; available: number }> {
   const accounts = await capital.getAccounts();
@@ -1746,7 +1747,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
             console.warn(`[close_position] No broker P&L found for ${trade.id} (terminal): ${result.note}`);
           }
         } catch (err) {
-          console.error(`[close_position] Terminal P&L capture failed for ${trade.id}: ${err instanceof Error ? err.message : String(err)}`);
+          console.error(`[close_position] Terminal P&L capture failed for ${trade.id}: ${summarizeError(err)}`);
         }
       } else if (matchedLeg) {
         // Partial leg close — other legs still live. Capture this leg's
@@ -1776,7 +1777,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
             console.warn(`[close_position] No broker P&L found for ${trade.id} leg ${matchedLeg.leg}: ${result.note}`);
           }
         } catch (err) {
-          console.error(`[close_position] Partial P&L capture failed for ${trade.id}: ${err instanceof Error ? err.message : String(err)}`);
+          console.error(`[close_position] Partial P&L capture failed for ${trade.id}: ${summarizeError(err)}`);
         }
       }
 
