@@ -1060,7 +1060,15 @@ export function startScheduler(): void {
   // Step B then aggregates yesterday's realised P&L into daily_pnl_log.
   cron.schedule('5 0 * * *', async () => {
     // ---- Step A: self-healing retry on missing P&L (past 7 days) ----
-    const stragglers = getTradesWithMissingPnl(7);
+    // Wrap the DB scan in try/catch so a sql.js / file-lock failure doesn't
+    // escape the cron handler unlogged. The per-iteration try/catch inside
+    // the for-loop handles broker-side capture failures separately.
+    let stragglers: TradeRecord[] = [];
+    try {
+      stragglers = getTradesWithMissingPnl(7);
+    } catch (err) {
+      console.error(`[DailyPnl] Failed to scan for missing P&L: ${summarizeError(err)}`);
+    }
     if (stragglers.length > 0) {
       console.log(`[DailyPnl] Retrying P&L capture for ${stragglers.length} trade(s) with missing pnl_total`);
     }
