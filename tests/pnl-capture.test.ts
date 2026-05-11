@@ -1,6 +1,7 @@
 // tests/pnl-capture.test.ts
 import { describe, it, expect } from 'vitest';
-import { parsePnlString } from '../src/scheduler/pnl-capture.js';
+import { parsePnlString, matchTransactionsToLegs } from '../src/scheduler/pnl-capture.js';
+import type { Transaction, TradeRecord } from '../src/types.js';
 
 describe('parsePnlString', () => {
   it('parses plain positive numbers', () => {
@@ -20,5 +21,99 @@ describe('parsePnlString', () => {
     expect(parsePnlString('')).toBeNull();
     expect(parsePnlString(undefined)).toBeNull();
     expect(parsePnlString('N/A')).toBeNull();
+  });
+});
+
+const baseTx = (over: Partial<Transaction>): Transaction => ({
+  date: '2026-05-07T13:35:00.000',
+  reference: 'REF-DEFAULT',
+  transactionType: 'TRADE',
+  size: 1,
+  currency: 'EUR',
+  profitAndLoss: '0',
+  ...over,
+});
+
+const baseTrade = (over: Partial<TradeRecord>): TradeRecord => ({
+  id: 'trade-1',
+  strategy_tag: 'ICT_INTRADAY',
+  instrument: 'GOLD',
+  instrument_category: 'COMMODITY',
+  direction: 'long',
+  setup_type: 'OB_RETEST',
+  entry: 4735,
+  sl: 4723,
+  tp1: 4748,
+  tp2: 4760,
+  position_a_id: 'DEAL-A',
+  position_b_id: 'DEAL-B',
+  size_a: 0.5,
+  size_b: 0.3,
+  status: 'complete',
+  pnl_a: null,
+  pnl_b: null,
+  pnl_total: null,
+  composite_score: 65,
+  kill_zone: 'NY_OPEN',
+  news_category: null,
+  analyst_decision: 'APPROVE',
+  reasoning: '',
+  closure_reason: null,
+  opened_at: '2026-05-07T13:16:50.502Z',
+  closed_at: '2026-05-07T13:35:01.106Z',
+  ...over,
+} as TradeRecord);
+
+describe('matchTransactionsToLegs', () => {
+  it('matches by exact size when both legs differ', () => {
+    const trade = baseTrade({});
+    const txs = [
+      baseTx({ size: 0.5, profitAndLoss: '10.50', reference: 'X' }),
+      baseTx({ size: 0.3, profitAndLoss: '8.72', reference: 'Y' }),
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlA).toBeCloseTo(10.5);
+    expect(result.pnlB).toBeCloseTo(8.72);
+    expect(result.pnlTotal).toBeCloseTo(19.22);
+    expect(result.unmatched).toBe(0);
+  });
+
+  it('falls back to total-only when sizes are ambiguous', () => {
+    const trade = baseTrade({ size_a: 0.5, size_b: 0.5 });
+    const txs = [
+      baseTx({ size: 0.5, profitAndLoss: '6.00' }),
+      baseTx({ size: 0.5, profitAndLoss: '6.01' }),
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlA).toBeNull();
+    expect(result.pnlB).toBeNull();
+    expect(result.pnlTotal).toBeCloseTo(12.01);
+  });
+
+  it('filters by currency', () => {
+    const trade = baseTrade({});
+    const txs = [
+      baseTx({ size: 0.5, profitAndLoss: '10.50', currency: 'USD' }), // wrong currency
+      baseTx({ size: 0.3, profitAndLoss: '8.72', currency: 'EUR' }),
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlTotal).toBeCloseTo(8.72);
+  });
+
+  it('skips rows with null profitAndLoss', () => {
+    const trade = baseTrade({});
+    const txs = [
+      baseTx({ size: 0.5, profitAndLoss: undefined }),
+      baseTx({ size: 0.3, profitAndLoss: '5.00' }),
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlTotal).toBeCloseTo(5);
+  });
+
+  it('returns zero matches when no transactions in window', () => {
+    const trade = baseTrade({});
+    const result = matchTransactionsToLegs([], trade, 'EUR');
+    expect(result.pnlTotal).toBe(0);
+    expect(result.matched).toBe(0);
   });
 });
