@@ -178,4 +178,67 @@ describe('request_analyst_review — analyst_token hardening (2026-05-11)', () =
     expect(parsed.analyst_token.length).toBeGreaterThan(0);
     expect(mockRunAnalystAgent).toHaveBeenCalledTimes(1);
   });
+
+  // Codex finding #5 (2026-05-11): integration test through the real
+  // request_analyst_review handler for the rogue-MODIFY case. The bug
+  // surface is the real handler path; token-hardening tests above use
+  // isolated REJECT/APPROVE mocks. This test simulates a future
+  // regression where the analyst emits MODIFY despite the new binary
+  // schema (prompt drift / model drift / partial-rollback). The mock
+  // here bypasses the parser coercion (which lives INSIDE runAnalystAgent
+  // — and is tested separately in analyst-parse.test.ts and analyst.test.ts).
+  // What this asserts is the HANDLER's defense-in-depth: the strict
+  // `decision.decision === 'APPROVE'` check at trading-agent.ts:1042
+  // rejects any non-APPROVE value and emits an empty token. No path to
+  // place_split_trade survives MODIFY even if the upstream coercion is
+  // somehow disabled.
+  it('coerces rogue MODIFY through the handler — analyst_token stays empty (defense-in-depth)', async () => {
+    mockRunAnalystAgent.mockResolvedValueOnce({
+      // bypass the AnalystDecision type to simulate runtime drift
+      decision: 'MODIFY' as never,
+      reason: 'imagined caveat',
+      confidence: 0.8,
+    });
+
+    const result = await executeTool('request_analyst_review', validProposalInput);
+    const parsed = JSON.parse(result);
+
+    // Handler returns the decision string verbatim (no second coercion at
+    // this layer — that's already done upstream). What matters: token is
+    // empty for any non-APPROVE decision, so place_split_trade fails closed.
+    expect(parsed.analyst_token).toBe('');
+    expect(typeof parsed.proposal_hash).toBe('string');
+    expect(parsed.proposal_hash.length).toBeGreaterThan(0);
+    expect(mockRunAnalystAgent).toHaveBeenCalledTimes(1);
+  });
+
+  // Codex finding #5 (2026-05-11): integration test for malformed/failed
+  // analyst output. In production, runAnalystAgent has internal try/catch
+  // around the Anthropic API call that converts failures to a fail-closed
+  // AnalystDecision { decision: 'REJECT', confidence: 0 } — see
+  // analyst-agent.ts:326-341. So a rejection BUBBLING OUT of runAnalystAgent
+  // is not a real scenario today; it would only happen if a future refactor
+  // removed that internal try/catch.
+  //
+  // This test pins the CURRENT contract: the executeTool handler does NOT
+  // wrap runAnalystAgent in its own try/catch (trading-agent.ts:1020), so
+  // an unexpected rejection propagates up to the caller. The trading-loop
+  // catches it at the tool-dispatch boundary. If a future change adds a
+  // handler-local try/catch that converts rejections to a JSON response
+  // here, this test will fail loudly — at which point the test should be
+  // updated to assert the new safe-fallback shape (empty token, REJECT
+  // decision). Document-as-test: this is the gap codex flagged.
+  it('handler propagates runAnalystAgent rejection — defense gap is in runAnalystAgent internal try/catch, not handler', async () => {
+    mockRunAnalystAgent.mockRejectedValueOnce(new Error('Anthropic API timeout'));
+
+    // Current behavior: executeTool does not wrap runAnalystAgent; the
+    // rejection bubbles up. The outer trading-loop boundary catches it.
+    // If a future refactor adds handler-local try/catch, swap this for
+    // an assertion on the safe-fallback JSON shape.
+    await expect(
+      executeTool('request_analyst_review', validProposalInput),
+    ).rejects.toThrow(/Anthropic API timeout/);
+
+    expect(mockRunAnalystAgent).toHaveBeenCalledTimes(1);
+  });
 });
