@@ -176,11 +176,24 @@ export async function main(): Promise<void> {
   for (const t of candidates) {
     let result;
     try {
+      // Capital.com `/history/transactions` rejects multi-day windows
+      // with HTTP 400 `error.invalid.daterange`. For live trades the
+      // scheduler's 'terminal' window [opened_at, now+5min] is short
+      // (typical trade duration: minutes to hours), so it works.
+      //
+      // Backfill is the special case: `now()` here is the backfill
+      // run-time (potentially weeks after the trade closed), which
+      // would produce a multi-day window and trigger the API error.
+      // Pin `now` to the trade's `closed_at` so the window becomes
+      // [opened_at, closed_at+5min] — the trade's actual lifetime
+      // plus a small buffer, well inside Capital's accepted range.
+      const pinnedNow = t.closed_at ? new Date(t.closed_at) : new Date();
       result = await capturePnlForTrade({
         trade: t,
         capital,
         accountCurrency,
         windowMode: 'terminal',
+        now: () => pinnedNow,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
