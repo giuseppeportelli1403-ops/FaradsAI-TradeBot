@@ -770,6 +770,8 @@ import {
   enterCriticalSection, exitCriticalSection,
 } from '../database/index.js';
 import { capital } from '../mcp-server/capital-singleton.js';
+import { capturePnlForTrade, captureAndPersistPnl } from '../scheduler/pnl-capture.js';
+import { setTradePnl } from '../database/index.js';
 
 async function getPreferredAccountBalance(): Promise<{ balance: number; deposit: number; profitLoss: number; available: number }> {
   const accounts = await capital.getAccounts();
@@ -1718,9 +1720,29 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // (i.e. this close finishes off the trade). Otherwise the trade
       // is still partially live.
       const remainingActive = getActiveSlTpOrdersByTradeId(trade.id);
+      const accountCurrency = process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR';
+
       if (remainingActive.length === 0) {
+        // Terminal close — all legs done.
         markTradeClosedEarly(trade.id, `${reasonText} (deal=${dealId}, leg=${matchedLeg?.leg ?? '?'})`);
+        await captureAndPersistPnl({
+          trade,
+          capture: () => capturePnlForTrade({ trade, capital, accountCurrency, windowMode: 'terminal' }),
+          persist: setTradePnl,
+          logTag: '[pnl-capture:close-terminal]',
+        });
+      } else if (matchedLeg) {
+        // Partial leg close — other legs still live. Capture this leg's
+        // realised P&L now; trade status remains unchanged.
+        await captureAndPersistPnl({
+          trade,
+          capture: () => capturePnlForTrade({ trade, capital, accountCurrency, windowMode: 'partial' }),
+          persist: setTradePnl,
+          logTag: '[pnl-capture:close-partial]',
+          legHint: matchedLeg.leg as 'A' | 'B',
+        });
       }
+
       return JSON.stringify({
         status: 'closed',
         trade_id: trade.id,

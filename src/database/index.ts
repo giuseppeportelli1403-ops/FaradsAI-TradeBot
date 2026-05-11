@@ -46,6 +46,18 @@ export async function initDatabaseAsync(): Promise<void> {
   console.log(`Database initialised at ${DB_PATH}`);
 }
 
+/**
+ * TEST-ONLY. Resets the module-level db to a fresh blank sql.js
+ * in-memory database with all tables created — no file I/O, no
+ * state bleed between beforeEach calls. Production code must use
+ * initDatabaseAsync() which loads/saves to DB_PATH.
+ */
+export async function initDbForTests(): Promise<void> {
+  const SQL = await initSqlJs();
+  db = new SQL.Database();
+  createTables();
+}
+
 // Exported as of 2026-04-29 (audit-3 fix scanner+misc P0-1) so the entry
 // point can flush the in-memory sql.js database to disk on SIGTERM/SIGINT.
 export function saveToFile(): void {
@@ -368,6 +380,57 @@ function rebuildSlTpOrdersTablePhase2(): void {
   }
 }
 
+/**
+ * Idempotent migration: rebuilds daily_pnl_log to add a UNIQUE constraint on
+ * `date` if it is missing. Required so the ON CONFLICT(date) upsert in
+ * upsertDailyPnl works on DBs created before 2026-05-11. SQLite does not
+ * support ADD CONSTRAINT, so we use rename-rebuild-copy-drop.
+ */
+function rebuildDailyPnlLogWithUniqueDate(): void {
+  const checkSql = String(
+    db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='daily_pnl_log'")[0]?.values[0]?.[0] ?? '',
+  );
+  // If the constraint is already present (either UNIQUE inline or a separate
+  // constraint token), there is nothing to do.
+  if (checkSql.toUpperCase().includes('UNIQUE')) return;
+  // Table doesn't exist yet (fresh DB) — CREATE TABLE IF NOT EXISTS handles it.
+  if (checkSql === '') return;
+
+  console.log('[DB Migration] Adding UNIQUE constraint to daily_pnl_log.date');
+  db.run('PRAGMA foreign_keys = OFF');
+  db.run('BEGIN TRANSACTION');
+  try {
+    db.run('ALTER TABLE daily_pnl_log RENAME TO daily_pnl_log_old_unique');
+    db.run(`
+      CREATE TABLE daily_pnl_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        date TEXT NOT NULL UNIQUE,
+        realised_pnl REAL NOT NULL DEFAULT 0,
+        unrealised_pnl REAL NOT NULL DEFAULT 0,
+        total_pnl REAL NOT NULL DEFAULT 0,
+        equity REAL NOT NULL,
+        pnl_pct REAL NOT NULL DEFAULT 0,
+        kill_switch_triggered INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.run(`
+      INSERT INTO daily_pnl_log
+        (id, date, realised_pnl, unrealised_pnl, total_pnl, equity, pnl_pct, kill_switch_triggered, updated_at)
+      SELECT id, date, realised_pnl, unrealised_pnl, total_pnl, equity, pnl_pct, kill_switch_triggered, updated_at
+      FROM daily_pnl_log_old_unique
+    `);
+    db.run('DROP TABLE daily_pnl_log_old_unique');
+    db.run('CREATE INDEX IF NOT EXISTS idx_daily_pnl_date ON daily_pnl_log(date)');
+    db.run('COMMIT');
+  } catch (err) {
+    db.run('ROLLBACK');
+    throw err;
+  } finally {
+    db.run('PRAGMA foreign_keys = ON');
+  }
+}
+
 function createTables(): void {
   // 2-leg split-position architecture (Phase 2 of 2026-05-07; 3-leg legacy
   // removed in Phase 1 (2026-05-08) and Phase 2 (2026-05-09)):
@@ -531,7 +594,7 @@ function createTables(): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS daily_pnl_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      date TEXT NOT NULL,
+      date TEXT NOT NULL UNIQUE,
       realised_pnl REAL NOT NULL DEFAULT 0,
       unrealised_pnl REAL NOT NULL DEFAULT 0,
       total_pnl REAL NOT NULL DEFAULT 0,
@@ -541,6 +604,13 @@ function createTables(): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
   `);
+
+  // 2026-05-11: add UNIQUE constraint to daily_pnl_log.date so the
+  // ON CONFLICT(date) upsert in upsertDailyPnl works on pre-existing DBs
+  // that were created before the UNIQUE was in the schema. SQLite doesn't
+  // support ADD CONSTRAINT, so we use the standard rename-rebuild pattern.
+  // Idempotent: exits early if the constraint is already present.
+  rebuildDailyPnlLogWithUniqueDate();
 
   // Indexes for common query patterns
   db.run('CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)');
@@ -675,6 +745,55 @@ export function updateTradeStatus(
         closed_at = COALESCE(?, closed_at)
     WHERE id = ?
   `, [status, pnlA ?? null, pnlB ?? null, closedAt, tradeId]);
+  saveToFile();
+}
+
+/**
+ * Persist realised P&L for a trade. Separate from updateTradeStatus
+ * so the status update remains atomic and not dependent on broker
+ * round-trips. Two modes:
+ *   - pnlA / pnlB provided: leg-level attribution. pnl_total is
+ *     computed deterministically from the legs.
+ *   - pnlTotalOverride provided: aggregate-only attribution (used
+ *     when transaction → leg matching is ambiguous). pnl_a / pnl_b
+ *     stay NULL — we don't fabricate a split.
+ *
+ * Caller must choose ONE mode per call. Mixing yields an error.
+ */
+export function setTradePnl(
+  tradeId: string,
+  pnl: { pnlA?: number; pnlB?: number; pnlTotalOverride?: number },
+): void {
+  const hasLeg = pnl.pnlA !== undefined || pnl.pnlB !== undefined;
+  const hasTotal = pnl.pnlTotalOverride !== undefined;
+  if (hasLeg && hasTotal) {
+    throw new Error('setTradePnl: pass leg pnls OR pnlTotalOverride, not both');
+  }
+  if (!hasLeg && !hasTotal) return; // nothing to write
+
+  if (hasLeg) {
+    // pnl_total must reflect post-COALESCE leg values: if a previous call
+    // wrote pnl_b and this call only changes pnl_a, the sum has to use
+    // the preserved pnl_b — not zero. Bind each leg twice so the SET
+    // expression for pnl_total sees the same COALESCE(new, stored) result.
+    const pnlAParam = pnl.pnlA ?? null;
+    const pnlBParam = pnl.pnlB ?? null;
+    db.run(
+      `UPDATE trades
+         SET pnl_a = COALESCE(?, pnl_a),
+             pnl_b = COALESCE(?, pnl_b),
+             pnl_total = COALESCE(?, pnl_a, 0) + COALESCE(?, pnl_b, 0)
+       WHERE id = ?`,
+      [pnlAParam, pnlBParam, pnlAParam, pnlBParam, tradeId],
+    );
+  } else {
+    db.run(
+      `UPDATE trades
+         SET pnl_total = ?
+       WHERE id = ?`,
+      [pnl.pnlTotalOverride, tradeId],
+    );
+  }
   saveToFile();
 }
 
@@ -1113,6 +1232,72 @@ export function getRealisedPnlSince(startDate: string): number {
     [startDate]
   );
   return result[0]?.values[0]?.[0] as number || 0;
+}
+
+/**
+ * Sums realised P&L from closed trades on a given UTC date and upserts the
+ * daily_pnl_log row. Unrealised is set to 0 — callers that want unrealised
+ * must use the MCP get_daily_pnl tool that hits Capital's live balance.
+ *
+ * `date` is a UTC YYYY-MM-DD string. Trades are filtered by
+ * `date(closed_at) = ?` — SQLite's date() parses both ISO-8601 Z-suffix
+ * format ('2026-05-07T13:35:01.106Z') and space-separator format
+ * ('2026-05-06 15:16:43') correctly, so both production code paths are
+ * covered by a single query.
+ */
+export function aggregateAndUpsertDailyPnl(date: string, equity: number): void {
+  const result = db.exec(
+    `SELECT COALESCE(SUM(pnl_total), 0) as realised
+       FROM trades
+      WHERE date(closed_at) = ?
+        AND status IN ('complete', 'sl_hit', 'closed_early')`,
+    [date],
+  );
+  const realised = (result[0]?.values[0]?.[0] as number) ?? 0;
+  upsertDailyPnl(date, realised, 0, equity);
+}
+
+/**
+ * Returns terminal-status trades whose pnl_total is NULL or 0 and that
+ * closed within the last `sinceDays` days. Used by the daily aggregator
+ * to retry P&L capture for any trades whose synchronous close-path
+ * capture failed (broker outage, no transactions in window, etc.).
+ *
+ * Why 7 days: Capital's transaction history is reliably available for
+ * at least 30 days, but we don't want unbounded backfill on every cron.
+ * 7 days is enough to cover weekend / multi-day outages.
+ */
+export function getTradesWithMissingPnl(sinceDays: number): TradeRecord[] {
+  const result = db.exec(
+    `SELECT * FROM trades
+       WHERE status IN ('complete', 'sl_hit', 'closed_early')
+         AND (pnl_total IS NULL OR pnl_total = 0)
+         AND date(closed_at) >= date('now', ?)
+       ORDER BY closed_at DESC`,
+    [`-${sinceDays} days`],
+  );
+  return resultToObjects<TradeRecord>(result);
+}
+
+/**
+ * TEST-ONLY. Directly sets status and closed_at on a trade row, bypassing
+ * the auto-stamp logic in updateTradeStatus (which would overwrite closed_at
+ * with new Date().toISOString()). Required for the mixed-format date tests in
+ * tests/daily-pnl-aggregator.test.ts that need to control the exact
+ * closed_at string (ISO-Z vs space-separator).
+ *
+ * Do NOT call from production code.
+ */
+export function setTradeStatusAndClosedAt(
+  tradeId: string,
+  status: TradeStatus,
+  closedAt: string,
+): void {
+  db.run(
+    `UPDATE trades SET status = ?, closed_at = ? WHERE id = ?`,
+    [status, closedAt, tradeId],
+  );
+  saveToFile();
 }
 
 // ==================== HELPERS ====================

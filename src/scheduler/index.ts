@@ -45,6 +45,13 @@ import {
 import type { CapitalPosition, Activity, TradeRecord, TradeStatus } from '../types.js';
 import { summarizeError } from './error-summary.js';
 import { typicalSpread } from '../backtest/realism.js';
+import { capturePnlForTrade, captureAndPersistPnl, type PnlCaptureResult } from './pnl-capture.js';
+import {
+  setTradePnl as realSetTradePnl,
+  aggregateAndUpsertDailyPnl,
+  getDailyPnl,
+  getTradesWithMissingPnl,
+} from '../database/index.js';
 
 const capital = new CapitalClient({
   apiKey: process.env.CAPITAL_API_KEY || '',
@@ -87,6 +94,11 @@ export interface MonitorDeps {
   alertTp1Hit?: typeof realAlertTp1Hit;
   alertTp2Hit?: typeof realAlertTp2Hit;
   alertSlHit?: typeof realAlertSlHit;
+  /** Optional: called after a leg closes to retrieve realised P&L from the
+   *  broker. Best-effort — if absent or throws, status update is unaffected. */
+  capturePnl?: (trade: TradeRecord, windowMode?: 'terminal' | 'partial') => Promise<PnlCaptureResult>;
+  /** Optional: injected so tests can stub it without touching the real DB. */
+  setTradePnl?: typeof realSetTradePnl;
 }
 
 // 2026-04-29 audit-3 r6: price-proximity helper. Fetches current market
@@ -283,6 +295,14 @@ function defaultMonitorDeps(): MonitorDeps {
     alertTp1Hit: realAlertTp1Hit,
     alertTp2Hit: realAlertTp2Hit,
     alertSlHit: realAlertSlHit,
+    capturePnl: (trade: TradeRecord, windowMode: 'terminal' | 'partial' = 'terminal') =>
+      capturePnlForTrade({
+        trade,
+        capital,
+        accountCurrency: process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR',
+        windowMode,
+      }),
+    setTradePnl: realSetTradePnl,
   };
 }
 
@@ -543,6 +563,19 @@ export async function handleTp1Hit(
 
   if (trade.position_b_id) await moveLegSlToBe('B', trade.position_b_id);
 
+  // Capture leg-A realised P&L. Partial windowMode: tight [now-1min, now+5min]
+  // window isolates only the just-landed leg-A close transaction. Leg B stays
+  // open — don't write pnlB here.
+  if (d.capturePnl) {
+    await captureAndPersistPnl({
+      trade,
+      capture: () => d.capturePnl!(trade, 'partial'),
+      persist: d.setTradePnl ?? realSetTradePnl,
+      logTag: '[pnl-capture:tp1]',
+      legHint: 'A',
+    });
+  }
+
   try {
     if (d.alertTp1Hit) await d.alertTp1Hit(trade);
   } catch (e) {
@@ -561,6 +594,19 @@ export async function handleTp2Hit(
   const d = deps ?? defaultMonitorDeps();
   d.deactivateSlTpOrder(tradeId, 'B');
   d.updateTradeStatus(tradeId, 'complete');
+
+  // Capture realised broker P&L. Best-effort: if it fails the status update
+  // has already landed; the daily aggregator's self-healing retry will
+  // re-attempt on the next run.
+  if (d.capturePnl) {
+    await captureAndPersistPnl({
+      trade,
+      capture: () => d.capturePnl!(trade, 'terminal'),
+      persist: d.setTradePnl ?? realSetTradePnl,
+      logTag: '[pnl-capture:tp2]',
+    });
+  }
+
   try {
     if (d.alertTp2Hit) await d.alertTp2Hit(trade);
   } catch (e) {
@@ -600,6 +646,17 @@ export async function handleSlOnLeg(
   const anyTpHit = trade.status === 'tp1_hit';
   const finalStatus: TradeStatus = anyTpHit ? 'complete' : 'sl_hit';
   d.updateTradeStatus(tradeId, finalStatus);
+
+  // Capture realised broker P&L for the fully-closed trade. Terminal window:
+  // [opened_at, now+5min] to catch all legs that closed during the trade's lifetime.
+  if (d.capturePnl) {
+    await captureAndPersistPnl({
+      trade,
+      capture: () => d.capturePnl!(trade, 'terminal'),
+      persist: d.setTradePnl ?? realSetTradePnl,
+      logTag: '[pnl-capture:sl]',
+    });
+  }
 
   try {
     if (finalStatus === 'sl_hit') {
@@ -996,6 +1053,61 @@ export function startScheduler(): void {
     });
   }, CRON_UTC);
 
+  // 2026-05-11: Daily realised-P&L roll-up + self-healing retry. Runs at
+  // 00:05 UTC (same minute as the reject-metrics dump, different async path).
+  // Step A retries P&L capture for any terminal trades from the past 7 days
+  // whose pnl_total is still NULL/0 — this is the dead-letter recovery loop.
+  // The trade row itself is the dead-letter queue; no extra table needed.
+  // Step B then aggregates yesterday's realised P&L into daily_pnl_log.
+  cron.schedule('5 0 * * *', async () => {
+    // ---- Step A: self-healing retry on missing P&L (past 7 days) ----
+    // Wrap the DB scan in try/catch so a sql.js / file-lock failure doesn't
+    // escape the cron handler unlogged. The per-iteration try/catch inside
+    // the for-loop handles broker-side capture failures separately.
+    let stragglers: TradeRecord[] = [];
+    try {
+      stragglers = getTradesWithMissingPnl(7);
+    } catch (err) {
+      console.error(`[DailyPnl] Failed to scan for missing P&L: ${summarizeError(err)}`);
+    }
+    if (stragglers.length > 0) {
+      console.log(`[DailyPnl] Retrying P&L capture for ${stragglers.length} trade(s) with missing pnl_total`);
+    }
+    for (const trade of stragglers) {
+      await captureAndPersistPnl({
+        trade,
+        capture: () => capturePnlForTrade({
+          trade,
+          capital,
+          accountCurrency: process.env.CAPITAL_ACCOUNT_CURRENCY ?? 'EUR',
+          windowMode: 'terminal',
+        }),
+        persist: realSetTradePnl,
+        logTag: '[pnl-capture:retry]',
+      });
+    }
+
+    // ---- Step B: aggregate yesterday ----
+    const yesterday = new Date(Date.now() - 24 * 60 * 60_000)
+      .toISOString()
+      .substring(0, 10); // YYYY-MM-DD UTC
+    let equity = 0;
+    try {
+      const accounts = await capital.getAccounts();
+      equity = accounts[0]?.balance?.balance ?? 0;
+    } catch (err) {
+      console.warn(`[DailyPnl] Could not fetch live equity for ${yesterday}: ${summarizeError(err)}`);
+      const last = getDailyPnl(yesterday);
+      equity = last?.equity ?? 0;
+    }
+    try {
+      aggregateAndUpsertDailyPnl(yesterday, equity);
+      console.log(`[DailyPnl] Aggregated realised P&L for ${yesterday} (equity=${equity})`);
+    } catch (err) {
+      console.error(`[DailyPnl] Aggregation failed for ${yesterday}: ${summarizeError(err)}`);
+    }
+  }, CRON_UTC);
+
   console.log('Scheduler started. Cron jobs active:');
   console.log('  */1 * * * *           — Split-position monitor (every minute) + 15m/1h candle detection → ICT Agent');
   console.log('  */8 * * * *           — Capital.com session keep-alive ping');
@@ -1004,5 +1116,5 @@ export function startScheduler(): void {
   console.log('  0 0 * * 0             — Weekly Review Agent');
   console.log('  30 21 * * 1-5         — EOD Journal Agent (Mon-Fri after US close)');
   console.log('  */10 * * * *          — RSS news poll (18 feeds, Tier 1/2/3)');
-  console.log('  5 0 * * *             — Reject metrics dump (previous UTC day)');
+  console.log('  5 0 * * *             — Reject metrics dump (previous UTC day) + Daily P&L aggregator (self-healing retry + roll-up)');
 }
