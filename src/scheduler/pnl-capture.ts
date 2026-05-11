@@ -224,6 +224,20 @@ export async function captureAndPersistPnl(opts: {
       return;
     }
     if (opts.legHint) {
+      // Defensive: if the partial-window match found multiple transactions
+      // but couldn't attribute either to a leg (ambiguous-size branch with
+      // > 1 hits), the captured pnlTotal likely includes an OTHER leg's
+      // earlier transaction. Over-attributing to the just-closed leg
+      // would corrupt leg-level P&L; skip and let the daily aggregator's
+      // 7-day terminal retry handle it once the trade fully closes.
+      if (result.pnlA === null && result.pnlB === null && result.matched > 1) {
+        console.warn(
+          `${opts.logTag} Partial capture for ${opts.trade.id} leg ${opts.legHint}: ` +
+          `${result.matched} ambiguous-size matches in window, skipping write — ` +
+          `daily aggregator will retry on terminal close.`,
+        );
+        return;
+      }
       // Partial close: attribute the matched leg specifically.
       const pnlForLeg =
         opts.legHint === 'A'

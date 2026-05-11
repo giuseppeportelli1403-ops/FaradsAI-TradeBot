@@ -1,6 +1,6 @@
 // tests/pnl-capture.test.ts
-import { describe, it, expect } from 'vitest';
-import { parsePnlString, matchTransactionsToLegs, capturePnlForTrade } from '../src/scheduler/pnl-capture.js';
+import { describe, it, expect, vi } from 'vitest';
+import { parsePnlString, matchTransactionsToLegs, capturePnlForTrade, captureAndPersistPnl } from '../src/scheduler/pnl-capture.js';
 import type { Transaction, TradeRecord } from '../src/types.js';
 
 describe('parsePnlString', () => {
@@ -214,5 +214,30 @@ describe('capturePnlForTrade', () => {
     });
     expect(capturedFrom).toBe('2026-05-07T13:39:00');  // now - 1min
     expect(capturedTo).toBe('2026-05-07T13:45:00');    // now + 5min
+  });
+});
+
+describe('captureAndPersistPnl — partial-close defense', () => {
+  it('skips write when partial capture finds multiple ambiguous-size matches', async () => {
+    const trade = baseTrade({ size_a: 0.5, size_b: 0.5 }); // ambiguous
+    const persist = vi.fn();
+    let warnMsg = '';
+    const origWarn = console.warn;
+    console.warn = (msg: string) => { warnMsg = msg; };
+    try {
+      await captureAndPersistPnl({
+        trade,
+        capture: async () => ({
+          pnlA: null, pnlB: null, pnlTotal: 12.01, matched: 2, unmatched: 0, note: '', found: true,
+        }),
+        persist,
+        logTag: '[pnl-capture:close-partial]',
+        legHint: 'A',
+      });
+    } finally {
+      console.warn = origWarn;
+    }
+    expect(persist).not.toHaveBeenCalled();
+    expect(warnMsg).toContain('ambiguous-size matches in window, skipping write');
   });
 });
