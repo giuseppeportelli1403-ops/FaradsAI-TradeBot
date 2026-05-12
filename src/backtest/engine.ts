@@ -117,12 +117,20 @@ export interface ComputeScoreInput {
  * inline math (verified by tests/backtest-engine.test.ts and
  * tests/scoring/compose.test.ts).
  *
- * Backtest does NOT include news (no historical news) or history
- * (no carry-forward across the replay). ICT-array quality is 0 until
- * PR 2 / US-5 / T066 lands the deterministic structure scorer; once
- * that ships the backtest will more closely mirror live scoring.
+ * Backtest does NOT include news (no historical news) or history (no
+ * carry-forward across the replay). T069 (2026-05-12 follow-up): the
+ * ICT-array detector lands here too via the optional `candles1h` and
+ * `bias` arguments — when supplied (the engine call site at line ~250
+ * does), the structure scorer fires and the backtest more closely
+ * mirrors live scoring. When omitted (legacy callers), ictArray
+ * contribution is 0 — preserves the historical "conservative trade
+ * frequency" caveat.
  */
-export function computeScore(input: ComputeScoreInput, ticker = 'BACKTEST'): number {
+export function computeScore(
+  input: ComputeScoreInput,
+  ticker = 'BACKTEST',
+  ictArrayContext?: { candles1h: Candle[]; bias: 'bullish' | 'bearish' | 'neutral'; atr: number; currentPrice: number; spread: number },
+): number {
   return composeScore({
     ticker,
     rawBiasClarity: input.rawClarity,
@@ -131,7 +139,7 @@ export function computeScore(input: ComputeScoreInput, ticker = 'BACKTEST'): num
     historyWinRate: undefined,
     historySampleSize: undefined,
     isRangeMode: false,
-    ictArrayInputs: undefined,
+    ictArrayInputs: ictArrayContext,
   }).composite_score;
 }
 

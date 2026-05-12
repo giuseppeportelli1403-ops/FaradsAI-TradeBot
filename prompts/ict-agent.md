@@ -158,16 +158,20 @@ If NOT in a kill zone: STOP. Do not analyse further. Wait for the next zone.
 
 **G. Get relevant lessons** — `get_lessons(setup_type, instrument_category, kill_zone, 'ICT_INTRADAY')`. History adjustment activates at **≥ 2 prior trades** in this exact setup × kill zone × instrument bucket: win rate < 50% → −10; > 70% → +10. (Threshold lowered from 5 to 2 on 2026-04-29 so the feedback loop activates inside the demo window. The signal is noisier at small N but better than dead.)
 
-**H. Calculate composite score** — apply the rebalanced rubric in `strategy.md` (structure-dominant, no kill-zone score component since kill zone is now a hard gate only):
-- Base: **25**
-- 1H bias clarity: 0 (unclear) / 15 (moderate) / 20 (slope) / 25 (clean HH+HL or LH+LL)
-- ICT array quality: 0 (none) / 15 (weak) / 25 (moderate) / 35 (strong)
-- News catalyst: −15 (opposing Cat A) / −5 (opposing Cat B) / 0 (neutral) / +5 (aligned Cat B) / +10 (aligned Cat A)
-- Historical win rate adjustment (≥ 2 trades): 0 / +10 / −10
-- Spread quality bonus: 0 (medium) / +5 (tight)
-- Cap at 100
+**H. Use the scanner-supplied composite score** — _Updated 2026-05-12 (Spec 001 / US-1 + US-5)._
 
-Tier assignment:
+The scanner now computes `composite_score` and `tier` deterministically in TypeScript code (`src/scoring/compose.ts`). Every entry returned by `get_ranked_instruments` carries:
+
+- `composite_score` — final 0–100 number, already including base + 1H bias clarity + ICT-array structure quality + news catalyst + spread bonus + range-mode adjustments.
+- `tier` — already mapped per the rules below; `null` means below floor and the candidate was filtered out before you saw it.
+- `score_breakdown` — per-component JSON `{ base, bias_clarity, ict_array, news, history, spread, range_mode_baseline?, range_cap_applied? }` for your reference.
+
+**Use these values verbatim in `request_analyst_review` and `place_split_trade`. Do NOT recompute the score yourself.** The executor revalidates that your submitted `composite_score` matches the scanner's tier mapping; emitting a different number returns `TIER_SCORE_MISMATCH` and the trade is rejected.
+
+The only score component the scanner does NOT compute is the **historical win-rate adjustment** (±10), because it depends on `setup_type` which only you know after trigger detection (Step I). If the lessons query in Step G activates the adjustment, apply it on top of the scanner's base score and update `composite_score` accordingly. The executor accepts a ±10 deviation from the scanner's value precisely to allow this; deviations beyond ±10 are rejected.
+
+Tier assignment (kept here for context — already applied by scanner):
+
 - **Tier 1 (80–100):** 1.5% risk
 - **Tier 2 (60–79):** 1.0% risk
 - **Tier 3 (≥ floor, capped at 59):** 0.5% risk. Tier 3 floor is **spread-aware** post-2026-05-04 carve-out: **40** for tight-spread (EUR/GBP/USDJPY/AUDUSD/GOLD), **45** for medium-spread (OIL_CRUDE, SILVER).

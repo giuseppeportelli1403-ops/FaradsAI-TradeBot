@@ -459,6 +459,21 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
                 `will return mostly-neutral bias.`,
             );
           }
+          // T033 (US-2): per-instrument scanner failure now visible in
+          // the daily digest as SCANNER_FETCH_ERROR. Subcategory carries
+          // the error class (TwelveDataDailyCapError, AxiosError, etc.)
+          // so ops can spot patterns without log-trawling.
+          try {
+            recordRejection({
+              instrument: inst.ticker,
+              layer: 'scanner',
+              category: 'SCANNER_FETCH_ERROR',
+              reason_text: `Per-instrument scoring failed: ${err instanceof Error ? err.message : String(err)}`,
+              subcategory: err instanceof Error ? err.constructor.name : 'unknown',
+            });
+          } catch (recErr) {
+            console.warn(`[Scanner] recordRejection(FETCH_ERROR) failed: ${recErr instanceof Error ? recErr.message : String(recErr)}`);
+          }
           return null;
         }
       })
