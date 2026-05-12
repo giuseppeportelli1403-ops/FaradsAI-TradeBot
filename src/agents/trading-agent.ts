@@ -14,6 +14,7 @@ import { runAnalystAgent, type TradeProposal } from './analyst-agent.js';
 import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/calendar-veto.js';
 import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
 import { recordRejection } from '../rejection-log/record.js';
+import { getCooldownState } from '../cooldown/state.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument, getRealisedPnlSince } from '../database/index.js';
 import { alertTradePlaced, alertSystemWarning, alertOrphanPositions } from '../notifications/telegram.js';
 
@@ -831,6 +832,44 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       return JSON.stringify({ lessons, win_rate: wr });
     }
     case 'request_analyst_review': {
+      // T057 (US-3 / Spec 001): code-level loss-streak cooldown. Fires
+      // BEFORE analyst dispatch so the bot doesn't spend Sonnet tokens
+      // (or analyst budget) when it should be sitting on its hands.
+      // Replaces the prompt-only rule that lived in
+      // prompts/analyst-agent.md (Sonnet may or may not have honoured
+      // it). Wrapped in try/catch — a cooldown read failure must not
+      // kill the trade attempt; better to err on the side of letting
+      // the trade through than dropping it for a state-read bug.
+      try {
+        const cooldown = getCooldownState();
+        if (cooldown.active) {
+          const reason =
+            `Loss-streak cooldown active: ${cooldown.consecutive_losses} consecutive ` +
+            `losses since ${cooldown.last_loss_closed_at}. Cooldown clears at ${cooldown.clears_at}.`;
+          try {
+            recordRejection({
+              instrument: String(input.instrument ?? 'unknown'),
+              layer: 'executor',
+              category: 'COOLDOWN_3_LOSSES_ACTIVE',
+              reason_text: reason,
+              subcategory: JSON.stringify({
+                consecutive: cooldown.consecutive_losses,
+                last_loss_closed_at: cooldown.last_loss_closed_at,
+                clears_at: cooldown.clears_at,
+              }),
+            });
+          } catch (e) { console.warn(`[Cooldown] recordRejection failed: ${e instanceof Error ? e.message : String(e)}`); }
+          return JSON.stringify({
+            error: 'COOLDOWN_3_LOSSES_ACTIVE',
+            reason,
+            consecutive_losses: cooldown.consecutive_losses,
+            clears_at: cooldown.clears_at,
+          });
+        }
+      } catch (err) {
+        console.warn(`[Cooldown] state-read failed (allowing trade through): ${err instanceof Error ? err.message : String(err)}`);
+      }
+
       // 2026-04-29 audit fix (P0-AN1): trade_id chain. Pre-fix this case
       // generated trade-{8hex} for the analyst_log row, and place_split_trade
       // separately generated trade-{12hex} for trades.id — different hashes,
