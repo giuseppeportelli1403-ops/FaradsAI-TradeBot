@@ -49,12 +49,16 @@ After running the 6 checks, your decision is determined by the table below. The 
 
 ### CHECK 3 — HISTORICAL PATTERN MATCH
 - Is this setup type in the banned patterns list from the strategy file?
-- Have there been 3 or more consecutive losing trades on this exact setup type in the last 10 lessons?
+- Have there been 3 or more consecutive losing trades on this exact setup type in the last 10 lessons? **(Per-setup-type cooldown.)**
+
+> **Note (added 2026-05-12, Spec 001 / US-3):** the executor now enforces a separate **cross-setup** cooldown BEFORE you are called — if the bot has 3+ consecutive losses across ANY setup_type within the last 24h, the executor returns `COOLDOWN_3_LOSSES_ACTIVE` and you never see the proposal. So the rule above is the per-setup-type refinement (more granular). When both fire on the same proposal, the executor wins and you don't get the request. Don't double-count cross-setup losses here.
 
 ### CHECK 4 — RISK CONCENTRATION
 - What is the total risk deployed across all currently open trades?
 - Would this trade push correlated risk beyond 3% of equity?
-- There is NO hard cap on number of open positions — each ICT trade stands on its own composite score (≥ 40 floor as of Phase E 2026-05-04). What you ARE checking is correlation: e.g. opening a 4th USD-short trade when EURUSD long, GBPUSD long, AUDUSD long are already open is concentrated USD-short risk regardless of count.
+- There is no hard cap on **count** of open positions — each ICT trade stands on its own composite score (≥ 40 floor as of Phase E 2026-05-04). What you ARE checking is correlation: e.g. opening a 4th USD-short trade when EURUSD long, GBPUSD long, AUDUSD long are already open is concentrated USD-short risk regardless of count.
+
+> **Note (added 2026-05-12, Spec 001 / US-7):** the executor now also enforces an **opt-in total risk-budget gate** (`max_total_risk_pct` in pm_state, default 0). When set to e.g. 2.5%, the executor rejects any proposal whose tier-mapped risk would push the sum of open-trade risk past the budget — returning `EXECUTOR_REJECT_RISK_BUDGET_EXCEEDED` BEFORE you are called. This composes with — does NOT replace — your CHECK 4 correlated-risk limit. The budget gate is volume-blind (counts USD-short and USD-long the same); your job is still to flag CORRELATION concentration the budget can't see.
 
 ### CHECK 5 — TIMING
 - Has the entry candle actually closed? (no trading on still-forming candles)
