@@ -26,14 +26,20 @@
 // 14-period True Range SMA on 15M candles. TR = max(high-low,
 // |high-prevClose|, |low-prevClose|).
 //
-// === OB Retest tap-depth caveat ===
-// The OB Retest spec also requires "tap depth ≤ 50% inside the OB". This
-// audit does NOT validate that condition (would require identifying the OB
-// boundary, which is itself a multi-candle pattern). The other 3 criteria are
-// reported; tap-depth shows as "OB not validated" in the reason chain.
+// === OB Retest tap-depth ===
+// The OB Retest detector now identifies a candidate OB via a minimal
+// heuristic (last bias-side candle before a strong same-bias displacement
+// candle, within a 10-candle lookback) and validates tap-depth ≤ 50% of the
+// OB's range. When no candidate OB can be located the detector returns
+// `qualifies: 'indeterminate'` and the cycle is excluded from TP/TN/FP/FN
+// counts — see the per-trigger confusion matrix.
 //
 // === Usage ===
-//   npx tsx scripts/audit-trigger-decisions.ts [--log <path>] [--days <N>]
+//   Normal audit:
+//     npx tsx scripts/audit-trigger-decisions.ts [--log <path>] [--days <N>]
+//   Forensic single-cycle:
+//     npx tsx scripts/audit-trigger-decisions.ts --debug-cycle <ISO_TS>
+//     e.g. --debug-cycle 2026-05-04T09:15:00
 //
 // Default log: ~/trading-bot/data/pm2-out.log. Default window: last 14 days.
 
@@ -89,10 +95,23 @@ interface DecisionCycle {
   bias: Bias;
   triggerConfirmed: LlmAnswer;
   llmReasoningSnippet: string;
+  // Raw block text for the cycle (from DECISION CYCLE marker up to the next
+  // marker or the end-of-cycle line). Retained for the --debug-cycle flag.
+  blockText: string;
 }
 
+// `qualifies` is tri-state-plus-null:
+//   - true        → math says trigger fires
+//   - false       → math says trigger does not fire
+//   - 'indeterminate' → criteria partially met but a required component (e.g.
+//                       the OB itself) could not be located, so we cannot
+//                       agree or disagree with the LLM. Excluded from
+//                       confusion-matrix counts.
+//   - null        → not applicable (bias mode doesn't apply, no candle, etc.)
+type Qualifies = boolean | 'indeterminate' | null;
+
 interface TriggerResult {
-  qualifies: boolean | null; // null = n/a (bias-mismatched)
+  qualifies: Qualifies;
   reason: string;
 }
 
@@ -204,6 +223,7 @@ function parseLog(rawContent: string): DecisionCycle[] {
       bias,
       triggerConfirmed,
       llmReasoningSnippet: snippet,
+      blockText: block,
     });
   }
   return cycles;
@@ -253,11 +273,80 @@ function atr14(candles: Candle[]): number {
 // ==================== TRIGGERS ====================
 
 // Trigger 1: OB Retest
+//
+// Returns:
+//   qualifies: true  → all 4 criteria met (body, direction, opposing wick, OB tap-depth ≤ 50%)
+//   qualifies: false → at least one of (body, direction, opposing wick) failed
+//   qualifies: 'indeterminate' → first 3 criteria pass but no candidate OB
+//                                could be located in the 10-candle displacement
+//                                lookback — we can't confirm/deny tap-depth.
+//
+// OB identification (minimal heuristic):
+//   1. Find the most recent strong opposite-bias displacement candle in the
+//      ~10 candles before the retest. "Strong" = body ≥ 0.5×range AND
+//      body ≥ 1.5×ATR_15m.
+//   2. The OB is the most recent same-bias-side candle (bullish for a
+//      bullish-bias OB-retest, since the retest comes from below an old
+//      demand zone in a bullish run, retracing into a bearish OB; vice-versa
+//      for bearish) before that displacement, looking back ≤ 5 candles.
+//
+// Note on bias convention used here, matching the prompt spec for an OB
+// Retest in a *bullish* bias: price retraces DOWN into a prior BULLISH OB
+// (demand). The OB is therefore the last bullish candle before a strong
+// bullish displacement up. For *bearish* bias: price retraces UP into a
+// prior BEARISH OB (supply). The OB is the last bearish candle before a
+// strong bearish displacement down.
+//
+// Tap-depth:
+//   bullish bias retest into bullish OB zone [ob.low, ob.high]:
+//     tap_depth_pct = (ob.high - candle.low) / (ob.high - ob.low),
+//     valid when candle.low <= ob.high (penetration); require 0 ≤ pct ≤ 0.5.
+//   bearish bias retest into bearish OB zone [ob.low, ob.high]:
+//     tap_depth_pct = (candle.high - ob.low) / (ob.high - ob.low),
+//     valid when candle.high >= ob.low; require 0 ≤ pct ≤ 0.5.
+function findOrderBlock(
+  m15: Candle[],
+  retestIdx: number,
+  bias: 'bullish' | 'bearish',
+  atr: number,
+): Candle | null {
+  // Look back up to 10 candles before the retest for a strong displacement
+  // candle in the bias direction.
+  const dispDir = bias; // bullish bias → bullish displacement up
+  const start = Math.max(0, retestIdx - 10);
+  let dispIdx = -1;
+  for (let i = retestIdx - 1; i >= start; i--) {
+    const c = m15[i];
+    if (!c) continue;
+    if (dirOf(c) !== dispDir) continue;
+    const body = bodyOf(c);
+    const range = rangeOf(c);
+    if (range <= 0) continue;
+    if (body / range < 0.5) continue;
+    if (atr > 0 && body < 1.5 * atr) continue;
+    dispIdx = i;
+    break;
+  }
+  if (dispIdx === -1) return null;
+  // The OB is the most recent same-bias candle BEFORE the displacement
+  // (bullish bias → last bullish candle before bullish displacement up).
+  // We treat the OB itself as the demand/supply origin, so its colour
+  // matches the bias direction in this minimal-heuristic version.
+  const obLookback = Math.max(0, dispIdx - 5);
+  for (let i = dispIdx - 1; i >= obLookback; i--) {
+    const c = m15[i];
+    if (!c) continue;
+    if (dirOf(c) === bias) return c;
+  }
+  return null;
+}
+
 function checkObRetest(
   m15: Candle[],
   bias: 'bullish' | 'bearish',
 ): TriggerResult {
-  const last = m15[m15.length - 1];
+  const L = m15.length - 1;
+  const last = m15[L];
   if (!last) return { qualifies: false, reason: 'no candle' };
   const reasons: string[] = [];
   const br = bodyRatio(last);
@@ -267,10 +356,65 @@ function checkObRetest(
   const opposing = bias === 'bullish' ? lowerWick(last) : upperWick(last);
   const oppRatio = bodyOf(last) > 0 ? opposing / bodyOf(last) : 0;
   if (oppRatio < 1.0) reasons.push(`opp.wick ${oppRatio.toFixed(2)}<1.0×body`);
-  if (reasons.length === 0) {
-    return { qualifies: true, reason: 'qualifies (OB not validated)' };
+
+  if (reasons.length > 0) {
+    return { qualifies: false, reason: reasons.join('; ') };
   }
-  return { qualifies: false, reason: reasons.join('; ') };
+
+  // First three criteria pass — now validate tap-depth into an OB.
+  const atr = atr14(m15);
+  const ob = findOrderBlock(m15, L, bias, atr);
+  if (!ob) {
+    return {
+      qualifies: 'indeterminate',
+      reason: 'no OB identifiable in 10-candle displacement lookback',
+    };
+  }
+  const obRange = ob.high - ob.low;
+  if (obRange <= 0) {
+    return {
+      qualifies: 'indeterminate',
+      reason: 'OB has zero range — cannot compute tap-depth',
+    };
+  }
+  if (bias === 'bullish') {
+    // Need penetration: last.low must be ≤ ob.high.
+    if (last.low > ob.high) {
+      return {
+        qualifies: false,
+        reason: `retest did not tap OB (low ${last.low.toFixed(5)} > OB.high ${ob.high.toFixed(5)})`,
+      };
+    }
+    const tap = (ob.high - last.low) / obRange;
+    if (tap < 0 || tap > 0.5) {
+      return {
+        qualifies: false,
+        reason: `OB tap-depth ${(tap * 100).toFixed(0)}% outside [0,50%]`,
+      };
+    }
+    return {
+      qualifies: true,
+      reason: `qualifies (OB tap ${(tap * 100).toFixed(0)}%)`,
+    };
+  } else {
+    if (last.high < ob.low) {
+      return {
+        qualifies: false,
+        reason: `retest did not tap OB (high ${last.high.toFixed(5)} < OB.low ${ob.low.toFixed(5)})`,
+      };
+    }
+    const tap = (last.high - ob.low) / obRange;
+    if (tap < 0 || tap > 0.5) {
+      return {
+        qualifies: false,
+        reason: `OB tap-depth ${(tap * 100).toFixed(0)}% outside [0,50%]`,
+      };
+    }
+    return {
+      qualifies: true,
+      reason: `qualifies (OB tap ${(tap * 100).toFixed(0)}%)`,
+    };
+  }
 }
 
 // Trigger 2: FVG Fill
@@ -397,63 +541,129 @@ function checkLiquiditySweep(
   return { qualifies: false, reason: 'no qualifying sweep+reversal' };
 }
 
+// Helper: find confirmed fractal swing-high or swing-low indices in a window.
+// A fractal swing high at index `i` requires:
+//   candles[i].high > candles[i-1].high && > candles[i-2].high
+//   candles[i].high > candles[i+1].high && > candles[i+2].high
+// (i.e., 2 candles each side — Bill Williams fractal definition.)
+// Mirror for swing lows. Returns indices in ascending order.
+function findFractalSwings(
+  candles: Candle[],
+  direction: 'high' | 'low',
+): number[] {
+  const swings: number[] = [];
+  for (let i = 2; i < candles.length - 2; i++) {
+    const c = candles[i];
+    if (direction === 'high') {
+      if (
+        c.high > candles[i - 1].high &&
+        c.high > candles[i - 2].high &&
+        c.high > candles[i + 1].high &&
+        c.high > candles[i + 2].high
+      ) {
+        swings.push(i);
+      }
+    } else {
+      if (
+        c.low < candles[i - 1].low &&
+        c.low < candles[i - 2].low &&
+        c.low < candles[i + 1].low &&
+        c.low < candles[i + 2].low
+      ) {
+        swings.push(i);
+      }
+    }
+  }
+  return swings;
+}
+
 // Trigger 4: Breakout Retest
-// "Level broken on a 1H or 15M close" — identify level as the most recent
-// significant swing high (bullish bias) or swing low (bearish) in prior 20
-// 15M candles. Breakout = close beyond. Retest within ≤ 6×15M candles. Hold
-// = 2 consecutive 15M closes on the bias side after retest.
+//
+// Spec (revised after adversarial review):
+//   - Scan the prior 30 15M candles for fractal swing highs (bullish bias)
+//     or swing lows (bearish). A swing is "confirmed" when it has 2 candles
+//     of lower highs / higher lows on EACH side.
+//   - Use the MOST RECENT confirmed swing as "the level."
+//   - Breakout: a later 15M (or 1H, but we only have 15M here) candle CLOSES
+//     beyond that swing (above for bullish, below for bearish).
+//   - Retest within ≤ 6 15M candles after the breakout: the candle's wick or
+//     close returns to the level.
+//   - Hold: 2 consecutive 15M closes on the bias side after the retest.
+//   - Trigger fires at the second hold candle and is only "current" when that
+//     hold candle is the most recent (index L) candle the LLM saw.
+//
+// If no fractal swing exists in the 30-candle lookback, return false with
+// the reason 'no confirmed fractal swing in 30-candle lookback'.
 function checkBreakoutRetest(
   m15: Candle[],
   bias: 'bullish' | 'bearish',
 ): TriggerResult {
-  if (m15.length < 25) return { qualifies: false, reason: 'too few candles' };
+  if (m15.length < 10) return { qualifies: false, reason: 'too few candles' };
   const L = m15.length - 1;
-  // Scan for a breakout candle in the last 10 candles, then look for retest
-  // + hold after it.
-  for (let brkBack = 2; brkBack <= 10; brkBack++) {
-    const brkIdx = L - brkBack;
-    if (brkIdx < 20) continue;
-    // Prior 20 candles before breakout.
-    const prior = m15.slice(brkIdx - 20, brkIdx);
-    if (prior.length < 5) continue;
+
+  // Look back at the LAST 30 candles (or all available) for fractal swings.
+  const lookbackLen = Math.min(30, m15.length);
+  const lookbackStart = m15.length - lookbackLen;
+  const lookback = m15.slice(lookbackStart);
+  const direction = bias === 'bullish' ? 'high' : 'low';
+  const swingsLocal = findFractalSwings(lookback, direction);
+  if (swingsLocal.length === 0) {
+    return {
+      qualifies: false,
+      reason: 'no confirmed fractal swing in 30-candle lookback',
+    };
+  }
+  // Use the MOST RECENT confirmed fractal swing as "the level" (per spec).
+  // We do NOT fall back to older swings: if the latest swing doesn't yield a
+  // breakout+retest+hold ending at L, we report no signal. This avoids
+  // claiming a "breakout" against a swing that price has already invalidated.
+  const lastSwingLocalIdx = swingsLocal[swingsLocal.length - 1];
+  const swingIdx = lastSwingLocalIdx + lookbackStart;
+  const swing = m15[swingIdx];
+  const level = bias === 'bullish' ? swing.high : swing.low;
+
+  // The breakout must happen AFTER the swing has been confirmed
+  // (swingIdx + 2 is the earliest candle that "knows" the swing exists).
+  // The breakout candle is some candle in [swingIdx+2 .. L-3] so we still
+  // have room for a retest within 6 + 2 hold candles before L.
+  for (let brkIdx = swingIdx + 2; brkIdx <= L - 3; brkIdx++) {
+    const brk = m15[brkIdx];
+    if (!brk) continue;
     if (bias === 'bullish') {
-      const level = Math.max(...prior.map((c) => c.high));
-      const brk = m15[brkIdx];
       if (brk.close <= level) continue;
-      // Look for retest in next ≤6 candles, then hold by next 2 closes.
-      for (let r = 1; r <= 6 && brkIdx + r + 2 <= L; r++) {
-        const ret = m15[brkIdx + r];
-        // Retest = candle's low touches or goes below level (wick or close).
-        if (ret.low > level) continue;
-        // Hold = next 2 closes above level.
-        const hold1 = m15[brkIdx + r + 1];
-        const hold2 = m15[brkIdx + r + 2];
-        if (hold1.close > level && hold2.close > level) {
-          // Trigger fires at the second hold candle. Accept only if the
-          // trigger candle is at L (most recent — what the LLM would see).
-          if (brkIdx + r + 2 === L) {
-            return { qualifies: true, reason: `brk @${level.toFixed(5)}, retest +${r}, hold confirmed` };
-          }
-        }
-      }
     } else {
-      const level = Math.min(...prior.map((c) => c.low));
-      const brk = m15[brkIdx];
       if (brk.close >= level) continue;
-      for (let r = 1; r <= 6 && brkIdx + r + 2 <= L; r++) {
-        const ret = m15[brkIdx + r];
-        if (ret.high < level) continue;
-        const hold1 = m15[brkIdx + r + 1];
-        const hold2 = m15[brkIdx + r + 2];
-        if (hold1.close < level && hold2.close < level) {
-          if (brkIdx + r + 2 === L) {
-            return { qualifies: true, reason: `brk @${level.toFixed(5)}, retest +${r}, hold confirmed` };
-          }
-        }
+    }
+
+    // Retest within ≤ 6 candles after the breakout.
+    for (let r = 1; r <= 6 && brkIdx + r + 2 <= L; r++) {
+      const ret = m15[brkIdx + r];
+      if (!ret) continue;
+      // Retest = wick or close returns to the level.
+      const retested =
+        bias === 'bullish' ? ret.low <= level : ret.high >= level;
+      if (!retested) continue;
+      // Hold = 2 consecutive closes on bias side after retest.
+      const hold1 = m15[brkIdx + r + 1];
+      const hold2 = m15[brkIdx + r + 2];
+      if (!hold1 || !hold2) continue;
+      const heldBullish = hold1.close > level && hold2.close > level;
+      const heldBearish = hold1.close < level && hold2.close < level;
+      const held = bias === 'bullish' ? heldBullish : heldBearish;
+      if (!held) continue;
+      // Trigger is "current" only if the second hold candle is L.
+      if (brkIdx + r + 2 === L) {
+        return {
+          qualifies: true,
+          reason: `fractal-swing@idx${swingIdx} lvl=${level.toFixed(5)}, brk@idx${brkIdx}, retest+${r}, hold confirmed`,
+        };
       }
     }
   }
-  return { qualifies: false, reason: 'no qualifying breakout+retest+hold' };
+  return {
+    qualifies: false,
+    reason: `most-recent fractal swing@idx${swingIdx} (${level.toFixed(5)}) — no qualifying breakout+retest+hold ending at last candle`,
+  };
 }
 
 // Trigger 5: Range Sweep Reversal (range-mode / neutral bias only)
@@ -592,6 +802,7 @@ function pad(s: string, n: number): string {
 
 function shortResult(r: TriggerResult): string {
   if (r.qualifies === null) return r.reason === '-' ? '-' : 'n/a-bias';
+  if (r.qualifies === 'indeterminate') return 'INDETERM';
   return r.qualifies ? 'PASSES' : 'FAILS';
 }
 
@@ -616,11 +827,230 @@ function determineFlag(
   return '⚠ POSSIBLE-MISS (LLM said no, ≥1 trigger qualifies)';
 }
 
+// ==================== DEBUG-CYCLE ====================
+
+// Extract the LLM reasoning prose for a single cycle: everything between
+// "DECISION CYCLE" and the next "ICT Trading Agent complete" line (the
+// marker the agent prints at the end of its reasoning). Falls back to the
+// full block if that marker isn't found.
+function extractReasoningProse(blockText: string): string {
+  const endMarkerMatch = blockText.match(
+    /ICT Trading Agent complete[^\n]*/,
+  );
+  if (!endMarkerMatch || endMarkerMatch.index === undefined) {
+    return blockText.trim();
+  }
+  return blockText.slice(0, endMarkerMatch.index + endMarkerMatch[0].length).trim();
+}
+
+function formatCandle(c: Candle, prev: Candle | undefined, idx: number): string {
+  const body = bodyOf(c);
+  const range = rangeOf(c);
+  const br = bodyRatio(c);
+  const uw = upperWick(c);
+  const lw = lowerWick(c);
+  const dir = dirOf(c);
+  const ts = c.datetime ? String(c.datetime).slice(0, 19) : '?';
+  const tr = trueRange(c, prev);
+  return (
+    `  [${pad(String(idx), 2)}] ${ts} | ` +
+    `O=${c.open.toFixed(5)} H=${c.high.toFixed(5)} ` +
+    `L=${c.low.toFixed(5)} C=${c.close.toFixed(5)} | ` +
+    `body=${body.toFixed(5)} range=${range.toFixed(5)} ` +
+    `br=${br.toFixed(2)} uw=${uw.toFixed(5)} lw=${lw.toFixed(5)} ` +
+    `tr=${tr.toFixed(5)} dir=${dir}`
+  );
+}
+
+async function runDebugCycle(
+  rawContent: string,
+  targetTs: string,
+): Promise<void> {
+  const cycles = parseLog(rawContent);
+  // Allow partial match: the user may pass "2026-05-04T09:15:00" while the
+  // log has "2026-05-04T09:15:00.123Z". Match by prefix.
+  const target = cycles.find((c) => c.timestamp.toISOString().startsWith(targetTs));
+  if (!target) {
+    console.error(`No cycle found matching timestamp "${targetTs}".`);
+    console.error('Available timestamps near the request (first 5):');
+    for (const c of cycles.slice(0, 5)) {
+      console.error(`  ${c.timestamp.toISOString()} | ${c.ticker} | ${c.bias} | LLM=${c.triggerConfirmed}`);
+    }
+    process.exit(1);
+  }
+
+  console.log('\n' + '='.repeat(120));
+  console.log(`DEBUG-CYCLE: ${target.timestamp.toISOString()}`);
+  console.log('='.repeat(120));
+  console.log('\nCycle metadata:');
+  console.log(`  timestamp:           ${target.timestamp.toISOString()}`);
+  console.log(`  ticker:              ${target.ticker}`);
+  console.log(`  bias:                ${target.bias}`);
+  console.log(`  LLM triggerConfirmed: ${target.triggerConfirmed}`);
+  console.log(`  claimed-setup snippet: ${target.llmReasoningSnippet || '(none)'}`);
+
+  console.log('\n--- LLM reasoning prose (full block) ---');
+  console.log(extractReasoningProse(target.blockText));
+  console.log('--- end LLM reasoning prose ---\n');
+
+  // Capital.com env vars.
+  const apiKey = process.env.CAPITAL_API_KEY ?? '';
+  const identifier = process.env.CAPITAL_IDENTIFIER ?? '';
+  const password = process.env.CAPITAL_API_KEY_PASSWORD ?? '';
+  const baseURL =
+    process.env.CAPITAL_API_URL ?? 'https://demo-api-capital.backend-capital.com';
+  if (!apiKey || !identifier || !password) {
+    console.error(
+      'Missing Capital.com credentials. Set CAPITAL_API_KEY, CAPITAL_IDENTIFIER, CAPITAL_API_KEY_PASSWORD.',
+    );
+    process.exit(1);
+  }
+  if (!(SUPPORTED_TICKERS as readonly string[]).includes(target.ticker)) {
+    console.log(`(Ticker ${target.ticker} is not in supported list — skipping candle fetch.)`);
+    return;
+  }
+  const ticker = target.ticker as Ticker;
+  const spread = TYPICAL_SPREAD[ticker];
+
+  const capital = new CapitalClient({ apiKey, identifier, password, baseURL });
+  const fmtCapTs = (d: Date): string => d.toISOString().replace(/\.\d{3}Z$/, '');
+  const decTs = target.timestamp;
+  const m15From = fmtCapTs(new Date(decTs.getTime() - 25 * 15 * 60 * 1000));
+  const h1From = fmtCapTs(new Date(decTs.getTime() - 12 * 60 * 60 * 1000));
+  const to = fmtCapTs(new Date(decTs.getTime() + 60 * 1000));
+
+  let m15: Candle[] = [];
+  let h1: Candle[] = [];
+  try {
+    m15 = await capital.getCandlesAsCandles(ticker, '15m', 30, m15From, to);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`Fetch error (15m): ${msg}`);
+    try {
+      await capital.logout();
+    } catch {
+      /* ignore */
+    }
+    process.exit(1);
+  }
+  await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));
+  try {
+    h1 = await capital.getCandlesAsCandles(ticker, '1h', 12, h1From, to);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`Fetch error (1h): ${msg}`);
+  }
+
+  const atr = atr14(m15);
+  console.log(`ATR(14) on 15M = ${atr.toFixed(5)}`);
+  console.log(`Spread (typical) = ${spread.toFixed(5)}`);
+
+  console.log(`\nFetched 15M candles (showing last 10 of ${m15.length}):`);
+  const m15Slice = m15.slice(-10);
+  for (let i = 0; i < m15Slice.length; i++) {
+    const c = m15Slice[i];
+    const globalIdx = m15.length - m15Slice.length + i;
+    const prev = globalIdx > 0 ? m15[globalIdx - 1] : undefined;
+    console.log(formatCandle(c, prev, globalIdx));
+  }
+
+  console.log(`\nFetched 1H candles (showing last 10 of ${h1.length}):`);
+  const h1Slice = h1.slice(-10);
+  for (let i = 0; i < h1Slice.length; i++) {
+    const c = h1Slice[i];
+    const globalIdx = h1.length - h1Slice.length + i;
+    const prev = globalIdx > 0 ? h1[globalIdx - 1] : undefined;
+    console.log(formatCandle(c, prev, globalIdx));
+  }
+
+  // Run every detector that could apply, regardless of bias, so the user
+  // can see why each one fired or didn't.
+  console.log('\nDetector outputs:');
+  const biases: Array<'bullish' | 'bearish'> = ['bullish', 'bearish'];
+  if (target.bias === 'bullish' || target.bias === 'bearish') {
+    const b = target.bias;
+    const obR = checkObRetest(m15, b);
+    const fvgR = checkFvgFill(m15, b);
+    const lsR = checkLiquiditySweep(m15, b, spread);
+    const brR = checkBreakoutRetest(m15, b);
+    console.log(`  bias = ${b} (trend-mode triggers):`);
+    console.log(`    OB_retest:        qualifies=${String(obR.qualifies)} | ${obR.reason}`);
+    console.log(`    FVG_fill:         qualifies=${String(fvgR.qualifies)} | ${fvgR.reason}`);
+    console.log(`    Liquidity_Sweep:  qualifies=${String(lsR.qualifies)} | ${lsR.reason}`);
+    console.log(`    Breakout_Retest:  qualifies=${String(brR.qualifies)} | ${brR.reason}`);
+    // Also show fractal-swing diagnostic for Breakout_Retest.
+    const lookbackLen = Math.min(30, m15.length);
+    const direction = b === 'bullish' ? 'high' : 'low';
+    const lookback = m15.slice(m15.length - lookbackLen);
+    const swingsLocal = findFractalSwings(lookback, direction);
+    if (swingsLocal.length === 0) {
+      console.log(`    └─ fractal swings in last ${lookbackLen} candles: NONE`);
+    } else {
+      const desc = swingsLocal
+        .map((i) => {
+          const globalIdx = i + (m15.length - lookbackLen);
+          const c = m15[globalIdx];
+          const lvl = direction === 'high' ? c.high : c.low;
+          return `idx${globalIdx}@${lvl.toFixed(5)}`;
+        })
+        .join(', ');
+      console.log(`    └─ fractal swings in last ${lookbackLen} candles: ${desc}`);
+    }
+    // OB-identification diagnostic.
+    const ob = findOrderBlock(m15, m15.length - 1, b, atr);
+    if (ob) {
+      console.log(`    └─ identified OB: O=${ob.open.toFixed(5)} H=${ob.high.toFixed(5)} L=${ob.low.toFixed(5)} C=${ob.close.toFixed(5)}`);
+    } else {
+      console.log(`    └─ identified OB: NONE in 10-candle displacement lookback`);
+    }
+  } else if (target.bias === 'neutral') {
+    const rsR = checkRangeSweepReversal(m15, h1, spread);
+    console.log(`  bias = neutral (range-mode trigger):`);
+    console.log(`    Range_Sweep_Reversal: qualifies=${String(rsR.qualifies)} | ${rsR.reason}`);
+  } else {
+    console.log(`  bias = ${target.bias} — no trigger evaluated.`);
+    // Still show both trend-mode runs so the user can see what each would
+    // have said if bias had parsed.
+    for (const b of biases) {
+      const obR = checkObRetest(m15, b);
+      const fvgR = checkFvgFill(m15, b);
+      const lsR = checkLiquiditySweep(m15, b, spread);
+      const brR = checkBreakoutRetest(m15, b);
+      console.log(`  hypothetical bias=${b}:`);
+      console.log(`    OB_retest:        qualifies=${String(obR.qualifies)} | ${obR.reason}`);
+      console.log(`    FVG_fill:         qualifies=${String(fvgR.qualifies)} | ${fvgR.reason}`);
+      console.log(`    Liquidity_Sweep:  qualifies=${String(lsR.qualifies)} | ${lsR.reason}`);
+      console.log(`    Breakout_Retest:  qualifies=${String(brR.qualifies)} | ${brR.reason}`);
+    }
+  }
+
+  try {
+    await capital.logout();
+  } catch {
+    /* ignore */
+  }
+}
+
 // ==================== MAIN ====================
 
 async function main(): Promise<void> {
   const logPath = parseArg('--log', `${process.env.HOME ?? ''}/trading-bot/data/pm2-out.log`);
   const days = Number(parseArg('--days', '14'));
+  const debugCycle = parseArg('--debug-cycle', '');
+
+  // --debug-cycle: forensic single-cycle inspection. Skips the normal audit
+  // output entirely.
+  if (debugCycle) {
+    let rawDebug: string;
+    try {
+      rawDebug = readFileSync(logPath, 'utf-8');
+    } catch (e) {
+      console.error(`ERROR reading ${logPath}: ${(e as Error).message}`);
+      process.exit(1);
+    }
+    await runDebugCycle(rawDebug, debugCycle);
+    return;
+  }
 
   // Capital.com env vars (exact names per .env.example).
   const apiKey = process.env.CAPITAL_API_KEY ?? '';
@@ -766,27 +1196,41 @@ async function main(): Promise<void> {
 
   console.log('\nPer-trigger confusion matrix (LLM verdict vs. math result):');
   console.log(
-    `  ${pad('trigger', 22)} | ${pad('TP', 5)} | ${pad('TN', 5)} | ${pad('FP', 5)} | ${pad('FN', 5)} | comparable`,
+    `  ${pad('trigger', 22)} | ${pad('TP', 5)} | ${pad('TN', 5)} | ${pad('FP', 5)} | ${pad('FN', 5)} | ${pad('INDETERM', 9)} | comparable`,
   );
-  console.log('  ' + '-'.repeat(60));
+  console.log('  ' + '-'.repeat(72));
+  let totalIndeterminate = 0;
   for (const t of triggers) {
     let tp = 0,
       tn = 0,
       fp = 0,
-      fn = 0;
+      fn = 0,
+      indeterminate = 0;
     for (const ev of evals) {
       if (ev.fetchError || ev.unsupported) continue;
       const r = ev.results[t];
       if (r.qualifies === null) continue;
+      // 'indeterminate' is neither agreement nor disagreement — track
+      // separately and exclude from TP/TN/FP/FN.
+      if (r.qualifies === 'indeterminate') {
+        indeterminate++;
+        continue;
+      }
       const llm = ev.cycle.triggerConfirmed;
-      if (llm === 'yes' && r.qualifies) tp++;
-      else if (llm === 'no' && !r.qualifies) tn++;
-      else if (llm === 'yes' && !r.qualifies) fp++;
-      else if (llm === 'no' && r.qualifies) fn++;
+      if (llm === 'yes' && r.qualifies === true) tp++;
+      else if (llm === 'no' && r.qualifies === false) tn++;
+      else if (llm === 'yes' && r.qualifies === false) fp++;
+      else if (llm === 'no' && r.qualifies === true) fn++;
     }
     const total = tp + tn + fp + fn;
+    if (t === 'OB_retest') totalIndeterminate = indeterminate;
     console.log(
-      `  ${pad(t, 22)} | ${pad(String(tp), 5)} | ${pad(String(tn), 5)} | ${pad(String(fp), 5)} | ${pad(String(fn), 5)} | ${total}`,
+      `  ${pad(t, 22)} | ${pad(String(tp), 5)} | ${pad(String(tn), 5)} | ${pad(String(fp), 5)} | ${pad(String(fn), 5)} | ${pad(String(indeterminate), 9)} | ${total}`,
+    );
+  }
+  if (totalIndeterminate > 0) {
+    console.log(
+      `\n  OB_retest indeterminate cases: ${totalIndeterminate} — neither agreement nor disagreement.`,
     );
   }
 
@@ -829,7 +1273,8 @@ async function main(): Promise<void> {
   console.log('  - High FN count = LLM may be overcautious; deterministic detector could unlock trades.');
   console.log('  - High FP count = LLM may be miscounting; analyst CHECK 1 sanity gate is the safety net.');
   console.log('  - Spread approx (TYPICAL_SPREAD) may bias Liq_Sweep / Range_Sweep results in either direction.');
-  console.log('  - OB tap-depth NOT validated — true OB_retest count may be lower than reported PASSES.\n');
+  console.log('  - OB_retest INDETERMINATE = OB candidate not identifiable; excluded from agreement counts.');
+  console.log('  - Breakout_Retest now uses fractal swings (2-each-side) for level identification.\n');
 }
 
 main().catch((e) => {
