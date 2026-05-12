@@ -16,6 +16,7 @@ import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
 import { recordRejection } from '../rejection-log/record.js';
 import { getCooldownState } from '../cooldown/state.js';
 import { getRiskBudgetState, wouldExceed } from '../risk-budget/policy.js';
+import { SCORER_VERSION } from '../scoring/compose.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument, getRealisedPnlSince } from '../database/index.js';
 import { alertTradePlaced, alertSystemWarning, alertOrphanPositions } from '../notifications/telegram.js';
 
@@ -770,6 +771,7 @@ import {
   createSlTpOrder, updateSlPrice, getDailyPnl, upsertDailyPnl,
   getActiveSlTpOrdersByTradeId, getTradeByDealId, markTradeClosedEarly,
   deactivateSlTpOrder,
+  insertScoreBreakdown,
   enterCriticalSection, exitCriticalSection,
 } from '../database/index.js';
 import { capital } from '../mcp-server/capital-singleton.js';
@@ -1701,6 +1703,34 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         insertTrade(tradeRow);
         createSlTpOrder({ trade_id: tradeId, leg: 'A', instrument: tradeRow.instrument, direction, quantity: sizeA, sl_price: sl, tp_price: tp1, deal_id: placedDeals[0].dealId });
         createSlTpOrder({ trade_id: tradeId, leg: 'B', instrument: tradeRow.instrument, direction, quantity: sizeB, sl_price: sl, tp_price: tp2, deal_id: placedDeals[1].dealId });
+        // T020 (US-1 / Spec 001): persist a score_breakdown audit row so
+        // the owner can later answer "why did setup X score 78 vs 82?"
+        // by querying score_breakdowns directly. Today the agent does
+        // not pass a structured per-component breakdown to this tool —
+        // the scanner emits one but it does not flow through the
+        // current request_analyst_review schema. So we record what we
+        // know: composite_score, tier, scorer_version. T019 (schema
+        // extension) and T021 (executor revalidation that breakdown
+        // sums to score) are deferred to a follow-up that bumps the
+        // proposalHash version. This minimal write closes the audit-
+        // trail gap for now.
+        try {
+          insertScoreBreakdown({
+            trade_id: tradeId,
+            instrument: tradeRow.instrument,
+            composite_score: score,
+            tier: tier as 1 | 2 | 3,
+            breakdown_json: JSON.stringify({
+              composite_score: score,
+              tier,
+              note: 'Per-component breakdown not yet plumbed through agent — see T019/T021 in tasks.md.',
+            }),
+            scorer_version: SCORER_VERSION,
+          });
+        } catch (sbErr) {
+          // Audit-trail write failure must NOT block the trade; log and continue.
+          console.warn(`[ICT Agent] insertScoreBreakdown failed (audit-trail only, trade is live): ${sbErr instanceof Error ? sbErr.message : String(sbErr)}`);
+        }
       } catch (err) {
         // DB write failed AFTER successful Capital placement. This is the
         // exact orphan-position scenario CR-9 was meant to prevent —
