@@ -122,6 +122,36 @@ interface CycleEval {
   unsupported?: boolean;
 }
 
+// ==================== PER-INSTRUMENT MATRIX (codex finding #10, PR 1 prereq T1) ====================
+//
+// Per-design-v2 §7: each measurement metric reported per ticker. The
+// confusion-matrix breakdown by instrument helps surface heterogeneity —
+// GOLD / OIL_CRUDE / SILVER may respond differently to loosened thresholds
+// than FX pairs. Aggregate-only views can hide instrument-specific
+// hallucinations or misses.
+
+export interface CycleVerdict {
+  ticker: string;
+  triggerConfirmedLLM: 'yes' | 'no' | 'unknown';
+  anyTriggerMath: boolean;
+}
+
+export function buildPerInstrumentMatrix(
+  cycles: CycleVerdict[],
+): Record<string, { tp: number; tn: number; fp: number; fn: number }> {
+  const matrix: Record<string, { tp: number; tn: number; fp: number; fn: number }> = {};
+  for (const c of cycles) {
+    if (c.triggerConfirmedLLM === 'unknown') continue;
+    if (!matrix[c.ticker]) matrix[c.ticker] = { tp: 0, tn: 0, fp: 0, fn: 0 };
+    const llmYes = c.triggerConfirmedLLM === 'yes';
+    if (llmYes && c.anyTriggerMath) matrix[c.ticker].tp++;
+    else if (!llmYes && !c.anyTriggerMath) matrix[c.ticker].tn++;
+    else if (llmYes && !c.anyTriggerMath) matrix[c.ticker].fp++;
+    else if (!llmYes && c.anyTriggerMath) matrix[c.ticker].fn++;
+  }
+  return matrix;
+}
+
 // ==================== ARG PARSING ====================
 
 function parseArg(flag: string, def: string): string {
@@ -1253,6 +1283,32 @@ async function main(): Promise<void> {
     console.log(
       `\n  OB_retest indeterminate cases: ${totalIndeterminate} — neither agreement nor disagreement.`,
     );
+  }
+
+  // Per-instrument confusion matrix (codex finding #10 — design v2 §7).
+  // Adapts the evals[] structure into the simpler CycleVerdict[] shape that
+  // buildPerInstrumentMatrix consumes. anyTriggerMath = any of the 5 triggers
+  // qualifies for this cycle.
+  const cycleVerdicts: CycleVerdict[] = evals
+    .filter((ev) => !ev.fetchError && !ev.unsupported)
+    .map((ev) => {
+      const anyTriggerMath = triggers.some((t) => ev.results[t].qualifies === true);
+      return {
+        ticker: ev.cycle.ticker,
+        triggerConfirmedLLM: ev.cycle.triggerConfirmed,
+        anyTriggerMath,
+      };
+    });
+  const perInstrument = buildPerInstrumentMatrix(cycleVerdicts);
+  if (Object.keys(perInstrument).length > 0) {
+    console.log('\nPer-instrument confusion matrix (ANY-trigger rule):');
+    console.log(`  ${pad('ticker', 10)} | ${pad('TP', 3)} | ${pad('TN', 3)} | ${pad('FP', 3)} | ${pad('FN', 3)}`);
+    console.log('  ' + '-'.repeat(34));
+    for (const [ticker, m] of Object.entries(perInstrument).sort()) {
+      console.log(
+        `  ${pad(ticker, 10)} | ${pad(String(m.tp), 3)} | ${pad(String(m.tn), 3)} | ${pad(String(m.fp), 3)} | ${pad(String(m.fn), 3)}`,
+      );
+    }
   }
 
   // Overall agreement (ANY-trigger rule).
