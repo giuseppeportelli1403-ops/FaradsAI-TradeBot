@@ -15,6 +15,7 @@ import { instrumentToCurrencies, shouldVetoOrderForCalendar } from '../news/cale
 import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
 import { recordRejection } from '../rejection-log/record.js';
 import { getCooldownState } from '../cooldown/state.js';
+import { getRiskBudgetState, wouldExceed } from '../risk-budget/policy.js';
 import { getLatestBrief, countOpenPositions, getOpenTradesByInstrument, getRealisedPnlSince } from '../database/index.js';
 import { alertTradePlaced, alertSystemWarning, alertOrphanPositions } from '../notifications/telegram.js';
 
@@ -1435,6 +1436,54 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           error: 'SIZING_FETCH_FAILED',
           reason: `Cannot compute server-side sizing (balance/market-details fetch): ${msg}. Refusing order — sizing gate fails closed.`,
         });
+      }
+
+      // === Step 3.9: opt-in total-risk-budget gate (US-7 / Spec 001)
+      // The Farad bot already allows multiple concurrent trades on
+      // DIFFERENT instruments — the existing Step 4 lock is per-
+      // instrument only. US-7 adds a portfolio-level cap so the owner
+      // can opt in to a hard ceiling on total deployed risk.
+      //
+      // Default `max_total_risk_pct=0` preserves the legacy behaviour
+      // (no portfolio cap; per-instrument lock still applies). Setting
+      // it to e.g. 2.5% means: open T2 (1.0%) + T2 (1.0%) is fine but
+      // a third T1 proposal (would push total to 3.5%) is rejected.
+      //
+      // Composes with — does NOT replace — the analyst CHECK 4
+      // correlated-risk gate (which caps correlated exposure at 3%).
+      // Both gates fire independently; whichever rejects first wins.
+      try {
+        const budget = getRiskBudgetState();
+        if (budget.max_total_risk_pct > 0 && wouldExceed(riskPct, budget)) {
+          const reason =
+            `Risk budget exceeded: open=${budget.open_risk_pct.toFixed(2)}% + ` +
+            `proposed=${riskPct.toFixed(2)}% would exceed max ${budget.max_total_risk_pct.toFixed(2)}%.`;
+          try {
+            recordRejection({
+              instrument: String(input.instrument),
+              layer: 'executor',
+              category: 'EXECUTOR_REJECT_RISK_BUDGET_EXCEEDED',
+              reason_text: reason,
+              subcategory: JSON.stringify({
+                open_risk_pct: budget.open_risk_pct,
+                proposed_risk_pct: riskPct,
+                max_total_risk_pct: budget.max_total_risk_pct,
+              }),
+              proposed_score: Number.isFinite(score) ? score : undefined,
+              proposed_tier: Number.isFinite(tier) ? tier : undefined,
+              request_id: String(input.analyst_token ?? ''),
+            });
+          } catch (e) { console.warn(`[RiskBudget] recordRejection failed: ${e instanceof Error ? e.message : String(e)}`); }
+          return JSON.stringify({
+            error: 'EXECUTOR_REJECT_RISK_BUDGET_EXCEEDED',
+            reason,
+            open_risk_pct: budget.open_risk_pct,
+            proposed_risk_pct: riskPct,
+            max_total_risk_pct: budget.max_total_risk_pct,
+          });
+        }
+      } catch (err) {
+        console.warn(`[RiskBudget] state-read failed (allowing trade through): ${err instanceof Error ? err.message : String(err)}`);
       }
 
       // === Step 4: code-enforced coordination lock
