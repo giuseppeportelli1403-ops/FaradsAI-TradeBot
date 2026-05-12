@@ -603,6 +603,37 @@ In practice this requires sql.js write failure on a healthy DB — extremely rar
 
 ---
 
+## Section 11 — Spec 001 changes (2026-05-12)
+
+The `spec/scoring-pipeline-audit` branch ships a substantial reshape of how the bot scores setups, enforces cooldowns, and surfaces rejections. The full design is at `specs/001-scoring-pipeline-audit/` (spec.md, plan.md, research.md, data-model.md, quickstart.md, tasks.md). Highlights for this flowchart's readers:
+
+**Scoring (US-1 + US-5):**
+- The composite_score formula moved from `prompts/ict-agent.md §H` (LLM math) into `src/scoring/compose.ts` (deterministic). Same components, same weights, but now reproducible byte-for-byte across runs.
+- `src/scoring/ict-array-detector.ts` adds the OB/FVG/sweep/BOS structure scorer the prompt was previously asking Haiku to compute. Tier 1 is now reachable from scanner alone — no LLM math required.
+
+**Rejection logging (US-2 + US-6):**
+- Migration 007 adds `score_breakdowns`, `trade_rejections`, `pm_state` tables + 3 new columns on `analyst_log`.
+- 26-category enum at `src/rejection-log/categories.ts`. Every silent rejection (kill-zone skip, scanner fetch error, fail-closed analyst, executor gate, post-approval TTL/hash/duplicate-lock) now writes a categorised row.
+- Daily Telegram digest at 21:35 UTC via `src/notifications/telegram.ts` → `sendDailyRejectionDigest()`. Cron added in `src/scheduler/index.ts`.
+
+**Cooldown (US-3):**
+- Code-level loss-streak gate at `request_analyst_review` entry (`trading-agent.ts` ~:834). Fires BEFORE Sonnet is called when 3+ consecutive losses are recorded within `cooldown_clear_after_hours` (default 24h, configurable via `pm_state`). Saves Sonnet budget AND makes the rule reliable.
+
+**Risk budget (US-7):**
+- Opt-in portfolio cap via `max_total_risk_pct` in `pm_state` (default 0 = legacy single-instrument-lock-only behaviour). When > 0, the executor checks open-trade risk sum at placement time and rejects with `EXECUTOR_REJECT_RISK_BUDGET_EXCEEDED` if the proposed trade would exceed.
+
+**Range-mode evaluation (US-4):**
+- `src/backtest/range-engine.ts` + `scripts/backtest-range-mode.ts` produce a comparative report (cap-on vs cap-off) per FR-012 to evidence whether the score-59 range cap should be lifted. Result lands in `specs/001-scoring-pipeline-audit/range-mode-backtest.md` after first run.
+
+Where the new code lives:
+- `src/scoring/` — composeScore, components, ict-array-detector, tiers
+- `src/rejection-log/` — categories, recordRejection, daily digest
+- `src/cooldown/` — loss-streak state + policy
+- `src/risk-budget/` — budget policy
+- `src/backtest/range-engine.ts` — range-mode comparative replay
+
+---
+
 ## Reading guide
 
 - For "what runs when?" → Section 0 + Section 1 cron table.
@@ -611,3 +642,4 @@ In practice this requires sql.js write failure on a healthy DB — extremely rar
 - For "what does the agent see at decision time?" → `prompts/ict-agent.md` (the system prompt) + Section 2.
 - For "what just shipped today?" → Section 9.
 - For "what's broken or stale that's not blocking ship?" → Section 10.
+- For "what changed in the scoring + rejection pipeline (Spec 001)?" → Section 11.
