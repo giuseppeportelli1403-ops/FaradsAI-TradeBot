@@ -377,21 +377,32 @@ function findOrderBlock(
   return null;
 }
 
-function checkObRetest(
+// 2026-05-12 (PR 1 prereq T3): threshold parameterization for shadow-LLM
+// replay. When `overrides` is undefined, defaults preserve current behavior
+// — all 16 existing audit-detector tests pass without modification.
+export interface ObRetestOverrides {
+  bodyMin?: number; // default 0.4 (PR 1 will loosen to 0.3)
+  wickMin?: number; // default 1.0 (PR 1 will loosen to 0.7)
+}
+
+export function checkObRetest(
   m15: Candle[],
   bias: 'bullish' | 'bearish',
+  overrides?: ObRetestOverrides,
 ): TriggerResult {
+  const bodyMin = overrides?.bodyMin ?? 0.4;
+  const wickMin = overrides?.wickMin ?? 1.0;
   const L = m15.length - 1;
   const last = m15[L];
   if (!last) return { qualifies: false, reason: 'no candle' };
   const reasons: string[] = [];
   const br = bodyRatio(last);
-  if (br < 0.4) reasons.push(`body ${br.toFixed(2)}<0.4`);
+  if (br < bodyMin) reasons.push(`body ${br.toFixed(2)}<${bodyMin}`);
   const closedDir = dirOf(last);
   if (closedDir !== bias) reasons.push(`close ${closedDir}≠${bias}`);
   const opposing = bias === 'bullish' ? lowerWick(last) : upperWick(last);
   const oppRatio = bodyOf(last) > 0 ? opposing / bodyOf(last) : 0;
-  if (oppRatio < 1.0) reasons.push(`opp.wick ${oppRatio.toFixed(2)}<1.0×body`);
+  if (oppRatio < wickMin) reasons.push(`opp.wick ${oppRatio.toFixed(2)}<${wickMin}×body`);
 
   if (reasons.length > 0) {
     return { qualifies: false, reason: reasons.join('; ') };
@@ -465,10 +476,18 @@ function checkObRetest(
 // pattern, middle candle is the imbalance). For each such gap in m15, look
 // for a later candle that retraces ≥ 50% into the gap, then check the
 // candle AFTER the fill: must close in bias direction with body ≥ 0.4×range.
-function checkFvgFill(
+// 2026-05-12 (PR 1 prereq T3): threshold parameterization for shadow-LLM
+// replay. Default preserves current behavior.
+export interface FvgFillOverrides {
+  bodyMin?: number; // default 0.4 (PR 1 will loosen to 0.3)
+}
+
+export function checkFvgFill(
   m15: Candle[],
   bias: 'bullish' | 'bearish',
+  overrides?: FvgFillOverrides,
 ): TriggerResult {
+  const bodyMin = overrides?.bodyMin ?? 0.4;
   if (m15.length < 5) return { qualifies: false, reason: 'too few candles' };
   // Look at the last candle as the "trigger candle" — was the candle before
   // it a fill of an earlier-formed FVG, in the bias direction?
@@ -478,7 +497,7 @@ function checkFvgFill(
 
   // Body/direction of the trigger candle itself.
   const br = bodyRatio(last);
-  if (br < 0.4) return { qualifies: false, reason: `trigger body ${br.toFixed(2)}<0.4` };
+  if (br < bodyMin) return { qualifies: false, reason: `trigger body ${br.toFixed(2)}<${bodyMin}` };
   if (dirOf(last) !== bias)
     return { qualifies: false, reason: `trigger closed ${dirOf(last)}≠${bias}` };
 
@@ -1354,7 +1373,14 @@ async function main(): Promise<void> {
   console.log('  - Breakout_Retest now uses fractal swings (2-each-side) for level identification.\n');
 }
 
-main().catch((e) => {
-  console.error('Audit failed:', e);
-  process.exit(1);
-});
+// 2026-05-12 (PR 1 prereq T3): only run main() when this file is the entry
+// point. Lets shadow-llm-replay.ts import { checkObRetest, checkFvgFill }
+// without triggering the audit's CLI flow.
+import { fileURLToPath } from 'node:url';
+const __thisFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && process.argv[1] === __thisFile) {
+  main().catch((e) => {
+    console.error('Audit failed:', e);
+    process.exit(1);
+  });
+}
