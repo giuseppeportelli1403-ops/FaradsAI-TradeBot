@@ -323,7 +323,13 @@ function findOrderBlock(
     const range = rangeOf(c);
     if (range <= 0) continue;
     if (body / range < 0.5) continue;
-    if (atr > 0 && body < 1.5 * atr) continue;
+    // 2026-05-12 Q5 polish: ATR clause loosened 1.5× → 1.0× per codex
+    // adversarial review note. In high-ATR regimes the 1.5× threshold was
+    // rejecting visually strong directional candles (e.g., during news
+    // events when ATR spikes). 1.0× keeps the "displacement is meaningful
+    // relative to recent volatility" semantics without filtering legitimate
+    // moves. The body ≥ 0.5×range clause still guards candle dominance.
+    if (atr > 0 && body < 1.0 * atr) continue;
     dispIdx = i;
     break;
   }
@@ -386,10 +392,16 @@ function checkObRetest(
       };
     }
     const tap = (ob.high - last.low) / obRange;
-    if (tap < 0 || tap > 0.5) {
+    // 2026-05-12 Q8 polish: minimum tap depth 5% per codex adversarial
+    // review. The prompt spec says "tap depth ≤ 50%" with no explicit
+    // minimum, but 0% (bare touch of ob.high) is vulnerable to spread/
+    // rounding noise — a wick that grazes the OB boundary without real
+    // penetration shouldn't count as a retest. This is a deliberate
+    // audit-side hardening; the LLM may still accept bare touches.
+    if (tap < 0.05 || tap > 0.5) {
       return {
         qualifies: false,
-        reason: `OB tap-depth ${(tap * 100).toFixed(0)}% outside [0,50%]`,
+        reason: `OB tap-depth ${(tap * 100).toFixed(0)}% outside [5,50%]`,
       };
     }
     return {
@@ -404,10 +416,11 @@ function checkObRetest(
       };
     }
     const tap = (last.high - ob.low) / obRange;
-    if (tap < 0 || tap > 0.5) {
+    // 2026-05-12 Q8 polish: see bullish branch above for rationale.
+    if (tap < 0.05 || tap > 0.5) {
       return {
         qualifies: false,
-        reason: `OB tap-depth ${(tap * 100).toFixed(0)}% outside [0,50%]`,
+        reason: `OB tap-depth ${(tap * 100).toFixed(0)}% outside [5,50%]`,
       };
     }
     return {
@@ -543,9 +556,17 @@ function checkLiquiditySweep(
 
 // Helper: find confirmed fractal swing-high or swing-low indices in a window.
 // A fractal swing high at index `i` requires:
-//   candles[i].high > candles[i-1].high && > candles[i-2].high
-//   candles[i].high > candles[i+1].high && > candles[i+2].high
-// (i.e., 2 candles each side — Bill Williams fractal definition.)
+//   candles[i].high >= candles[i-1].high && >= candles[i-2].high  (plateau-aware left)
+//   candles[i].high >  candles[i+1].high && >  candles[i+2].high  (strict right)
+// (2 candles each side — Bill Williams fractal definition.)
+//
+// 2026-05-12 Q1 polish: switched from strict > on both sides to "plateau-aware"
+// (≥ on left, > on right) per codex adversarial review. Equal-highs/double-tops/
+// triple-tops are exactly the liquidity-pool patterns ICT traders watch — stop
+// clusters sit there. Strict > made the audit blind to them. The "≥ left, > right"
+// rule ensures the LAST candle of a plateau qualifies as the swing (not every
+// flat candle), giving deterministic uniqueness.
+//
 // Mirror for swing lows. Returns indices in ascending order.
 function findFractalSwings(
   candles: Candle[],
@@ -556,8 +577,8 @@ function findFractalSwings(
     const c = candles[i];
     if (direction === 'high') {
       if (
-        c.high > candles[i - 1].high &&
-        c.high > candles[i - 2].high &&
+        c.high >= candles[i - 1].high &&
+        c.high >= candles[i - 2].high &&
         c.high > candles[i + 1].high &&
         c.high > candles[i + 2].high
       ) {
@@ -565,8 +586,8 @@ function findFractalSwings(
       }
     } else {
       if (
-        c.low < candles[i - 1].low &&
-        c.low < candles[i - 2].low &&
+        c.low <= candles[i - 1].low &&
+        c.low <= candles[i - 2].low &&
         c.low < candles[i + 1].low &&
         c.low < candles[i + 2].low
       ) {
