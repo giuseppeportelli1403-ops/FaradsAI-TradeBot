@@ -50,6 +50,41 @@ export function _resetAnalystApprovals(): void {
 // invocations never run concurrently. See spec
 // docs/superpowers/specs/2026-05-08-ict-iteration-cap-bump-design.md
 // "Change 3" for the serialization invariant.
+// ==================== ANALYST LOAD CAP (PR 1 prereq T2, codex finding #3) ====================
+//
+// With Force-Propose dropping 55→40 and Tier 3 floor 40/45→30/35, many more
+// candidates can pass the threshold per cycle. Without a cap, the analyst
+// LLM could be called 5-10x per cycle, blowing the latency budget and
+// reintroducing the analyst truncation class that 82a4996 fixed.
+//
+// The ICT agent calls request_analyst_review one candidate at a time (no
+// code-side loop to wrap), so the cap is a per-cycle CALL-COUNT limiter
+// using a 5-minute sliding window (cycles fire every 15 min, so window is
+// fully clear between cycles).
+//
+// Per design v2 §6 PR 1 "Per-cycle analyst load limit". Prompt-side cap is
+// also in place at prompts/ict-agent.md Step 3M — the LLM should respect
+// the cap and not waste tokens building proposals beyond it. This is the
+// hard backstop.
+
+const ANALYST_CALL_WINDOW_MS = 5 * 60 * 1000;
+const MAX_ANALYST_CALLS_PER_WINDOW = 5;
+let recentAnalystCallTimestamps: number[] = [];
+
+export function shouldRejectForAnalystLoadCap(now: number = Date.now()): boolean {
+  const cutoff = now - ANALYST_CALL_WINDOW_MS;
+  recentAnalystCallTimestamps = recentAnalystCallTimestamps.filter((t) => t >= cutoff);
+  return recentAnalystCallTimestamps.length >= MAX_ANALYST_CALLS_PER_WINDOW;
+}
+
+export function recordAnalystCall(now: number = Date.now()): void {
+  recentAnalystCallTimestamps.push(now);
+}
+
+export function _resetAnalystLoadTracking(): void {
+  recentAnalystCallTimestamps = [];
+}
+
 let lastIctTimeoutAlertDate: string | null = null;
 
 /** Test-only: reset dedup so a same-day timeout re-alerts. */
@@ -832,6 +867,19 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       return JSON.stringify({ lessons, win_rate: wr });
     }
     case 'request_analyst_review': {
+      // 2026-05-12 (PR 1 prereq T2): per-cycle analyst load cap. If 5 analyst
+      // calls have happened in the last 5 minutes, refuse the 6th. Protects
+      // against marginal-candidate flood once Force-Propose drops to 40
+      // (codex finding #3). Prompt-side cap is also in ict-agent.md Step 3M
+      // — this is the hard backstop.
+      if (shouldRejectForAnalystLoadCap()) {
+        return JSON.stringify({
+          error: 'ANALYST_LOAD_CAP_EXCEEDED',
+          reason: 'Already submitted 5 candidates to analyst in the last 5 minutes. Cap bounds analyst load under the PR 1 loosened thresholds. Wait for next 15M cycle.',
+        });
+      }
+      recordAnalystCall();
+
       // 2026-04-29 audit fix (P0-AN1): trade_id chain. Pre-fix this case
       // generated trade-{8hex} for the analyst_log row, and place_split_trade
       // separately generated trade-{12hex} for trades.id — different hashes,

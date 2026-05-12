@@ -267,6 +267,8 @@ How to apply:
 
 If NO candidate scores ≥ 55, do NOT force-propose — log "no qualifying candidates this cycle" and move on as before. The 55 threshold is intentionally above both Tier 3 floors (40 tight-spread / 45 medium-spread) so we don't force proposals on weak setups; it's the "credible candidate exists" line.
 
+**Per-cycle analyst-call cap (PR 1 2026-05-12, codex finding #3):** Submit at most **5 candidates** to `request_analyst_review` per cycle. If more candidates pass the Force-Propose threshold, submit only the top 5 by composite_score. The executor enforces this code-side — calling beyond the cap returns `ANALYST_LOAD_CAP_EXCEEDED` and wastes Anthropic tokens building proposals that won't be reviewed. The cap protects analyst latency budget and prevents reintroducing the truncation class that the forced `submit_decision` tool call fixed earlier.
+
 **Acceptable analyst-rejection outcomes** (do not retry the same proposal next cycle):
 - TIMING (calendar veto, R:R math, kill-zone boundary)
 - SCORE (analyst recomputed and disagrees with the score)
