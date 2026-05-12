@@ -14,14 +14,21 @@ export function isTightSpreadTicker(ticker: string): boolean {
   return TIGHT_SPREAD_TICKERS.has(ticker.toUpperCase());
 }
 
-// Tier 3 score floor by spread class. Phase E (2026-05-04) lowered the
-// floor 45 → 40 to widen the Tier 3 funnel, but the backtest exposed
-// OIL_CRUDE as the failure mode: medium-spread weak-bias 1H trades at
-// score 40-44 dragged PF 0.51 / DD +30%. Carve-out keeps 40 only for
-// tight-spread instruments (which already had a +5 spread bonus baking
-// them at the old floor anyway) and reverts to 45 for everything else.
+// Tier 3 score floor by spread class. History:
+//   - Phase E (2026-05-04): lowered 45 → 40 to widen Tier 3 funnel. Backtest
+//     exposed OIL_CRUDE failure mode (medium-spread weak-bias 1H trades at
+//     score 40-44 dragged PF 0.51 / DD +30%). Carve-out kept 40 for tight-
+//     spread, reverted to 45 for medium-spread.
+//   - PR 1 (2026-05-12, trade-frequency loosening): further lowered to 30
+//     (tight) / 35 (medium). Empirical evidence (audit script 95.2% LLM-
+//     deterministic agreement, zero hallucinations, 1 confirmed miss over
+//     30 days) supports the LLM being overcautious at current strictness.
+//     Target: lift trade frequency from 0-1/day to 3-5/day. See
+//     docs/superpowers/specs/2026-05-12-trade-frequency-loosening-design.md
+//     for full rationale + the 2 pre-merge sub-gates (deterministic backtest
+//     + shadow-LLM replay) that validated this change before ship.
 export function tier3FloorFor(ticker: string): number {
-  return isTightSpreadTicker(ticker) ? 40 : 45;
+  return isTightSpreadTicker(ticker) ? 30 : 35;
 }
 
 /**

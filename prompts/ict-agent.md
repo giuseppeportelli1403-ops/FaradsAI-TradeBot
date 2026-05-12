@@ -116,7 +116,7 @@ After reading the three results:
 
 ### STEP 2 — GET RANKED INSTRUMENTS
 
-Call `get_ranked_instruments(20)`. Focus first on anything scoring 80+ (Tier 1). Note Tier 2 (60–79) and Tier 3 candidates. The scanner already applies the spread-aware Tier 3 floor (40 for tight-spread EUR/GBP/USDJPY/AUDUSD/GOLD; 45 for medium-spread OIL_CRUDE/SILVER) — anything tagged `tier: 3` in the ranking is valid to evaluate.
+Call `get_ranked_instruments(20)`. Focus first on anything scoring 80+ (Tier 1). Note Tier 2 (60–79) and Tier 3 candidates. The scanner already applies the spread-aware Tier 3 floor (**30 for tight-spread** EUR/GBP/USDJPY/AUDUSD/GOLD; **35 for medium-spread** OIL_CRUDE/SILVER — loosened from 40/45 in PR 1 2026-05-12) — anything tagged `tier: 3` in the ranking is valid to evaluate.
 
 ### STEP 3 — FOR EACH CANDIDATE, RUN THE FULL ANALYSIS
 
@@ -170,14 +170,14 @@ If NOT in a kill zone: STOP. Do not analyse further. Wait for the next zone.
 Tier assignment:
 - **Tier 1 (80–100):** 1.5% risk
 - **Tier 2 (60–79):** 1.0% risk
-- **Tier 3 (≥ floor, capped at 59):** 0.5% risk. Tier 3 floor is **spread-aware** post-2026-05-04 carve-out: **40** for tight-spread (EUR/GBP/USDJPY/AUDUSD/GOLD), **45** for medium-spread (OIL_CRUDE, SILVER).
+- **Tier 3 (≥ floor, capped at 59):** 0.5% risk. Tier 3 floor is **spread-aware**: **30 for tight-spread** (EUR/GBP/USDJPY/AUDUSD/GOLD), **35 for medium-spread** (OIL_CRUDE, SILVER). History: 45 → 40 in Phase E 2026-05-04, then 40/45 → 30/35 in PR 1 2026-05-12 (trade-frequency loosening, see design doc).
 - **Below floor:** Skip. The scanner enforces this — `tier: null` candidates never reach you. The hard floor in `place_split_trade` is a defensive last check.
 
 **I. Look for entry trigger on 15M** — apply the QUANTITATIVE definitions from `strategy.md` Section 3. No subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; log "watching, no trigger" and move on.
 
 **Trend-mode triggers (1H bias bullish or bearish, triggers 1-4):**
-- **OB Retest:** rejection candle with body ≥ 0.4×range (lowered 0.5→0.4 in Phase E 2026-05-04), close in bias direction, opposing wick ≥ 1.0×body, tap depth ≤ 50% inside the OB.
-- **FVG Fill:** ≥ 50% fill of the FVG range, then next candle closes in bias direction with body ≥ 0.4×range (lowered 0.5→0.4 in Phase E). Partial fills < 50% with reversal do NOT qualify.
+- **OB Retest:** rejection candle with body ≥ 0.3×range (PR 1 2026-05-12 loosened 0.4 → 0.3; history: 0.5 → 0.4 in Phase E 2026-05-04), close in bias direction, opposing wick ≥ 0.7×body (PR 1 loosened from 1.0), tap depth ≤ 50% inside the OB.
+- **FVG Fill:** ≥ 50% fill of the FVG range, then next candle closes in bias direction with body ≥ 0.3×range (PR 1 2026-05-12 loosened from 0.4; history: 0.5 → 0.4 in Phase E). Partial fills < 50% with reversal do NOT qualify.
 - **Liquidity Sweep:** wick exceeds prior swing by ≥ 1×spread (real sweep, not spread-tag), reversal candle within ≤ 2 candles, body ≥ 0.6×range, closes back through swept level by ≥ 1×spread in bias direction.
 - **Breakout Retest:** level broken on a 1H or 15M close, retest within ≤ 6×15M candles, hold confirmed by 2 consecutive 15M closes on the bias side.
 
@@ -258,14 +258,14 @@ After this check passes (or the candidate is skipped and you've moved to the nex
 
 **M. Force-Propose Rule (Phase E 2026-05-04 strategy loosening)**
 
-If ANY ranked candidate this cycle has composite score ≥ 55, you MUST submit at least one proposal to `request_analyst_review` this cycle, **even if no trigger fires cleanly on the top candidate**. Per the Phase E design (Q1=A): the analyst's 6-check sequence is the load-bearing quality gate for borderline proposals — better an audit-trail-logged REJECT from the analyst than a silent ICT skip with no record.
+If ANY ranked candidate this cycle has composite score ≥ 40, you MUST submit at least one proposal to `request_analyst_review` this cycle, **even if no trigger fires cleanly on the top candidate**. Per the Phase E design (Q1=A): the analyst's 6-check sequence is the load-bearing quality gate for borderline proposals — better an audit-trail-logged REJECT from the analyst than a silent ICT skip with no record.
 
 How to apply:
 1. Pick the highest-scoring ranked candidate that is in a kill zone and has bias DIRECTION aligned with a feasible trade direction.
 2. Build a proposal with whatever entry/SL/TP the structure supports — use the most recent 15M close as entry, conservative SL at the most recent swing extreme, TP1 at ≥ 1:1, TP2 at ≥ 1.3:1 (universal floor post-2026-05-07).
 3. Submit to `request_analyst_review`. If REJECT comes back, log it and move on. Do NOT retry the same proposal in a subsequent cycle without a material change (price, structure, news).
 
-If NO candidate scores ≥ 55, do NOT force-propose — log "no qualifying candidates this cycle" and move on as before. The 55 threshold is intentionally above both Tier 3 floors (40 tight-spread / 45 medium-spread) so we don't force proposals on weak setups; it's the "credible candidate exists" line.
+If NO candidate scores ≥ 40, do NOT force-propose — log "no qualifying candidates this cycle" and move on as before. **PR 1 2026-05-12 loosening note:** the previous 55 threshold sat 15 points above the Tier 3 floor of 40/45, making it a genuine "credible standout" filter. The new 40 threshold sits only 5–10 points above the new floors (30 tight-spread / 35 medium-spread), so force-propose selectivity is **deliberately reduced** — the design's goal is to ship more borderline setups to the analyst for the 6-check evaluation, lifting trade frequency from 0–1/day to 3–5/day. The analyst's 6-check gate is now the primary quality filter; force-propose is the audit-trail mechanism, not a selectivity filter.
 
 **Per-cycle analyst-call cap (PR 1 2026-05-12, codex finding #3):** Submit at most **5 candidates** to `request_analyst_review` per cycle. If more candidates pass the Force-Propose threshold, submit only the top 5 by composite_score. The executor enforces this code-side — calling beyond the cap returns `ANALYST_LOAD_CAP_EXCEEDED` and wastes Anthropic tokens building proposals that won't be reviewed. The cap protects analyst latency budget and prevents reintroducing the truncation class that the forced `submit_decision` tool call fixed earlier.
 
