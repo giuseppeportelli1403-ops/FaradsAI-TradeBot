@@ -398,25 +398,37 @@ export async function getRankedInstruments(limit: number = 20): Promise<RankedIn
           // 2026-05-12 — US-1 deterministic scoring rewrite (Migration 007).
           // The 35-line inline rubric below was lifted into the dedicated
           // src/scoring/ module so the live scanner AND the backtest engine
-          // share one source of truth. Numerical output is unchanged versus
-          // the legacy inline math (component-by-component identity verified
-          // in tests/scoring/compose.test.ts). The prompt-side ICT-array
-          // contribution (+0/+15/+25/+35) is currently a stub returning 0;
-          // it lands deterministically in PR 2 / US-5 / T066. The history
-          // component (±10) is also 0 here because history depends on
-          // setup_type, which only the agent knows after trigger detection;
-          // the agent continues to compute its own history adjustment per
-          // prompts/ict-agent.md §G (rewrite to executor-side calculation
-          // is on the PR 2 backlog).
+          // share one source of truth. Numerical output equals the legacy
+          // inline math PLUS the new deterministic ictArrayComponent (US-5
+          // / T066, 2026-05-12). The history component (±10) is still 0
+          // here because history depends on setup_type, which only the
+          // agent knows after trigger detection; the agent continues to
+          // compute its own history adjustment per prompts/ict-agent.md §G.
+          //
+          // 2026-05-12 — US-5 / T066: ictArrayInputs now populated with
+          // 1H candles + bias + ATR + current price + spread, so the
+          // OB/FVG/sweep/BOS detector at src/scoring/ict-array-detector.ts
+          // can return non-zero contributions. This makes Tier 1 reachable
+          // from the scanner WITHOUT prompt-side LLM math (SC-001 + the
+          // Tier 1 reachability gap closed). Range-mode setups still
+          // typically score 0 here because bias is neutral — the +20
+          // baseline + cap-59 logic continues to govern that case.
+          const currentPrice = candles.length > 0 ? candles[0].close : 0;
           const composed = composeScore({
             ticker: inst.ticker,
             rawBiasClarity: biasResult.clarity,
             rawNewsScore,
             spreadQuality: inst.spread_quality,
-            historyWinRate: undefined,    // see comment above — agent-side until PR 2
+            historyWinRate: undefined,    // agent-side per prompt s.G
             historySampleSize: undefined,
             isRangeMode,
-            ictArrayInputs: undefined,    // stub returns 0 — full impl in PR 2 / T066
+            ictArrayInputs: {
+              candles1h: candles,
+              bias: biasResult.bias as 'bullish' | 'bearish' | 'neutral',
+              atr: biasResult.atr,
+              currentPrice,
+              spread: inst.spread_quality === 'tight' ? 0.0001 : 0.001,
+            },
           });
 
           return {

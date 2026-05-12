@@ -11,6 +11,7 @@ import {
   historyComponent,
   ictArrayComponent,
 } from './components.js';
+import type { IctArrayInputs } from './ict-array-detector.js';
 import { TIER_1_THRESHOLD, TIER_2_THRESHOLD, tier3FloorFor } from './tiers.js';
 
 /**
@@ -40,11 +41,13 @@ export interface ScoreInputs {
   /** Set true if the setup is range-mode (trigger 5). Adds +20 baseline AND caps final score at 59. */
   isRangeMode: boolean;
   /**
-   * Inputs for the structure-quality scorer (US-5). Until T066 lands the
-   * full implementation, ictArrayComponent returns 0 regardless of value.
-   * Pass undefined or a placeholder for now.
+   * Inputs for the structure-quality scorer (US-5 / T066). When supplied,
+   * the deterministic OB/FVG/sweep/BOS detector adds 0/15/25/35 to
+   * composite_score. When undefined (e.g. backtest engine has no ICT
+   * model), the contribution is 0 — preserving the backtest's documented
+   * "structure scoring is 0" caveat.
    */
-  ictArrayInputs?: unknown;
+  ictArrayInputs?: IctArrayInputs;
 }
 
 export interface ScoreBreakdown {

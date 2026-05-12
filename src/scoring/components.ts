@@ -61,13 +61,21 @@ export function historyComponent(winRate: number, sampleSize: number): -10 | 0 |
 /**
  * ICT structure-quality contribution.
  *
- * STUB until T066 (US-5 — the deterministic OB/FVG/sweep/BOS scorer).
- * Returns 0 by default so PR 1 (US-1) ships safely with prompt-side ICT
- * scoring removed but no behaviour change to ranking until US-5 lands.
+ * 2026-05-12 — US-5 / T066 implementation now LIVE. Replaces the prior
+ * stub with a deterministic OB/FVG/sweep/BOS scorer that operates on
+ * the candle arrays already fetched by the scanner. Returns 0/15/25/35
+ * per the threshold rubric in research.md R-2.
  *
- * The full implementation will accept candle arrays and return one of
- * 0 / 15 / 25 / 35 per research.md R-2 thresholds.
+ * Backward-compatible signature: when called with `undefined` (as the
+ * backtest engine does — it has no ICT array model), returns 0. This
+ * preserves the historical backtest's "structure scoring is 0 here"
+ * caveat documented at backtest/engine.ts header.
+ *
+ * Full implementation lives in src/scoring/ict-array-detector.ts.
  */
-export function ictArrayComponent(_inputs: unknown): 0 | 15 | 25 | 35 {
-  return 0;
+import { detectIctArrayContribution, type IctArrayInputs } from './ict-array-detector.js';
+
+export function ictArrayComponent(inputs: IctArrayInputs | undefined): 0 | 15 | 25 | 35 {
+  if (inputs === undefined) return 0;
+  return detectIctArrayContribution(inputs);
 }
