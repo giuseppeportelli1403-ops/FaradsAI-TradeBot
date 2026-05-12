@@ -106,7 +106,14 @@ export function proposalHash(proposal: Omit<TradeProposal, 'trade_id'>): string 
   // so the post-hash sizing override is fully reproducible and the analyst
   // approval still gates the only LLM-controlled levers (price levels, score,
   // tier, risk pct).
+  // T022 (Spec 001 / 2026-05-12): hash version bump v1 → v2.
+  // The version tag is part of the canonical object so any in-flight v1
+  // approval naturally hashes to something different and TTL-prunes out.
+  // Deploy MUST happen during a quiet window (no in-flight approvals);
+  // the migration plan in specs/001-scoring-pipeline-audit/data-model.md
+  // specifies 22:00 UTC Sunday for exactly this reason.
   const canonical = {
+    _hash_version: 'v2-scoring-audit-2026-05-12',
     instrument: proposal.instrument.toUpperCase(),
     instrument_category: proposal.instrument_category.toLowerCase(),
     epic: proposal.epic.toUpperCase(),
@@ -707,6 +714,11 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         setup_type: { type: 'string' },
         kill_zone: { type: 'string' },
         reasoning: { type: 'string' },
+        score_breakdown: {
+          type: 'object',
+          description: 'OPTIONAL — pass through verbatim from get_ranked_instruments output for the audit trail (Spec 001 / US-1). Keys: base, bias_clarity, ict_array, news, history, spread (numbers); optional range_mode_baseline + range_cap_applied. When present, the executor verifies sum equals composite_score (allowing +/-10 for your history adjustment per prompt s.G).',
+          additionalProperties: true,
+        },
       },
       required: ['instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
     },
@@ -735,6 +747,11 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
         setup_type: { type: 'string' },
         kill_zone: { type: 'string' },
         reasoning: { type: 'string' },
+        score_breakdown: {
+          type: 'object',
+          description: 'OPTIONAL — same value passed to request_analyst_review. The executor revalidates that components sum to composite_score (+/-10 history-adjustment slack). Mismatch returns EXECUTOR_REJECT_TIER_SCORE_MISMATCH with subcategory=BREAKDOWN_SUM_MISMATCH.',
+          additionalProperties: true,
+        },
       },
       required: ['analyst_token', 'instrument', 'epic', 'direction', 'entry', 'sl', 'tp1', 'tp2', 'composite_score', 'tier', 'total_risk_pct', 'setup_type', 'kill_zone'],
     },
@@ -1208,6 +1225,43 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       const tier = Number(input.tier);
       const riskPct = Number(input.total_risk_pct);
       const setupType = String(input.setup_type ?? '');
+
+      // T021 (Spec 001 / US-1): when the agent supplies score_breakdown,
+      // verify the components sum to composite_score (catches Haiku
+      // tampering with score post-approval). Allow +/-10 slack for the
+      // history adjustment Haiku is permitted to apply on top of the
+      // scanner score per prompts/ict-agent.md s.G.
+      if (input.score_breakdown && typeof input.score_breakdown === 'object') {
+        const sb = input.score_breakdown as Record<string, unknown>;
+        const sumComponents = (
+          Number(sb.base ?? 0) +
+          Number(sb.bias_clarity ?? 0) +
+          Number(sb.ict_array ?? 0) +
+          Number(sb.news ?? 0) +
+          Number(sb.history ?? 0) +
+          Number(sb.spread ?? 0) +
+          Number(sb.range_mode_baseline ?? 0)
+        );
+        // Range-mode cap: if range_cap_applied=true the sum can exceed score by design.
+        const rangeCapApplied = sb.range_cap_applied === true;
+        const slack = 10;        // history adjustment Haiku may add post-scanner
+        if (!rangeCapApplied && Math.abs(sumComponents - score) > slack) {
+          const reason = `score_breakdown components sum to ${sumComponents} but composite_score is ${score} (slack=${slack}). Likely Haiku tampering or stale breakdown.`;
+          try {
+            recordRejection({
+              instrument: String(input.instrument),
+              layer: 'executor',
+              category: 'EXECUTOR_REJECT_TIER_SCORE_MISMATCH',
+              reason_text: reason,
+              subcategory: 'BREAKDOWN_SUM_MISMATCH',
+              proposed_score: score,
+              proposed_tier: Number.isFinite(tier) ? tier : undefined,
+              request_id: String(input.analyst_token ?? ''),
+            });
+          } catch (e) { console.warn(`[Executor] recordRejection failed: ${e instanceof Error ? e.message : String(e)}`); }
+          return JSON.stringify({ error: 'TIER_SCORE_MISMATCH', reason });
+        }
+      }
       // 2026-04-29 range-mode addition: setup_type indicating range-mode
       // signals 0.25% total risk (vs standard 0.5% Tier 3). The match is
       // intentionally lenient — Haiku may emit "Range_Sweep_Reversal"
@@ -1715,16 +1769,24 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         // proposalHash version. This minimal write closes the audit-
         // trail gap for now.
         try {
+          // Prefer the agent-supplied score_breakdown when present
+          // (T019+T021 fully plumb-through, post-2026-05-12). Falls back
+          // to a minimal {composite_score, tier} payload when the agent
+          // omits it for back-compat with the pre-T019 contract.
+          const sbInput = (input as { score_breakdown?: Record<string, unknown> }).score_breakdown;
+          const breakdownJson = sbInput && typeof sbInput === 'object'
+            ? JSON.stringify(sbInput)
+            : JSON.stringify({
+                composite_score: score,
+                tier,
+                note: 'Agent did not supply score_breakdown — minimal audit row.',
+              });
           insertScoreBreakdown({
             trade_id: tradeId,
             instrument: tradeRow.instrument,
             composite_score: score,
             tier: tier as 1 | 2 | 3,
-            breakdown_json: JSON.stringify({
-              composite_score: score,
-              tier,
-              note: 'Per-component breakdown not yet plumbed through agent — see T019/T021 in tasks.md.',
-            }),
+            breakdown_json: breakdownJson,
             scorer_version: SCORER_VERSION,
           });
         } catch (sbErr) {
