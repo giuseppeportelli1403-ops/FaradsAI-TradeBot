@@ -1405,6 +1405,20 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // the LLM open a duplicate. Now we union the two.
       const existing = getOpenTradesByInstrument(String(input.instrument));
       if (existing.length > 0) {
+        // T047 (US-6): post-approval duplicate-lock — DB side. The trade
+        // was approved but a sibling already exists for the same
+        // instrument. Surfacing this in the digest lets the owner spot
+        // when the agent is racing itself.
+        try {
+          recordRejection({
+            instrument: String(input.instrument),
+            layer: 'post_approval',
+            category: 'POST_APPROVAL_DUPLICATE_LOCK',
+            reason_text: `Duplicate-instrument lock fired (DB): ${existing.length} open trade(s) already on ${input.instrument}.`,
+            subcategory: JSON.stringify({ source: 'db', conflicting_trade_id: existing[0].id, conflicting_status: existing[0].status }),
+            request_id: String(input.analyst_token ?? ''),
+          });
+        } catch (e) { console.warn(`[Executor] recordRejection (DUPLICATE_LOCK db) failed: ${e instanceof Error ? e.message : String(e)}`); }
         return JSON.stringify({
           error: 'COORDINATION_LOCK',
           reason: `An open ${input.instrument} position already exists in DB (trade_id=${existing[0].id}, status=${existing[0].status}). Coordination lock prevents duplicate-instrument entries.`,
@@ -1416,6 +1430,19 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           (p) => String(p.market?.epic ?? '').toUpperCase() === epic.toUpperCase(),
         );
         if (sameEpic.length > 0) {
+          // T047 (US-6): same gate but live-broker side. The DB looked
+          // clean but Capital.com has an orphan — almost always a sign of
+          // a prior crash mid-placement. Worth flagging visibly.
+          try {
+            recordRejection({
+              instrument: String(input.instrument),
+              layer: 'post_approval',
+              category: 'POST_APPROVAL_DUPLICATE_LOCK',
+              reason_text: `Duplicate-instrument lock fired (live broker): ${sameEpic.length} live position(s) on ${epic} not in local DB.`,
+              subcategory: JSON.stringify({ source: 'live_broker', live_deal_ids: sameEpic.map((p) => p.position?.dealId).filter(Boolean) }),
+              request_id: String(input.analyst_token ?? ''),
+            });
+          } catch (e) { console.warn(`[Executor] recordRejection (DUPLICATE_LOCK live) failed: ${e instanceof Error ? e.message : String(e)}`); }
           return JSON.stringify({
             error: 'COORDINATION_LOCK_LIVE',
             reason: `Capital.com has ${sameEpic.length} live position(s) on ${epic} that are NOT in the local DB. Possible orphan from a prior session — manual reconciliation required before opening more.`,

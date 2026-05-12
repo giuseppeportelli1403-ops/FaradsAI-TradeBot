@@ -41,6 +41,7 @@ import {
   alertTp2Hit as realAlertTp2Hit,
   alertSlHit as realAlertSlHit,
   alertSystemWarning as realAlertSystemWarning,
+  sendDailyRejectionDigest,
 } from '../notifications/telegram.js';
 import type { CapitalPosition, Activity, TradeRecord, TradeStatus } from '../types.js';
 import { summarizeError } from './error-summary.js';
@@ -926,6 +927,20 @@ export function startScheduler(): void {
   // Researcher cycle reads as preamble. Haiku 4.5 — informational, low-stakes.
   cron.schedule('30 21 * * 1-5', async () => {
     await safeRun('EOD Journal Agent', () => runEodJournalAgent());
+  }, CRON_UTC);
+
+  // T039 (US-2 / Spec 001): daily at 21:35 UTC, build and post the
+  // rejection digest. Runs 5 min after the EOD journal so its writes
+  // are visible in the same digest. Daily (not Mon-Fri) so weekend
+  // scanning windows still get a digest if anything was rejected.
+  cron.schedule('35 21 * * *', async () => {
+    await safeRun('Daily Rejection Digest', async () => {
+      const result = await sendDailyRejectionDigest();
+      if (result.has_other) {
+        console.error('[Digest] OTHER category present — SC-002 violation; investigate.');
+      }
+      console.log(`[Digest] sent=${result.sent} total=${result.total} has_other=${result.has_other}`);
+    });
   }, CRON_UTC);
 
   // Every 10 minutes: poll all 18 RSS feeds (B3, 2026-04-28).

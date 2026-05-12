@@ -207,3 +207,41 @@ export async function alertOrphanPositions(opts: {
   ].join('\n');
   await send(text);
 }
+
+// ==================== DAILY REJECTION DIGEST (US-2 / T038) ====================
+// Builds and sends the daily rejection digest. Reads via the digest builder
+// in src/rejection-log/digest.ts (already shipped at d6e52a0). Telegram
+// delivery is fire-and-forget — a failed send must not block the scheduler.
+
+import { buildDailyDigest, formatDigestForTelegram } from '../rejection-log/digest.js';
+
+/**
+ * Build today's (UTC) rejection digest and post it to Telegram. Safe to call
+ * from a cron job — own try/catch around the send. Returns the payload that
+ * was sent (or null if the bot is uninitialised).
+ */
+export async function sendDailyRejectionDigest(dateUtc?: string): Promise<{ sent: boolean; total: number; has_other: boolean }> {
+  const today = dateUtc ?? new Date().toISOString().slice(0, 10);
+  let payload;
+  try {
+    payload = buildDailyDigest(today);
+  } catch (err) {
+    console.error(`[Digest] buildDailyDigest failed for ${today}: ${err instanceof Error ? err.message : String(err)}`);
+    return { sent: false, total: 0, has_other: false };
+  }
+
+  // Don't spam Telegram on quiet days when nothing was rejected.
+  if (payload.total_rejections === 0) {
+    console.log(`[Digest] ${today}: 0 rejections, skipping Telegram send.`);
+    return { sent: false, total: 0, has_other: false };
+  }
+
+  const body = formatDigestForTelegram(payload);
+  try {
+    await send(body);
+    return { sent: true, total: payload.total_rejections, has_other: payload.has_other };
+  } catch (err) {
+    console.error(`[Digest] Telegram send failed for ${today}: ${err instanceof Error ? err.message : String(err)}`);
+    return { sent: false, total: payload.total_rejections, has_other: payload.has_other };
+  }
+}
