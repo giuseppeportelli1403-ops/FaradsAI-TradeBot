@@ -1,6 +1,13 @@
 // Trade Analyst Agent — Pre-Trade Approval Gate
 // Called by ICT/Swing agents before every trade execution.
-// Must respond APPROVE, REJECT, or MODIFY within 15 seconds.
+// Must respond APPROVE or REJECT within 15 seconds.
+//
+// 2026-05-12 (Spec 002 / MODIFY removal): contract is BINARY. The
+// historical MODIFY verdict was removed after 4 prior fixes failed to
+// stop the model from emitting `decision='MODIFY', modifications={}`
+// while prose said "Returning APPROVE." Both parser paths now coerce
+// any rogue MODIFY input to fail-closed REJECT and emit
+// `[analyst-coercion]` warnings for monitoring.
 //
 // 6-Check Approval Sequence:
 //   1. Sanity (SL side, TP order, SL distance, size)
@@ -9,6 +16,50 @@
 //   4. Risk concentration (total deployed risk, correlated risk < 3%)
 //   5. Timing (candle closed, price distance, market hours)
 //   6. Sizing math (recompute independently, reject if >5% discrepancy)
+
+/**
+ * Build the forced submit_decision tool spec. Extracted as an exported
+ * factory so the regression test at tests/analyst-prompt.test.ts can
+ * read the schema without invoking the live API call.
+ *
+ * Binary as of 2026-05-12: enum is ['APPROVE','REJECT'] only. The
+ * `modifications` field is intentionally absent — neither in
+ * properties nor required.
+ */
+export function getSubmitDecisionTool() {
+  return {
+    name: 'submit_decision',
+    description:
+      'Submit your final approval decision for the proposed trade after running the 6-check sequence. ' +
+      'Call this tool exactly once. Your full prose analysis goes in the `reason` field — do not write a ' +
+      'separate text block; everything you want logged for the trade record should be in `reason`. ' +
+      'The contract is BINARY: emit APPROVE to authorise, REJECT to defer/decline. ' +
+      'There is no MODIFY verdict — if changes are needed, REJECT with a reason describing what to change.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        decision: {
+          type: 'string',
+          enum: ['APPROVE', 'REJECT'],
+          description: 'The verdict on the proposal. Only APPROVE or REJECT.',
+        },
+        reason: {
+          type: 'string',
+          description:
+            'Full analysis text. Cite specific check numbers (1-6) and quote relevant evidence (price levels, news headlines, lessons).',
+        },
+        confidence: {
+          type: 'number',
+          minimum: 0,
+          maximum: 1,
+          description:
+            'How confident you are in this decision, 0-1. Use 0 only on fail-closed; reserve >0.9 for unambiguous cases.',
+        },
+      },
+      required: ['decision', 'reason', 'confidence'],
+    },
+  };
+}
 
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPrompt, loadPromptWithDemoContext, loadStrategy } from './load-prompt.js';
@@ -20,27 +71,27 @@ import type { AnalystDecision, StrategyTag } from '../types.js';
 const anthropic = new Anthropic();
 
 /**
+ * Coercion message + log emitted whenever a legacy MODIFY value reaches
+ * either parser. Tested by tests/analyst-prompt.test.ts to lock the
+ * exact wording — daily VPS log grep relies on it
+ * (`grep -c '[analyst-coercion]' ~/trading-bot/data/pm2-out.log`).
+ */
+const LEGACY_MODIFY_REASON = 'Legacy MODIFY rejected — analyst contract is binary as of 2026-05-11';
+
+/**
  * Parse the Analyst's free-form response into a structured AnalystDecision.
- * Audit fixes 2026-04-29:
- *   - Use parseLastJsonObject (balanced-brace, last-object-wins) — the prior
- *     greedy regex /\{[\s\S]*\}/ spliced trailing prose into the parse target
- *     and could match a prose example object before the real decision.
- *   - VALIDATE the parsed shape rather than blindly trusting whatever the
- *     LLM emitted. `decision` must be one of the three string literals
- *     (case-insensitive, normalised to uppercase). `confidence` must be a
- *     finite number in [0,1] — coerced from string-number if needed,
- *     defaulted to 0 on any other shape. `modifications` must be a plain
- *     object — defaulted to {}. `reason` must be a string — defaulted to ''.
- *   - Fail-closed default uses confidence 0.0 (not 0.5) — pre-fix the 0.5
- *     polluted Weekly Review calibration metrics by anchoring parse-failure
- *     events to the middle of the confidence distribution. 0.0 is honest:
- *     "we don't know."
+ * Binary contract as of 2026-05-12: only APPROVE and REJECT are valid.
+ * Any rogue MODIFY input is coerced to fail-closed REJECT (with
+ * console.warn `[analyst-coercion]` for monitoring).
+ *
+ * Audit fixes 2026-04-29 (still applicable):
+ *   - Use parseLastJsonObject (balanced-brace, last-object-wins).
+ *   - Fail-closed confidence 0.0 (honest "we don't know").
  */
 export function parseAnalystResponse(text: string): AnalystDecision {
   const failClosed = (reason: string): AnalystDecision => ({
     decision: 'REJECT',
     reason,
-    modifications: {},
     confidence: 0,
   });
 
@@ -50,23 +101,22 @@ export function parseAnalystResponse(text: string): AnalystDecision {
   }
 
   const decisionRaw = String(raw.decision ?? '').toUpperCase();
-  if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT' && decisionRaw !== 'MODIFY') {
-    return failClosed(`Invalid decision value '${raw.decision}' — expected APPROVE/REJECT/MODIFY.`);
+  if (decisionRaw === 'MODIFY') {
+    console.warn(`[analyst-coercion] legacy MODIFY -> REJECT (parseAnalystResponse) raw=${JSON.stringify(raw).slice(0, 200)}`);
+    return failClosed(LEGACY_MODIFY_REASON);
+  }
+  if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT') {
+    return failClosed(`Invalid decision value '${raw.decision}' — expected APPROVE/REJECT.`);
   }
 
   const confRaw = Number(raw.confidence);
   const confidence = Number.isFinite(confRaw) ? Math.max(0, Math.min(1, confRaw)) : 0;
 
-  const modifications = (raw.modifications && typeof raw.modifications === 'object' && !Array.isArray(raw.modifications))
-    ? (raw.modifications as Record<string, unknown>)
-    : {};
-
   const reason = typeof raw.reason === 'string' ? raw.reason : '';
 
   return {
-    decision: decisionRaw as 'APPROVE' | 'REJECT' | 'MODIFY',
+    decision: decisionRaw as 'APPROVE' | 'REJECT',
     reason,
-    modifications,
     confidence,
   };
 }
@@ -89,7 +139,6 @@ export function extractAnalystDecisionFromTool(content: unknown[]): AnalystDecis
   const failClosed = (reason: string): AnalystDecision => ({
     decision: 'REJECT',
     reason,
-    modifications: {},
     confidence: 0,
   });
 
@@ -111,24 +160,25 @@ export function extractAnalystDecisionFromTool(content: unknown[]): AnalystDecis
       const raw = rawInput as Record<string, unknown>;
 
       const decisionRaw = String(raw.decision ?? '').toUpperCase();
-      if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT' && decisionRaw !== 'MODIFY') {
+      if (decisionRaw === 'MODIFY') {
+        // Defense-in-depth: even though the tool schema enum no longer
+        // lists MODIFY, log + coerce in case a future schema regression
+        // or a model bypass slips through.
+        console.warn(`[analyst-coercion] legacy MODIFY -> REJECT (extractAnalystDecisionFromTool) raw=${JSON.stringify(raw).slice(0, 200)}`);
+        return failClosed(LEGACY_MODIFY_REASON);
+      }
+      if (decisionRaw !== 'APPROVE' && decisionRaw !== 'REJECT') {
         return failClosed(`Invalid decision in tool input: '${raw.decision}'.`);
       }
 
       const confRaw = Number(raw.confidence);
       const confidence = Number.isFinite(confRaw) ? Math.max(0, Math.min(1, confRaw)) : 0;
 
-      const modifications =
-        raw.modifications && typeof raw.modifications === 'object' && !Array.isArray(raw.modifications)
-          ? (raw.modifications as Record<string, unknown>)
-          : {};
-
       const reason = typeof raw.reason === 'string' ? raw.reason : '';
 
       return {
-        decision: decisionRaw as 'APPROVE' | 'REJECT' | 'MODIFY',
+        decision: decisionRaw as 'APPROVE' | 'REJECT',
         reason,
-        modifications,
         confidence,
       };
     }
@@ -249,42 +299,7 @@ Run your 6-check sequence and respond with your decision JSON.`;
   // input object regardless of how much prose precedes it; the analyst's
   // analysis goes in the `reason` field where length doesn't compete with
   // a separate JSON block at the end of the response.
-  const submitDecisionTool = {
-    name: 'submit_decision',
-    description:
-      'Submit your final approval decision for the proposed trade after running the 6-check sequence. ' +
-      'Call this tool exactly once. Your full prose analysis goes in the `reason` field — do not write a ' +
-      'separate text block; everything you want logged for the trade record should be in `reason`.',
-    input_schema: {
-      type: 'object' as const,
-      properties: {
-        decision: {
-          type: 'string',
-          enum: ['APPROVE', 'REJECT', 'MODIFY'],
-          description: 'The verdict on the proposal.',
-        },
-        reason: {
-          type: 'string',
-          description:
-            'Full analysis text. Cite specific check numbers (1-6) and quote relevant evidence (price levels, news headlines, lessons).',
-        },
-        confidence: {
-          type: 'number',
-          minimum: 0,
-          maximum: 1,
-          description:
-            'How confident you are in this decision, 0-1. Use 0 only on fail-closed; reserve >0.9 for unambiguous cases.',
-        },
-        modifications: {
-          type: 'object',
-          description:
-            'Required only when decision=MODIFY. Keys: sl, tp1, tp2, total_risk_pct (numeric overrides). Empty object {} otherwise.',
-          additionalProperties: true,
-        },
-      },
-      required: ['decision', 'reason', 'confidence', 'modifications'],
-    },
-  };
+  const submitDecisionTool = getSubmitDecisionTool();
 
   // Hard timeout via Promise.race. SDK default is 10 minutes — far too long
   // for a per-trade gate. 60s headroom for Sonnet 4.6 + cold cache +
@@ -323,7 +338,6 @@ Run your 6-check sequence and respond with your decision JSON.`;
     const failClosed: AnalystDecision = {
       decision: 'REJECT',
       reason: `Analyst API failure — ${msg}. Fail-closed REJECT.`,
-      modifications: {},
       confidence: 0,
     };
     logAnalystDecision(proposal.trade_id, proposal.strategy_tag, failClosed);

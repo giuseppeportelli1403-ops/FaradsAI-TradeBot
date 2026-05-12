@@ -51,20 +51,22 @@ describe('ict-agent.md L3 directives', () => {
     );
   });
 
-  it('analyst response interpretation rule (2026-05-08 incident guard)', () => {
+  it('analyst response interpretation rule (2026-05-08 incident guard, post-Spec-002 binary)', () => {
     // Structured-field-only rule must be present so the agent doesn't
-    // misread MODIFY prose as APPROVE.
+    // misread non-APPROVE prose as APPROVE.
     expect(promptText).toContain(
       'structured `decision` field is the ONLY authority',
     );
-    // MODIFY-must-resubmit rule must be present so the agent applies
-    // modifications and resubmits instead of giving up.
-    expect(promptText).toContain(
-      'the `modifications` field is your action list',
-    );
     // The 2026-05-08 incident reference tells future readers what bug
-    // this guard exists for (9 MODIFYs misread or abandoned, 0 trades).
+    // this guard exists for.
     expect(promptText).toContain('2026-05-08');
+    // Binary-contract aware: the analyst contract is APPROVE / REJECT only.
+    expect(promptText).toMatch(/contract is BINARY|APPROVE \/ REJECT/);
+  });
+
+  it('contains ZERO modif* matches (Spec 002 broad-pattern guard)', () => {
+    const matches = promptText.match(/modif/gi);
+    expect(matches, `Expected zero modif* in prompts/ict-agent.md, got ${matches?.length ?? 0}`).toBeNull();
   });
 
   it('STEP 3 contains L0 feasibility pre-flight directive', () => {

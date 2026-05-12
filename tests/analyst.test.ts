@@ -1,4 +1,10 @@
-// Tests for parseAnalystResponse — defaults to REJECT on parse failure
+// Tests for parseAnalystResponse and extractAnalystDecisionFromTool.
+//
+// Binary contract as of 2026-05-12 (Spec 002 / MODIFY removal):
+// only APPROVE and REJECT are valid. Any rogue MODIFY input is coerced
+// to fail-closed REJECT with the canonical reason and a [analyst-coercion]
+// console.warn (covered by tests/analyst-coercion.test.ts).
+
 import { describe, it, expect } from 'vitest';
 import { parseAnalystResponse, extractAnalystDecisionFromTool } from '../src/agents/analyst-agent.js';
 
@@ -20,7 +26,7 @@ describe('parseAnalystResponse', () => {
   });
 
   it('correctly parses valid APPROVE JSON', () => {
-    const text = `Here is my analysis:\n{"decision":"APPROVE","reason":"All checks passed","modifications":{},"confidence":0.9}`;
+    const text = `Here is my analysis:\n{"decision":"APPROVE","reason":"All checks passed","confidence":0.9}`;
     const result = parseAnalystResponse(text);
     expect(result.decision).toBe('APPROVE');
     expect(result.reason).toBe('All checks passed');
@@ -28,22 +34,32 @@ describe('parseAnalystResponse', () => {
   });
 
   it('correctly parses valid REJECT JSON', () => {
-    const text = `{"decision":"REJECT","reason":"SL on wrong side","modifications":{},"confidence":0.85}`;
+    const text = `{"decision":"REJECT","reason":"SL on wrong side","confidence":0.85}`;
     const result = parseAnalystResponse(text);
     expect(result.decision).toBe('REJECT');
     expect(result.reason).toBe('SL on wrong side');
   });
 
-  it('correctly parses valid MODIFY JSON', () => {
+  it('coerces legacy MODIFY input to fail-closed REJECT (Spec 002)', () => {
     const text = `{"decision":"MODIFY","reason":"Size too large","modifications":{"size_per_leg":0.5},"confidence":0.75}`;
     const result = parseAnalystResponse(text);
-    expect(result.decision).toBe('MODIFY');
-    expect(result.modifications).toEqual({ size_per_leg: 0.5 });
+    expect(result.decision).toBe('REJECT');
+    expect(result.reason).toBe('Legacy MODIFY rejected — analyst contract is binary as of 2026-05-11');
+    expect(result.confidence).toBe(0);
+  });
+
+  it('still ignores legacy modifications field on APPROVE/REJECT', () => {
+    // Pre-2026-05-12 the model could include a modifications field on any
+    // verdict; that field is now silently dropped by the parser (the type
+    // no longer carries it). Decision remains valid.
+    const text = `{"decision":"APPROVE","reason":"ok","modifications":{"sl":1.0985},"confidence":0.8}`;
+    const result = parseAnalystResponse(text);
+    expect(result.decision).toBe('APPROVE');
+    expect(result.confidence).toBe(0.8);
+    // No `.modifications` assertion — field intentionally not on the type.
   });
 });
 
-// 2026-05-05: forced submit_decision tool extractor. Replaces the brittle
-// "JSON-at-end-of-prose" path that produced 0/6 parseable analyst calls.
 describe('extractAnalystDecisionFromTool — read decision from tool_use block', () => {
   it('extracts an APPROVE decision from a tool_use block', () => {
     const content = [
@@ -56,7 +72,6 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
           decision: 'APPROVE',
           reason: 'All 6 checks pass; sizing math reconciles within 1.2%.',
           confidence: 0.84,
-          modifications: {},
         },
       },
     ];
@@ -70,14 +85,14 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'REJECT', reason: 'Calendar veto fires in 4 minutes', confidence: 0.95, modifications: {} },
+        input: { decision: 'REJECT', reason: 'Calendar veto fires in 4 minutes', confidence: 0.95 },
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);
     expect(d.decision).toBe('REJECT');
   });
 
-  it('extracts a MODIFY with modifications object', () => {
+  it('coerces legacy MODIFY tool input to fail-closed REJECT (Spec 002)', () => {
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
@@ -85,8 +100,9 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);
-    expect(d.decision).toBe('MODIFY');
-    expect(d.modifications).toEqual({ sl: 1.0985 });
+    expect(d.decision).toBe('REJECT');
+    expect(d.reason).toBe('Legacy MODIFY rejected — analyst contract is binary as of 2026-05-11');
+    expect(d.confidence).toBe(0);
   });
 
   it('fails closed (REJECT) when no submit_decision block is present', () => {
@@ -101,7 +117,7 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'YES_WHY_NOT', reason: '?', confidence: 1, modifications: {} },
+        input: { decision: 'YES_WHY_NOT', reason: '?', confidence: 1 },
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);
@@ -113,7 +129,7 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'APPROVE', reason: 'ok', confidence: 1.7, modifications: {} },
+        input: { decision: 'APPROVE', reason: 'ok', confidence: 1.7 },
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);
@@ -124,7 +140,7 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'APPROVE', reason: 'ok', confidence: 'not-a-number', modifications: {} },
+        input: { decision: 'APPROVE', reason: 'ok', confidence: 'not-a-number' },
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);

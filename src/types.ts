@@ -418,10 +418,23 @@ export interface ResearchBrief {
 
 // ==================== ANALYST ====================
 
+/**
+ * Analyst contract is BINARY as of 2026-05-12 (Spec 002 / MODIFY removal).
+ * Pre-2026-05-11 the analyst could return APPROVE / REJECT / MODIFY but
+ * 4 prior fixes failed to keep the three-way agreement (tool schema /
+ * prompt / model reasoning) consistent — most failures were
+ * `decision='MODIFY', modifications={}` while prose said "Returning
+ * APPROVE." Binary removes the contradiction surface entirely.
+ *
+ * The `modifications` field is gone from the type. Historical analyst_log
+ * rows (pre-2026-05-11, 31 of them per memory) still carry MODIFY and
+ * a non-empty modifications JSON; the DB CHECK constraint stays
+ * permissive so they remain readable. Application code now only
+ * produces APPROVE or REJECT.
+ */
 export interface AnalystDecision {
-  decision: 'APPROVE' | 'REJECT' | 'MODIFY';
+  decision: 'APPROVE' | 'REJECT';
   reason: string;
-  modifications: Record<string, unknown>;
   confidence: number;
 }
 

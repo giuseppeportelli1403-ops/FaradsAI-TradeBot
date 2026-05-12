@@ -19,7 +19,7 @@ Produce a weekly performance report with these sections:
 5. **Win rate by instrument category** (FX major / commodity)
 6. **Per-leg performance** — Leg A (TP1) hit rate, Leg B (TP2) hit rate. The 2-leg 70/30 split-position method means a "winning trade" can be partial — Leg A hits + Leg B stops at BE = small +R win (~0.7R). Distinguish full-runners (both hit) from partials.
 7. **Calendar-veto effectiveness** — count of `place_order` calls vetoed by the economic-calendar guard, and a sanity check (did vetoed setups, had they been taken, have been winners or losers?)
-8. **Analyst agent statistics** — approval rate, rejection rate, modify rate, any rubber-stamping or over-rejection flags
+8. **Analyst agent statistics** — approval rate, rejection rate, any rubber-stamping or over-rejection flags. Some pre-2026-05-12 historical rows may show a legacy third verdict; treat any non-APPROVE value as REJECT-equivalent for trend analysis.
 9. **Best/worst performing setup**
 10. **Banned pattern candidates** — setups with win rate < 45% over 10+ trades
 11. **Scoring weight adjustments** — statistically justified changes only

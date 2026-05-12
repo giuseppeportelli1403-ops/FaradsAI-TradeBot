@@ -1081,29 +1081,32 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       }
 
       const decision = await runAnalystAgent(proposal);
-      if (decision.decision === 'APPROVE') {
+      const isApproved = decision.decision === 'APPROVE';
+      if (isApproved) {
         approvedProposals.set(hash, { approvedAt: Date.now(), proposal });
       } else {
         // 2026-04-29 audit-3 fix (P0-3): invalidate any prior APPROVE on a
-        // REJECT/MODIFY for the same proposal hash. Pre-fix scenario: the
-        // agent calls request_analyst_review twice in the same cycle (e.g.
-        // re-asking after a fresh news fetch); first call APPROVEs and
-        // stores the token, second call REJECTs but the OLD APPROVE token
-        // remains live in approvedProposals for the 10-min TTL. The agent
-        // could then call place_split_trade with the original token and
-        // the order would go through despite the most recent analyst
-        // verdict being REJECT. Fix: any non-APPROVE verdict on a hash
+        // REJECT for the same proposal hash. (Pre-2026-05-12 this also
+        // covered MODIFY; the analyst contract is now binary so there is
+        // only APPROVE / REJECT.) Pre-fix scenario: the agent calls
+        // request_analyst_review twice in the same cycle (e.g. re-asking
+        // after a fresh news fetch); first call APPROVEs and stores the
+        // token, second call REJECTs but the OLD APPROVE token remains
+        // live for the 10-min TTL. Fix: any non-APPROVE verdict on a hash
         // explicitly invalidates any prior approval for that same hash.
         approvedProposals.delete(hash);
       }
       return JSON.stringify({
         decision: decision.decision,
         reason: decision.reason,
-        analyst_token: hash,
+        // 2026-05-12 (Spec 002 / MODIFY removal): empty analyst_token on
+        // any non-APPROVE decision. Defense-in-depth — place_split_trade
+        // already rejects empty tokens at the approval-pass check, so this
+        // makes "rejected proposal somehow placed" impossible at this layer.
+        analyst_token: isApproved ? hash : '',
         proposal_hash: hash,
         trade_id: proposal.trade_id,
         confidence: decision.confidence,
-        modifications: decision.modifications,
         // 2026-05-07 — Codex follow-up: surface server-computed sizes so the
         // LLM can log them in its decision-cycle output. Any size_a/size_b
         // values the LLM supplied to this tool were ignored and replaced

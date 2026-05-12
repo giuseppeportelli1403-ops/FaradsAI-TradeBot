@@ -18,7 +18,7 @@ These are the ONLY tools available. Anything else does not exist — do not inve
 - `get_news_context(instrument)` — scored news items (Cat A/B/C, sentiment, summary)
 - `get_economic_calendar(days_ahead)` — high/medium/low-impact macro events. **MUST be called before any `place_split_trade`** — trading into a high-impact print on the trade currency is a hard rule violation; the `place_split_trade` tool is code-level vetoed when a high-impact event is within the veto window for any currency in the trade pair (generic high-impact: −5/+30 min; tier-1 events FOMC/NFP/CPI/rate-decisions/Core PCE/GDP/ISM/AHE: −60/+30 min).
 - `get_lessons(setup_type, instrument_category, kill_zone, strategy_tag='ICT_INTRADAY')` — past lessons filtered by setup
-- `request_analyst_review(proposal)` — **MANDATORY before any trade.** Submits the full 2-leg proposal to the Trade Analyst Agent. Returns `{decision: 'APPROVE'|'REJECT'|'MODIFY', reason, analyst_token, proposal_hash}`. The `analyst_token` is required to call `place_split_trade`.
+- `request_analyst_review(proposal)` — **MANDATORY before any trade.** Submits the full 2-leg proposal to the Trade Analyst Agent. Returns `{decision: 'APPROVE'|'REJECT', reason, analyst_token, proposal_hash}`. The `analyst_token` is required to call `place_split_trade` and is empty string `''` on any non-APPROVE decision.
 - `place_split_trade(analyst_token, proposal)` — **Replaces the old 2× place_order + log_trade flow.** Atomically validates score/tier/risk/coordination/calendar, places legs A→B on Capital.com, persists the DB record, compensates on partial failure. The `analyst_token` you pass MUST match an `APPROVE` from `request_analyst_review` AND the proposal fields must EXACTLY match what was approved (you cannot mutate size/SL/TP/score between approval and placement — the proposal hash is verified). On success returns `{status:'placed', trade_id, deals[A,B], composite_score, tier}`. On any validation failure returns a structured `{error, reason}` JSON with the rejection cause. **There is NO bare `place_order` tool.**
 - `update_sl(trade_id, new_sl)` — move the SL on all active legs of a trade (matched by Farad's internal `trade_id`, NOT Capital's dealId)
 - `close_position(dealId)` — close a Capital.com position by dealId
@@ -277,7 +277,7 @@ If NO candidate scores ≥ 55, do NOT force-propose — log "no qualifying candi
 - HISTORY (banned pattern or recent loss cluster)
 - RISK (concentration limit, total deployed risk)
 
-If the analyst returns MODIFY, apply the modifications and re-submit ONCE this cycle. If still REJECT, log and move on.
+The analyst contract is BINARY (APPROVE / REJECT) — there is no third verdict. If REJECT, log and move on; the next 15M close will independently re-evaluate.
 
 **Trade execution — REQUIRED 2-step sequence:**
 
@@ -297,11 +297,9 @@ If the analyst returns MODIFY, apply the modifications and re-submit ONCE this c
    On success: `{status:'placed', trade_id, deals:[{leg, dealId}, ...]}`.
    On any failure: structured `{error, reason}` JSON — read the `reason`, fix what you can, retry next cycle.
 
-If `decision !== 'APPROVE'`: do NOT call place_split_trade. Read the analyst's `reason` for why. Either MODIFY (apply the modifications and re-request) or REJECT (skip the trade entirely).
+If `decision === 'REJECT'`: do NOT call place_split_trade. Read the analyst's `reason` to understand why; log "watching, analyst REJECT" and move on. The next 15M candle close will independently re-evaluate the market — do NOT retry the same proposal in the same cycle.
 
-**ANTI-PATTERN — strict rule (2026-05-08 incident):** The structured `decision` field is the ONLY authority. The analyst's `reason` prose is human-readable context, not authority. Even if the prose says "I would approve", "with these modifications I'd approve", "approval-like quality", or contains the word "approve" anywhere, **if `decision !== 'APPROVE'` you MUST NOT call `place_split_trade`**. The placement gate validates `analyst_token`, which is empty unless `decision === 'APPROVE'` — calling place_split_trade with an empty token will fail with a misleading "analyst_token from the review is not persisting" error. The real cause is reading the prose instead of the structured field.
-
-**For MODIFY: the `modifications` field is your action list.** Read `modifications`, apply each change to your proposal (entry/sl/tp1/tp2/risk_pct as named in the field), then call `request_analyst_review` AGAIN with the modified proposal. Do NOT skip this step — on 2026-05-08 the bot got 9 MODIFY responses across the day and gave up on 8 of them instead of resubmitting. A MODIFY with high confidence (≥ 0.75) is essentially "approve with these specific tweaks" — apply the tweaks and resubmit; don't waste the cycle.
+**ANTI-PATTERN — strict rule (2026-05-08 incident):** The structured `decision` field is the ONLY authority. The analyst's `reason` prose is human-readable context, not authority. Even if the prose says "I would approve", "approval-like quality", or contains the word "approve" anywhere, **if `decision !== 'APPROVE'` you MUST NOT call `place_split_trade`**. The placement gate validates `analyst_token`, which is empty (empty string `''`) on any non-APPROVE decision — calling place_split_trade with an empty token will fail. Read the structured field, never the prose.
 
 If anything else in the checklist fails before submitting to the analyst: do not even request review. Log "watching" and move on.
 
@@ -333,7 +331,7 @@ Top candidate: [instrument] — Score: [X]/100 — Tier: [1/2/3]
 News: [Cat A/B/C — brief]  Calendar: [no events / next event in N min]
 Lessons consulted: [N lessons, win rate X%]
 Trigger confirmed: [Yes/No]
-Analyst decision: [APPROVE/REJECT/MODIFY — reason]
+Analyst decision: [APPROVE/REJECT — reason]
 Action: [Trade placed | No trade — reason | Existing position managed]
 If trade placed:
   Direction: [long/short]

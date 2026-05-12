@@ -1017,8 +1017,13 @@ export function getLatestBrief(): ResearchBrief | null {
 
 export function logAnalystDecision(tradeId: string, strategyTag: StrategyTag, decision: AnalystDecision): void {
   db.run(
+    // 2026-05-12 (Spec 002 / MODIFY removal): the `modifications` column
+    // is preserved in the schema for historical readability but new rows
+    // ALWAYS write the literal '{}'. The AnalystDecision type no longer
+    // carries a `modifications` field; pre-2026-05-11 rows still carry
+    // their original JSON. DB CHECK constraint kept permissive.
     'INSERT INTO analyst_log (trade_id, strategy_tag, decision, reason, modifications, confidence) VALUES (?, ?, ?, ?, ?, ?)',
-    [tradeId, strategyTag, decision.decision, decision.reason, JSON.stringify(decision.modifications), decision.confidence]
+    [tradeId, strategyTag, decision.decision, decision.reason, '{}', decision.confidence]
   );
   saveToFile();
 }
