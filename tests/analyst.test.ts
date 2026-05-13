@@ -1,4 +1,10 @@
-// Tests for parseAnalystResponse — defaults to REJECT on parse failure
+// Tests for parseAnalystResponse — defaults to REJECT on parse failure.
+//
+// 2026-05-11: binary contract — APPROVE | REJECT only. The MODIFY-accepts
+// cases were removed; a coercion test for the tool-use path was added to
+// guard against prompt regression / model drift emitting MODIFY despite
+// the new schema. `modifications` removed from EXPECTED outputs (input
+// fixtures may still carry it — the parser ignores it on input).
 import { describe, it, expect } from 'vitest';
 import { parseAnalystResponse, extractAnalystDecisionFromTool } from '../src/agents/analyst-agent.js';
 
@@ -33,13 +39,6 @@ describe('parseAnalystResponse', () => {
     expect(result.decision).toBe('REJECT');
     expect(result.reason).toBe('SL on wrong side');
   });
-
-  it('correctly parses valid MODIFY JSON', () => {
-    const text = `{"decision":"MODIFY","reason":"Size too large","modifications":{"size_per_leg":0.5},"confidence":0.75}`;
-    const result = parseAnalystResponse(text);
-    expect(result.decision).toBe('MODIFY');
-    expect(result.modifications).toEqual({ size_per_leg: 0.5 });
-  });
 });
 
 // 2026-05-05: forced submit_decision tool extractor. Replaces the brittle
@@ -56,7 +55,6 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
           decision: 'APPROVE',
           reason: 'All 6 checks pass; sizing math reconciles within 1.2%.',
           confidence: 0.84,
-          modifications: {},
         },
       },
     ];
@@ -70,23 +68,28 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'REJECT', reason: 'Calendar veto fires in 4 minutes', confidence: 0.95, modifications: {} },
+        input: { decision: 'REJECT', reason: 'Calendar veto fires in 4 minutes', confidence: 0.95 },
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);
     expect(d.decision).toBe('REJECT');
   });
 
-  it('extracts a MODIFY with modifications object', () => {
-    const content = [
-      {
-        type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'MODIFY', reason: 'Tighten SL by 5 pips', confidence: 0.7, modifications: { sl: 1.0985 } },
-      },
-    ];
+  it('coerces legacy MODIFY tool-use input to fail-closed REJECT', () => {
+    // 2026-05-11 binary-contract guard. If a future prompt regression or
+    // model drift makes the analyst emit MODIFY despite the new schema,
+    // the tool extractor must coerce to fail-closed REJECT (matching the
+    // parseAnalystResponse coercion path tested in analyst-parse.test.ts).
+    const content = [{
+      type: 'tool_use',
+      id: 't',
+      name: 'submit_decision',
+      input: { decision: 'MODIFY', reason: 'size too high', confidence: 0.8, modifications: { sl: 1.0985 } },
+    }];
     const d = extractAnalystDecisionFromTool(content as never);
-    expect(d.decision).toBe('MODIFY');
-    expect(d.modifications).toEqual({ sl: 1.0985 });
+    expect(d.decision).toBe('REJECT');
+    expect(d.confidence).toBe(0);
+    expect(d.reason).toMatch(/Legacy MODIFY rejected/);
   });
 
   it('fails closed (REJECT) when no submit_decision block is present', () => {
@@ -101,7 +104,7 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'YES_WHY_NOT', reason: '?', confidence: 1, modifications: {} },
+        input: { decision: 'YES_WHY_NOT', reason: '?', confidence: 1 },
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);
@@ -113,7 +116,7 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'APPROVE', reason: 'ok', confidence: 1.7, modifications: {} },
+        input: { decision: 'APPROVE', reason: 'ok', confidence: 1.7 },
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);
@@ -124,7 +127,7 @@ describe('extractAnalystDecisionFromTool — read decision from tool_use block',
     const content = [
       {
         type: 'tool_use', id: 't', name: 'submit_decision',
-        input: { decision: 'APPROVE', reason: 'ok', confidence: 'not-a-number', modifications: {} },
+        input: { decision: 'APPROVE', reason: 'ok', confidence: 'not-a-number' },
       },
     ];
     const d = extractAnalystDecisionFromTool(content as never);

@@ -509,6 +509,19 @@ function createTables(): void {
     )
   `);
 
+  // analyst_log: historical record of every analyst decision.
+  //
+  // 2026-05-11: MODIFY removed from the application contract (binary
+  // APPROVE/REJECT). The CHECK constraint below intentionally keeps
+  // MODIFY as a valid value so historical rows (pre-2026-05-11) remain
+  // readable. The application layer (src/agents/analyst-agent.ts) coerces
+  // any new MODIFY input to REJECT, so no new MODIFY rows can be written.
+  // The `modifications` TEXT column is also kept for historical rows —
+  // new rows write '{}' via the INSERT path (see logAnalystDecision below).
+  //
+  // If/when a future migration prunes pre-2026-05-11 rows, the CHECK
+  // constraint and modifications column can be dropped together. Until
+  // then: leave both alone.
   db.run(`
     CREATE TABLE IF NOT EXISTS analyst_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1052,9 +1065,14 @@ export function getLatestBrief(): ResearchBrief | null {
 // ==================== ANALYST LOG ====================
 
 export function logAnalystDecision(tradeId: string, strategyTag: StrategyTag, decision: AnalystDecision): void {
+  // 2026-05-11: `modifications` removed from AnalystDecision (MODIFY decision
+  // also removed from the contract — see analyst-agent.ts). The DB column is
+  // kept for now to preserve historical rows; Group D will drop / alter the
+  // schema. Writes carry an empty-object literal to keep the column populated
+  // with valid JSON until then.
   db.run(
     'INSERT INTO analyst_log (trade_id, strategy_tag, decision, reason, modifications, confidence) VALUES (?, ?, ?, ?, ?, ?)',
-    [tradeId, strategyTag, decision.decision, decision.reason, JSON.stringify(decision.modifications), decision.confidence]
+    [tradeId, strategyTag, decision.decision, decision.reason, '{}', decision.confidence]
   );
   saveToFile();
 }

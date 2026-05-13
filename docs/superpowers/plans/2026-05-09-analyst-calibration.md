@@ -1,3 +1,8 @@
+> **Superseded by [2026-05-11-remove-modify-decision.md](2026-05-11-remove-modify-decision.md).**
+> The calibration approach (APPROVE 60-80% / MODIFY 5-15% / REJECT 15-25% bands) failed to take — actual distribution after the 2026-05-09 fix was APPROVE 20% / MODIFY 61% / REJECT 20%. Root cause was a tool-schema / prompt contradiction (the schema description "Empty object {} otherwise" licensed the empty-mods MODIFY pattern the prompt forbade). The 2026-05-11 plan removes MODIFY from the contract entirely rather than attempt a 5th calibration pass.
+
+---
+
 # Trade Analyst — APPROVE/MODIFY/REJECT Calibration Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.

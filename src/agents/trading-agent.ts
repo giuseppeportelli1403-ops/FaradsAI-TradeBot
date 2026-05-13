@@ -50,6 +50,41 @@ export function _resetAnalystApprovals(): void {
 // invocations never run concurrently. See spec
 // docs/superpowers/specs/2026-05-08-ict-iteration-cap-bump-design.md
 // "Change 3" for the serialization invariant.
+// ==================== ANALYST LOAD CAP (PR 1 prereq T2, codex finding #3) ====================
+//
+// With Force-Propose dropping 55→40 and Tier 3 floor 40/45→30/35, many more
+// candidates can pass the threshold per cycle. Without a cap, the analyst
+// LLM could be called 5-10x per cycle, blowing the latency budget and
+// reintroducing the analyst truncation class that 82a4996 fixed.
+//
+// The ICT agent calls request_analyst_review one candidate at a time (no
+// code-side loop to wrap), so the cap is a per-cycle CALL-COUNT limiter
+// using a 5-minute sliding window (cycles fire every 15 min, so window is
+// fully clear between cycles).
+//
+// Per design v2 §6 PR 1 "Per-cycle analyst load limit". Prompt-side cap is
+// also in place at prompts/ict-agent.md Step 3M — the LLM should respect
+// the cap and not waste tokens building proposals beyond it. This is the
+// hard backstop.
+
+const ANALYST_CALL_WINDOW_MS = 5 * 60 * 1000;
+const MAX_ANALYST_CALLS_PER_WINDOW = 5;
+let recentAnalystCallTimestamps: number[] = [];
+
+export function shouldRejectForAnalystLoadCap(now: number = Date.now()): boolean {
+  const cutoff = now - ANALYST_CALL_WINDOW_MS;
+  recentAnalystCallTimestamps = recentAnalystCallTimestamps.filter((t) => t >= cutoff);
+  return recentAnalystCallTimestamps.length >= MAX_ANALYST_CALLS_PER_WINDOW;
+}
+
+export function recordAnalystCall(now: number = Date.now()): void {
+  recentAnalystCallTimestamps.push(now);
+}
+
+export function _resetAnalystLoadTracking(): void {
+  recentAnalystCallTimestamps = [];
+}
+
 let lastIctTimeoutAlertDate: string | null = null;
 
 /** Test-only: reset dedup so a same-day timeout re-alerts. */
@@ -683,7 +718,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
   {
     name: 'request_analyst_review',
     description:
-      'MANDATORY before place_split_trade. Submits the full 2-leg trade proposal to the Trade Analyst Agent. Returns { decision: APPROVE|REJECT|MODIFY, reason, analyst_token, proposal_hash, computed_sizes }. The analyst_token is a hash of the canonicalised proposal — place_split_trade rejects unless the supplied token matches a same-cycle approval AND the proposal hash matches. You CANNOT mutate SL/TP/score/risk_pct between approval and placement. **Sizing (size_a / size_b) is COMPUTED SERVER-SIDE** from total_risk_pct, balance, and the broker tick rule — any size_a/size_b you supply is IGNORED and replaced with the server values. Inspect computed_sizes in the response if you need them for logging.',
+      'MANDATORY before place_split_trade. Submits the full 2-leg trade proposal to the Trade Analyst Agent. Returns { decision: APPROVE|REJECT, reason, analyst_token, proposal_hash, computed_sizes }. analyst_token is empty string \'\' for any REJECT — only APPROVE returns a usable token. place_split_trade validates the token; an empty token causes that call to fail closed. The analyst_token (on APPROVE) is a hash of the canonicalised proposal — place_split_trade rejects unless the supplied token matches a same-cycle approval AND the proposal hash matches. You CANNOT mutate SL/TP/score/risk_pct between approval and placement. **Sizing (size_a / size_b) is COMPUTED SERVER-SIDE** from total_risk_pct, balance, and the broker tick rule — any size_a/size_b you supply is IGNORED and replaced with the server values. Inspect computed_sizes in the response if you need them for logging.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -832,6 +867,19 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       return JSON.stringify({ lessons, win_rate: wr });
     }
     case 'request_analyst_review': {
+      // 2026-05-12 (PR 1 prereq T2): per-cycle analyst load cap. If 5 analyst
+      // calls have happened in the last 5 minutes, refuse the 6th. Protects
+      // against marginal-candidate flood once Force-Propose drops to 40
+      // (codex finding #3). Prompt-side cap is also in ict-agent.md Step 3M
+      // — this is the hard backstop.
+      if (shouldRejectForAnalystLoadCap()) {
+        return JSON.stringify({
+          error: 'ANALYST_LOAD_CAP_EXCEEDED',
+          reason: 'Already submitted 5 candidates to analyst in the last 5 minutes. Cap bounds analyst load under the PR 1 loosened thresholds. Wait for next 15M cycle.',
+        });
+      }
+      recordAnalystCall();
+
       // 2026-04-29 audit fix (P0-AN1): trade_id chain. Pre-fix this case
       // generated trade-{8hex} for the analyst_log row, and place_split_trade
       // separately generated trade-{12hex} for trades.id — different hashes,
@@ -889,7 +937,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
             proposal_hash: '',
             trade_id: '',
             confidence: 0,
-            modifications: {},
           });
         }
         serverSizing = computeServerSizing({
@@ -909,7 +956,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           proposal_hash: '',
           trade_id: '',
           confidence: 0,
-          modifications: {},
         });
       }
       if (!serverSizing.ok) {
@@ -921,7 +967,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           proposal_hash: '',
           trade_id: '',
           confidence: 0,
-          modifications: {},
         });
       }
       const { sizeA: serverSizeA, sizeB: serverSizeB } = serverSizing;
@@ -974,6 +1019,11 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       const isRangeModeProposal = /^range_/.test(
         proposal.setup_type.trim().toLowerCase().replace(/[\s_]+/g, '_'),
       );
+      // NOTE (2026-05-13, Task 9 follow-up): isRangeModeProposal is NOT
+      // extended to cover Displacement_Continuation here because
+      // validateRRFloor uses universal TP1≥1.0R / TP2≥1.3R floors for all
+      // setups (isRangeMode is kept for forward-compat only, see line ~216).
+      // DC uses the same R:R floors, so no change needed at this site.
       const rrPreCheck = validateRRFloor({
         direction: proposal.direction,
         entry: proposal.entry,
@@ -993,7 +1043,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           proposal_hash: hash,
           trade_id: proposal.trade_id,
           confidence: 0,
-          modifications: {},
         });
       }
 
@@ -1018,7 +1067,6 @@ export async function executeTool(name: string, input: Record<string, unknown>):
           proposal_hash: hash,
           trade_id: proposal.trade_id,
           confidence: 0,
-          modifications: {},
         });
       }
 
@@ -1027,7 +1075,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         approvedProposals.set(hash, { approvedAt: Date.now(), proposal });
       } else {
         // 2026-04-29 audit-3 fix (P0-3): invalidate any prior APPROVE on a
-        // REJECT/MODIFY for the same proposal hash. Pre-fix scenario: the
+        // REJECT for the same proposal hash. Pre-fix scenario: the
         // agent calls request_analyst_review twice in the same cycle (e.g.
         // re-asking after a fresh news fetch); first call APPROVEs and
         // stores the token, second call REJECTs but the OLD APPROVE token
@@ -1038,14 +1086,20 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         // explicitly invalidates any prior approval for that same hash.
         approvedProposals.delete(hash);
       }
+      // 2026-05-11 hardening: analyst_token is empty string for any
+      // non-APPROVE decision. A caller that ignores the `decision` field
+      // and passes this token to place_split_trade will fail the token
+      // validation gate — defense-in-depth against agent-side misreads
+      // (the 2026-05-11 incident class). Hash is still returned in
+      // proposal_hash for log correlation.
+      const isApproved = decision.decision === 'APPROVE';
       return JSON.stringify({
         decision: decision.decision,
         reason: decision.reason,
-        analyst_token: hash,
+        analyst_token: isApproved ? hash : '',
         proposal_hash: hash,
         trade_id: proposal.trade_id,
         confidence: decision.confidence,
-        modifications: decision.modifications,
         // 2026-05-07 — Codex follow-up: surface server-computed sizes so the
         // LLM can log them in its decision-cycle output. Any size_a/size_b
         // values the LLM supplied to this tool were ignored and replaced
@@ -1156,6 +1210,15 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // word (after trimming whitespace/underscores) is "range".
       const setupTypeNorm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_');
       const isRangeMode = /^range_/.test(setupTypeNorm);
+      // Phase 1 (2026-05-13, Task 9 follow-up): Displacement_Continuation
+      // uses the same half-size posture as Range_Sweep_Reversal (0.25%
+      // total risk). The match is exact — setupTypeNorm above already
+      // lowercases + collapses whitespace/underscores, so
+      // 'Displacement_Continuation', 'displacement continuation', and
+      // 'displacement_continuation' all normalise to
+      // 'displacement_continuation'.
+      const isDisplacementContinuation = setupTypeNorm === 'displacement_continuation';
+      const isHalfSize = isRangeMode || isDisplacementContinuation;
       const tier3Floor = tier3FloorFor(proposalForVerify.instrument);
       if (!Number.isFinite(score) || score < tier3Floor) {
         return JSON.stringify({
@@ -1172,21 +1235,23 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       }
       // Range-mode is structurally Tier 3 only — reject T1/T2 proposals
       // that try to use a Range_* setup_type.
-      if (isRangeMode && tier !== 3) {
+      // Displacement_Continuation (Phase 1) is also Tier 3 only at 0.25%.
+      if (isHalfSize && tier !== 3) {
         return JSON.stringify({
           error: 'RANGE_MODE_TIER_MISMATCH',
-          reason: `setup_type "${setupType}" is range-mode and Tier 3 only. Proposal has Tier ${tier}.`,
+          reason: `setup_type "${setupType}" is half-size (Tier 3 only in Phase 1). Proposal has Tier ${tier}.`,
         });
       }
-      const expectedRiskPct = isRangeMode ? 0.25
+      const expectedRiskPct = isHalfSize ? 0.25
         : expectedTier === 1 ? 1.5
         : expectedTier === 2 ? 1.0
         : 0.5;
       const riskPctCheck = validateRiskPct({ riskPct, expectedRiskPct });
       if (!riskPctCheck.ok) {
+        const sizingLabel = isRangeMode ? 'Range-mode' : isDisplacementContinuation ? 'Displacement-Continuation' : `Tier ${expectedTier}`;
         return JSON.stringify({
           error: 'RISK_PCT_TIER_MISMATCH',
-          reason: `${isRangeMode ? 'Range-mode' : `Tier ${expectedTier}`} requires risk ${expectedRiskPct}%. ${riskPctCheck.reason}.`,
+          reason: `${sizingLabel} requires risk ${expectedRiskPct}%. ${riskPctCheck.reason}.`,
         });
       }
 

@@ -79,40 +79,36 @@ describe('assignTier — post-2026-05-04 spread-class carve-out', () => {
     expect(assignTier(79, 'SILVER')).toBe(2);
   });
 
-  // Tight-spread carve-out — Phase E floor of 40 stays in force.
-  it('tight-spread score 40-59 → Tier 3', () => {
+  // Tight-spread carve-out — PR 1 (2026-05-12) lowered floor 40 → 30.
+  it('tight-spread score 30-59 → Tier 3', () => {
+    expect(assignTier(30, 'EURUSD')).toBe(3);
+    expect(assignTier(30, 'GBPUSD')).toBe(3);
+    expect(assignTier(30, 'USDJPY')).toBe(3);
+    expect(assignTier(30, 'AUDUSD')).toBe(3);
+    expect(assignTier(30, 'GOLD')).toBe(3);
     expect(assignTier(40, 'EURUSD')).toBe(3);
-    expect(assignTier(40, 'GBPUSD')).toBe(3);
-    expect(assignTier(40, 'USDJPY')).toBe(3);
-    expect(assignTier(40, 'AUDUSD')).toBe(3);
-    expect(assignTier(40, 'GOLD')).toBe(3);
     expect(assignTier(45, 'EURUSD')).toBe(3);
     expect(assignTier(59, 'EURUSD')).toBe(3);
   });
 
-  it('tight-spread score 39 → null', () => {
-    expect(assignTier(39, 'EURUSD')).toBeNull();
+  it('tight-spread score 29 → null', () => {
+    expect(assignTier(29, 'EURUSD')).toBeNull();
   });
 
-  // Medium-spread carve-out — floor reverts to 45 (pre-Phase-E behavior).
-  // This is the whole point of the 2026-05-04 carve-out: OIL_CRUDE 40-44
-  // dominated the failed Phase E backtest.
-  it('medium-spread score 40-44 → null (carve-out, was Tier 3 in Phase E)', () => {
-    expect(assignTier(40, 'OIL_CRUDE')).toBeNull();
-    expect(assignTier(42, 'OIL_CRUDE')).toBeNull();
-    expect(assignTier(44, 'OIL_CRUDE')).toBeNull();
-    expect(assignTier(40, 'SILVER')).toBeNull();
-    expect(assignTier(44, 'SILVER')).toBeNull();
-  });
-
-  it('medium-spread score 45-59 → Tier 3', () => {
+  // Medium-spread — PR 1 (2026-05-12) lowered floor 45 → 35.
+  it('medium-spread score 35-59 → Tier 3', () => {
+    expect(assignTier(35, 'OIL_CRUDE')).toBe(3);
+    expect(assignTier(40, 'OIL_CRUDE')).toBe(3);
+    expect(assignTier(44, 'OIL_CRUDE')).toBe(3);
+    expect(assignTier(35, 'SILVER')).toBe(3);
     expect(assignTier(45, 'OIL_CRUDE')).toBe(3);
     expect(assignTier(50, 'OIL_CRUDE')).toBe(3);
     expect(assignTier(59, 'SILVER')).toBe(3);
   });
 
-  it('medium-spread score 39 → null', () => {
-    expect(assignTier(39, 'OIL_CRUDE')).toBeNull();
+  it('medium-spread score 34 → null', () => {
+    expect(assignTier(34, 'OIL_CRUDE')).toBeNull();
+    expect(assignTier(34, 'SILVER')).toBeNull();
   });
 
   it('score 0 → null (any ticker)', () => {
@@ -121,14 +117,16 @@ describe('assignTier — post-2026-05-04 spread-class carve-out', () => {
   });
 
   it('case-insensitive ticker classification', () => {
-    expect(assignTier(40, 'eurusd')).toBe(3);
-    expect(assignTier(40, 'oil_crude')).toBeNull();
+    expect(assignTier(30, 'eurusd')).toBe(3);
+    expect(assignTier(35, 'oil_crude')).toBe(3);
+    expect(assignTier(29, 'eurusd')).toBeNull();
+    expect(assignTier(34, 'oil_crude')).toBeNull();
   });
 
   it('unknown ticker is treated as medium-spread (conservative)', () => {
-    // Defensive default: anything not in the tight-spread set keeps the 45 floor.
-    expect(assignTier(40, 'BTCUSD')).toBeNull();
-    expect(assignTier(45, 'BTCUSD')).toBe(3);
+    // Defensive default: anything not in the tight-spread set uses the 35 floor (PR 1: was 45).
+    expect(assignTier(34, 'BTCUSD')).toBeNull();
+    expect(assignTier(35, 'BTCUSD')).toBe(3);
   });
 });
 

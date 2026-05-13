@@ -1,0 +1,2630 @@
+[
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 9,
+    "nDecided": 7,
+    "wins": 4,
+    "losses": 3,
+    "open": 2,
+    "meanR": 0.2951104603085446,
+    "meanRDecided": 0.27571428571428575,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 6,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 1,
+    "meanR": 0.019613020735832116,
+    "meanRDecided": -0.07599999999999998,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 8,
+    "nDecided": 7,
+    "wins": 4,
+    "losses": 3,
+    "open": 1,
+    "meanR": 0.2697895022952386,
+    "meanRDecided": 0.27571428571428575,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 5,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 0,
+    "meanR": -0.07599999999999998,
+    "meanRDecided": -0.07599999999999998,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 8,
+    "nDecided": 7,
+    "wins": 4,
+    "losses": 3,
+    "open": 1,
+    "meanR": 0.2697895022952386,
+    "meanRDecided": 0.27571428571428575,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 5,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 0,
+    "meanR": -0.07599999999999998,
+    "meanRDecided": -0.07599999999999998,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.2,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 5,
+    "nDecided": 3,
+    "wins": 2,
+    "losses": 1,
+    "open": 2,
+    "meanR": 0.4071988285553803,
+    "meanRDecided": 0.4366666666666667,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.2,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 3,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 1,
+    "meanR": 0.26922604147166423,
+    "meanRDecided": 0.15500000000000003,
+    "perInstrument": {
+      "AUDUSD": 1,
+      "GOLD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.2,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 4,
+    "nDecided": 3,
+    "wins": 2,
+    "losses": 1,
+    "open": 1,
+    "meanR": 0.3845790045904772,
+    "meanRDecided": 0.4366666666666667,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.2,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 0,
+    "meanR": 0.15500000000000003,
+    "meanRDecided": 0.15500000000000003,
+    "perInstrument": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.2,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 4,
+    "nDecided": 3,
+    "wins": 2,
+    "losses": 1,
+    "open": 1,
+    "meanR": 0.3845790045904772,
+    "meanRDecided": 0.4366666666666667,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.2,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 0,
+    "meanR": 0.15500000000000003,
+    "meanRDecided": 0.15500000000000003,
+    "perInstrument": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.5,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.5,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.5,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.5,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.5,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.4,
+      "Y": 1.5,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 9,
+    "nDecided": 7,
+    "wins": 4,
+    "losses": 3,
+    "open": 2,
+    "meanR": 0.2951104603085446,
+    "meanRDecided": 0.27571428571428575,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 6,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 1,
+    "meanR": 0.019613020735832116,
+    "meanRDecided": -0.07599999999999998,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 8,
+    "nDecided": 7,
+    "wins": 4,
+    "losses": 3,
+    "open": 1,
+    "meanR": 0.2697895022952386,
+    "meanRDecided": 0.27571428571428575,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 5,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 0,
+    "meanR": -0.07599999999999998,
+    "meanRDecided": -0.07599999999999998,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 8,
+    "nDecided": 7,
+    "wins": 4,
+    "losses": 3,
+    "open": 1,
+    "meanR": 0.2697895022952386,
+    "meanRDecided": 0.27571428571428575,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 2,
+      "AUDUSD": 2,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 5,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 0,
+    "meanR": -0.07599999999999998,
+    "meanRDecided": -0.07599999999999998,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.2,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 5,
+    "nDecided": 3,
+    "wins": 2,
+    "losses": 1,
+    "open": 2,
+    "meanR": 0.4071988285553803,
+    "meanRDecided": 0.4366666666666667,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.2,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 3,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 1,
+    "meanR": 0.26922604147166423,
+    "meanRDecided": 0.15500000000000003,
+    "perInstrument": {
+      "AUDUSD": 1,
+      "GOLD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.2,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 4,
+    "nDecided": 3,
+    "wins": 2,
+    "losses": 1,
+    "open": 1,
+    "meanR": 0.3845790045904772,
+    "meanRDecided": 0.4366666666666667,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.2,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 0,
+    "meanR": 0.15500000000000003,
+    "meanRDecided": 0.15500000000000003,
+    "perInstrument": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.2,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 4,
+    "nDecided": 3,
+    "wins": 2,
+    "losses": 1,
+    "open": 1,
+    "meanR": 0.3845790045904772,
+    "meanRDecided": 0.4366666666666667,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.2,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GOLD",
+        "timestamp": "2026-04-30T09:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 0,
+    "meanR": 0.15500000000000003,
+    "meanRDecided": 0.15500000000000003,
+    "perInstrument": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1,
+      "GOLD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.5,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.5,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.5,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.5,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.5,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.5,
+      "Y": 1.5,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 7,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 2,
+    "meanR": 0.005142020396700213,
+    "meanRDecided": -0.13799999999999998,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 1,
+      "AUDUSD": 2,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 1,
+      "AUDUSD": 2
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 4,
+    "nDecided": 3,
+    "wins": 0,
+    "losses": 3,
+    "open": 1,
+    "meanR": -0.6255804688962519,
+    "meanRDecided": -1,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 1,
+      "AUDUSD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 1,
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      }
+    ],
+    "nTotal": 6,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 1,
+    "meanR": -0.07694733027301519,
+    "meanRDecided": -0.13799999999999998,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 1,
+      "AUDUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 1,
+      "AUDUSD": 2
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      }
+    ],
+    "nTotal": 3,
+    "nDecided": 3,
+    "wins": 0,
+    "losses": 3,
+    "open": 0,
+    "meanR": -1,
+    "meanRDecided": -1,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 1,
+      "AUDUSD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 1,
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-04-28T15:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp2_hit",
+        "r": 1.31
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      }
+    ],
+    "nTotal": 6,
+    "nDecided": 5,
+    "wins": 2,
+    "losses": 3,
+    "open": 1,
+    "meanR": -0.07694733027301519,
+    "meanRDecided": -0.13799999999999998,
+    "perInstrument": {
+      "EURUSD": 3,
+      "GBPUSD": 1,
+      "AUDUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 2,
+      "GBPUSD": 1,
+      "AUDUSD": 2
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-13T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "GBPUSD",
+        "timestamp": "2026-05-11T15:45:00.000Z",
+        "bias": "bullish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      }
+    ],
+    "nTotal": 3,
+    "nDecided": 3,
+    "wins": 0,
+    "losses": 3,
+    "open": 0,
+    "meanR": -1,
+    "meanRDecided": -1,
+    "perInstrument": {
+      "EURUSD": 1,
+      "GBPUSD": 1,
+      "AUDUSD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "GBPUSD": 1,
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.2,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 4,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 2,
+    "meanR": 0.18149853569422536,
+    "meanRDecided": 0,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.2,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      },
+      {
+        "ticker": "SILVER",
+        "timestamp": "2026-04-16T08:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.4976781244149926
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 0,
+    "losses": 1,
+    "open": 1,
+    "meanR": -0.2511609377925037,
+    "meanRDecided": -1,
+    "perInstrument": {
+      "AUDUSD": 1,
+      "SILVER": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.2,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      }
+    ],
+    "nTotal": 3,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 1,
+    "meanR": 0.07610533945396962,
+    "meanRDecided": 0,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.2,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      }
+    ],
+    "nTotal": 1,
+    "nDecided": 1,
+    "wins": 0,
+    "losses": 1,
+    "open": 0,
+    "meanR": -1,
+    "meanRDecided": -1,
+    "perInstrument": {
+      "AUDUSD": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.2,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      },
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      }
+    ],
+    "nTotal": 3,
+    "nDecided": 2,
+    "wins": 1,
+    "losses": 1,
+    "open": 1,
+    "meanR": 0.07610533945396962,
+    "meanRDecided": 0,
+    "perInstrument": {
+      "EURUSD": 2,
+      "AUDUSD": 1
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1,
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.2,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [
+      {
+        "ticker": "AUDUSD",
+        "timestamp": "2026-05-06T13:15:00.000Z",
+        "bias": "bearish",
+        "outcome": "sl_hit",
+        "r": -1
+      }
+    ],
+    "nTotal": 1,
+    "nDecided": 1,
+    "wins": 0,
+    "losses": 1,
+    "open": 0,
+    "meanR": -1,
+    "meanRDecided": -1,
+    "perInstrument": {
+      "AUDUSD": 1
+    },
+    "perInstrumentDecided": {
+      "AUDUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.5,
+      "Z": 0.6,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.5,
+      "Z": 0.6,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.5,
+      "Z": 0.7,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.5,
+      "Z": 0.7,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.5,
+      "Z": 0.75,
+      "n": 2
+    },
+    "events": [
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-04-21T09:00:00.000Z",
+        "bias": "bearish",
+        "outcome": "open",
+        "r": 0.22831601836190885
+      },
+      {
+        "ticker": "EURUSD",
+        "timestamp": "2026-05-05T14:15:00.000Z",
+        "bias": "bullish",
+        "outcome": "tp1_hit",
+        "r": 1
+      }
+    ],
+    "nTotal": 2,
+    "nDecided": 1,
+    "wins": 1,
+    "losses": 0,
+    "open": 1,
+    "meanR": 0.6141580091809544,
+    "meanRDecided": 1,
+    "perInstrument": {
+      "EURUSD": 2
+    },
+    "perInstrumentDecided": {
+      "EURUSD": 1
+    }
+  },
+  {
+    "params": {
+      "X": 0.6,
+      "Y": 1.5,
+      "Z": 0.75,
+      "n": 3
+    },
+    "events": [],
+    "nTotal": 0,
+    "nDecided": 0,
+    "wins": 0,
+    "losses": 0,
+    "open": 0,
+    "meanR": 0,
+    "meanRDecided": 0,
+    "perInstrument": {},
+    "perInstrumentDecided": {}
+  }
+]

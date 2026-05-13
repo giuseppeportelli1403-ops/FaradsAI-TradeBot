@@ -80,6 +80,16 @@ describe('classifyLine — execute categories', () => {
     expect(classifyLine('ICT Trading Agent decision cycle complete.')).toBe('ict_cycle_complete');
     expect(classifyLine('[Scheduler] ICT Trading Agent complete.')).toBe('ict_cycle_complete');
   });
+
+  it('classifies a Displacement_Continuation place_split_trade tool call as displacement_fired', () => {
+    const line = '[ICT Agent] Calling tool: place_split_trade {"setup_type":"Displacement_Continuation","instrument":"EURUSD"}';
+    expect(classifyLine(line)).toBe('displacement_fired');
+  });
+
+  it('does NOT classify Range_Sweep_Reversal as displacement_fired', () => {
+    const line = '[ICT Agent] Calling tool: place_split_trade {"setup_type":"Range_Sweep_Reversal"}';
+    expect(classifyLine(line)).not.toBe('displacement_fired');
+  });
 });
 
 describe('classifyLine — no match', () => {
@@ -293,6 +303,7 @@ describe('renderMarkdown', () => {
         'outside':     { cycles: 414, executed: 0, skipped: 414 },
       },
       executedTrades: [],
+      dcFirings: 0,
     };
     const md = renderMarkdown(report, '2026-04-24T00:05:00Z');
 
@@ -326,6 +337,7 @@ describe('renderMarkdown', () => {
         'outside':     { cycles: 0, executed: 0, skipped: 0 },
       },
       executedTrades: [],
+      dcFirings: 0,
     };
     const md = renderMarkdown(report, '2026-04-24T00:05:00Z');
     expect(md).toContain('Execute rate: n/a'); // no cycles → n/a rather than NaN

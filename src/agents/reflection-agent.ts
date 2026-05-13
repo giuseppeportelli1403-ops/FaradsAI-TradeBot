@@ -44,7 +44,7 @@ const submitLessonTool = {
       news_category: { type: 'string', description: 'A / B / C / none' },
       news_description: { type: 'string' },
       composite_score: { type: 'number' },
-      analyst_decision: { type: 'string', description: 'APPROVE / MODIFY — what the analyst returned.' },
+      analyst_decision: { type: 'string', description: 'APPROVE / REJECT — what the analyst returned. Historical rows may contain other legacy values; treat any non-APPROVE legacy value as REJECT-equivalent for lesson extraction.' },
       position_a_outcome: { type: 'string', description: 'e.g. "TP1 hit", "SL hit", "BE exit"' },
       position_b_outcome: { type: 'string' },
       pnl_a_r: { type: 'number', description: 'Leg A P&L in R units' },

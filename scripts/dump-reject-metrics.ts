@@ -24,7 +24,8 @@ export type ExecuteCategory =
   | 'place_order_executed'
   | 'log_trade_attempted'
   | 'log_trade_failed'
-  | 'ict_cycle_complete';
+  | 'ict_cycle_complete'
+  | 'displacement_fired'; // NEW — Phase 1 DC monitoring
 
 export type Category = SkipCategory | ExecuteCategory;
 
@@ -48,6 +49,8 @@ const PATTERNS: Array<{ cat: Category; re: RegExp }> = [
   { cat: 'log_trade_failed',     re: /\[ICT Agent\] Tool log_trade failed/ },
   { cat: 'log_trade_attempted',  re: /\[ICT Agent\] Calling tool: log_trade/ },
   { cat: 'ict_cycle_complete',   re: /ICT Trading Agent[^.]*complete|\[Scheduler\][^I]*ICT Trading Agent complete/ },
+  // Displacement Continuation firing — matches setup_type:"Displacement_Continuation" in place_split_trade tool calls
+  { cat: 'displacement_fired',   re: /setup_type['"\s:=]+['"](Displacement_Continuation)['"]/i },
 ];
 
 /**
@@ -174,6 +177,7 @@ export interface MetricsReport {
   skipsByInstrumentAndCategory: Partial<Record<Instrument, Partial<SkipCounts>>>;
   cyclesByKillZone: Record<KillZone, KillZoneStats>;
   executedTrades: ExecutedTrade[];
+  dcFirings: number;          // Phase 1 — count of Displacement_Continuation firings
 }
 
 const SKIP_CATS: SkipCategory[] = [
@@ -218,6 +222,7 @@ export function aggregateLog(logLines: string[], targetDateUtc: string): Metrics
     skipsByInstrumentAndCategory: {},
     cyclesByKillZone: emptyKillZoneStats(),
     executedTrades: [],
+    dcFirings: 0,
   };
 
   // Filter once: only lines starting with the target date.
@@ -253,6 +258,9 @@ export function aggregateLog(logLines: string[], targetDateUtc: string): Metrics
         break;
       case 'log_trade_failed':
         report.logTradeFailed += 1;
+        break;
+      case 'displacement_fired':
+        report.dcFirings += 1;
         break;
       default: {
         // It's a skip category.
@@ -338,6 +346,12 @@ ${kzBody}
 
 ## Executed trades (max 20)
 ${execList}
+
+## Displacement Continuation (Phase 1)
+
+- Firings today: **${report.dcFirings}**
+
+_Outcome tracking (WR / mean R) reads from the trades DB; see daily DC dashboard in measure-loosening-impact (Task 17)._
 `;
 }
 
