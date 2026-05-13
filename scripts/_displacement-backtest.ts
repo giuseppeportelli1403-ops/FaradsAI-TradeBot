@@ -2,7 +2,7 @@
 import 'dotenv/config';
 import { writeFileSync } from 'node:fs';
 import process from 'node:process';
-import { CapitalClient } from '../src/mcp-server/capital-client.js';
+import YahooFinance from 'yahoo-finance2';
 import type { Candle } from '../src/types.js';
 
 const SUPPORTED_TICKERS = [
@@ -17,6 +17,42 @@ const TYPICAL_SPREAD: Record<Ticker, number> = {
 };
 
 const RATE_LIMIT_MS = 250;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Yahoo Finance symbol mapping
+// FX pairs use the =X suffix (spot FX via Yahoo).
+// Commodities use CME continuous-contract front-month futures (=F suffix):
+//   GC=F (Gold), SI=F (Silver), CL=F (WTI Crude Oil).
+// Note: futures prices differ slightly from Capital.com CFD prices but the
+// OHLC structure and relative moves are faithful for ICT bias + DC detection.
+// Spread values in TYPICAL_SPREAD stay in Capital.com CFD units.
+// ─────────────────────────────────────────────────────────────────────────────
+const YAHOO_SYMBOL: Record<Ticker, string> = {
+  EURUSD:    'EURUSD=X',
+  GBPUSD:    'GBPUSD=X',
+  AUDUSD:    'AUDUSD=X',
+  USDJPY:    'USDJPY=X',
+  GOLD:      'GC=F',
+  SILVER:    'SI=F',
+  OIL_CRUDE: 'CL=F',
+};
+
+// Singleton YahooFinance instance — no auth needed.
+// Custom logger silences the Node 20 unsupported-environment warning
+// (same pattern as market-data.ts, confirmed working on Node 20.20.2).
+const yahooFinance = new YahooFinance({
+  logger: {
+    info:  (...args: unknown[]) => console.info(...args),
+    warn:  (...args: unknown[]) => {
+      const first = args[0];
+      if (typeof first === 'string' && first.includes('[yahoo-finance2] Unsupported environment')) return;
+      console.warn(...args);
+    },
+    error: (...args: unknown[]) => console.error(...args),
+    debug: (...args: unknown[]) => console.debug(...args),
+    dir:   (...args: unknown[]) => console.dir(...args),
+  },
+});
 
 function parseArgs(argv: string[]) {
   const days = Number(argv.find((_, i) => argv[i - 1] === '--days') ?? 30);
@@ -82,31 +118,48 @@ async function main() {
     `Displacement Continuation backtest -- days=${days}, horizon=${horizon}x15M, combos=${PARAM_COMBOS.length}`,
   );
 
-  const cap = new CapitalClient({
-    apiKey: process.env.CAPITAL_API_KEY!,
-    identifier: process.env.CAPITAL_IDENTIFIER!,
-    password: process.env.CAPITAL_PASSWORD!,
-    baseURL: process.env.CAPITAL_BASE_URL ?? 'https://demo-api-capital.backend-capital.com',
-  });
-
   const now = new Date();
-  const from = new Date(now.getTime() - days * 86400000)
-    .toISOString()
-    .replace(/\.\d{3}Z$/, "");
-  const to = now.toISOString().replace(/\.\d{3}Z$/, "");
-  console.log(`  window: ${from} to ${to}`);
+  const period1 = new Date(now.getTime() - days * 86400000);
+  const period2 = now;
+  console.log(`  window: ${period1.toISOString()} to ${period2.toISOString()}`);
+
+  // Map Yahoo chart quotes to the Candle interface.
+  // Yahoo returns date as a Date object — convert to ISO string for datetime.
+  // Quotes with null OHLC (Yahoo emits nulls for illiquid/extended-hours bars) are dropped.
+  function mapYahooQuotes(quotes: Array<{
+    date: Date;
+    open: number | null;
+    high: number | null;
+    low: number | null;
+    close: number | null;
+    volume: number | null;
+  }>): Candle[] {
+    return quotes
+      .filter(q => q.open != null && q.high != null && q.low != null && q.close != null)
+      .map(q => ({
+        datetime: (q.date as Date).toISOString(),
+        open:     q.open   as number,
+        high:     q.high   as number,
+        low:      q.low    as number,
+        close:    q.close  as number,
+        volume:   q.volume ?? 0,
+      }));
+  }
 
   const tickerData: Record<string, { c15: Candle[]; c1h: Candle[] }> = {};
   for (const ticker of SUPPORTED_TICKERS) {
+    const ySym = YAHOO_SYMBOL[ticker as Ticker];
     try {
-      const c15 = await cap.getCandlesAsCandles(ticker as any, '15m', 3000, from, to);
+      const raw15 = await yahooFinance.chart(ySym, { period1, period2, interval: '15m' }, { validateResult: false });
       await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
-      const c1h = await cap.getCandlesAsCandles(ticker as any, '1h', 1000, from, to);
+      const raw1h  = await yahooFinance.chart(ySym, { period1, period2, interval: '1h'  }, { validateResult: false });
       await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
-      tickerData[ticker] = { c15: c15 as Candle[], c1h: c1h as Candle[] };
-      console.log(`  ${ticker}: 15m=${c15.length} 1h=${c1h.length}`);
+      const c15 = mapYahooQuotes((raw15.quotes ?? []) as any[]);
+      const c1h = mapYahooQuotes((raw1h.quotes  ?? []) as any[]);
+      tickerData[ticker] = { c15, c1h };
+      console.log(`  ${ticker} (${ySym}): 15m=${c15.length} 1h=${c1h.length}`);
     } catch (e: any) {
-      console.warn(`  ${ticker}: fetch error -- ${String(e?.message ?? e).slice(0, 120)}`);
+      console.warn(`  ${ticker} (${ySym}): fetch error -- ${String(e?.message ?? e).slice(0, 120)}`);
     }
   }
 
