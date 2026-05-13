@@ -3,12 +3,13 @@
 // Audit whether the ICT agent's "Trigger confirmed: YES/NO" decisions match
 // what the actual 15M/1H candle math would say. Investigates whether the LLM
 // (a) misses valid triggers (false negatives), or (b) hallucinates them
-// (false positives), by reproducing all 5 quantitative triggers from
+// (false positives), by reproducing all 6 quantitative triggers from
 // `prompts/ict-agent.md:178-190` on the candles the LLM actually saw.
 //
 // === v2 changes vs v1 ===
-//   - All 5 triggers evaluated: OB Retest, FVG Fill, Liquidity Sweep,
-//     Breakout Retest (trend-mode), Range Sweep Reversal (range-mode).
+//   - All 6 triggers evaluated: OB Retest, FVG Fill, Liquidity Sweep,
+//     Breakout Retest (trend-mode), Range Sweep Reversal (range-mode),
+//     Displacement Continuation (trend-mode, lowest precedence).
 //   - Data source: Capital.com mid candles (apples-to-apples with what the
 //     LLM bot saw at decision time), NOT yahoo-finance2.
 //   - Parser fixes: rejects "N/A"/"None" tickers, line-anchored
@@ -49,6 +50,7 @@ import process from 'node:process';
 
 import { CapitalClient } from '../src/mcp-server/capital-client.js';
 import type { Candle } from '../src/types.js';
+import { checkDisplacementContinuation, type DcParams } from './_displacement-backtest.js';
 
 // ==================== CONFIG ====================
 
@@ -78,6 +80,9 @@ const TYPICAL_SPREAD: Record<Ticker, number> = {
 
 const RATE_LIMIT_MS = 250;
 
+// DC_PARAMS: winning Phase 0 combo (commit 4718393, X=0.4 Y=1.0 Z=0.6 n=2).
+const DC_PARAMS: DcParams = { X: 0.4, Y: 1.0, Z: 0.6, n: 2 };
+
 // ==================== TYPES ====================
 
 type Bias = 'bullish' | 'bearish' | 'neutral' | 'unknown';
@@ -87,7 +92,8 @@ type TriggerName =
   | 'FVG_fill'
   | 'Liquidity_Sweep'
   | 'Breakout_Retest'
-  | 'Range_Sweep_Reversal';
+  | 'Range_Sweep_Reversal'
+  | 'Displacement_Continuation';
 
 interface DecisionCycle {
   timestamp: Date;
@@ -805,6 +811,7 @@ async function evaluateCycle(
     Liquidity_Sweep: naResult('-'),
     Breakout_Retest: naResult('-'),
     Range_Sweep_Reversal: naResult('-'),
+    Displacement_Continuation: naResult('-'),
   };
 
   if (!(SUPPORTED_TICKERS as readonly string[]).includes(cycle.ticker)) {
@@ -851,12 +858,24 @@ async function evaluateCycle(
     results.Liquidity_Sweep = checkLiquiditySweep(m15, cycle.bias, spread);
     results.Breakout_Retest = checkBreakoutRetest(m15, cycle.bias);
     results.Range_Sweep_Reversal = naResult('n/a-bias');
+    // Displacement Continuation — fires only when triggers 1-4 reject (precedence).
+    const anyExistingFired =
+      results.OB_retest.qualifies === true ||
+      results.FVG_fill.qualifies === true ||
+      results.Liquidity_Sweep.qualifies === true ||
+      results.Breakout_Retest.qualifies === true;
+    const dcRaw = anyExistingFired
+      ? { qualifies: false as const, reason: 'precedence: another trigger fired' }
+      : checkDisplacementContinuation(m15, cycle.bias, DC_PARAMS, spread);
+    // Adapt DetectorResult (qualifies: boolean|'indeterminate') to TriggerResult (adds null).
+    results.Displacement_Continuation = { qualifies: dcRaw.qualifies, reason: dcRaw.reason };
   } else if (cycle.bias === 'neutral') {
     results.OB_retest = naResult('n/a-bias');
     results.FVG_fill = naResult('n/a-bias');
     results.Liquidity_Sweep = naResult('n/a-bias');
     results.Breakout_Retest = naResult('n/a-bias');
     results.Range_Sweep_Reversal = checkRangeSweepReversal(m15, h1, spread);
+    results.Displacement_Continuation = naResult('n/a-bias');
   } else {
     // unknown bias — skip everything.
   }
@@ -1073,6 +1092,12 @@ async function runDebugCycle(
     } else {
       console.log(`    └─ identified OB: NONE in 10-candle displacement lookback`);
     }
+    // DC diagnostic (with precedence).
+    const anyPriorFired = obR.qualifies === true || fvgR.qualifies === true || lsR.qualifies === true || brR.qualifies === true;
+    const dcDebugR = anyPriorFired
+      ? { qualifies: false as const, reason: 'precedence: another trigger fired' }
+      : checkDisplacementContinuation(m15, b, DC_PARAMS, spread);
+    console.log(`    Displacement_Continuation: qualifies=${String(dcDebugR.qualifies)} | ${dcDebugR.reason}`);
   } else if (target.bias === 'neutral') {
     const rsR = checkRangeSweepReversal(m15, h1, spread);
     console.log(`  bias = neutral (range-mode trigger):`);
@@ -1136,10 +1161,10 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log('\nFaradbot trigger-decision audit (v2 — all 5 triggers, Capital data)');
+  console.log('\nFaradbot trigger-decision audit (v3 — all 6 triggers, Capital data)');
   console.log(`  log:      ${logPath}`);
   console.log(`  window:   last ${days} days`);
-  console.log(`  triggers: OB_retest, FVG_fill, Liquidity_Sweep, Breakout_Retest (trend); Range_Sweep_Reversal (neutral)`);
+  console.log(`  triggers: OB_retest, FVG_fill, Liquidity_Sweep, Breakout_Retest (trend); Range_Sweep_Reversal (neutral); Displacement_Continuation (trend, lowest precedence)`);
   console.log(`  source:   Capital.com mid candles\n`);
 
   let rawContent: string;
@@ -1186,6 +1211,8 @@ async function main(): Promise<void> {
     pad('BrkRet', 9) +
     ' | ' +
     pad('RngSwp', 9) +
+    ' | ' +
+    pad('DC', 9) +
     ' | flag';
   console.log(HDR);
   console.log('-'.repeat(HDR.length));
@@ -1207,6 +1234,7 @@ async function main(): Promise<void> {
           Liquidity_Sweep: naResult('-'),
           Breakout_Retest: naResult('-'),
           Range_Sweep_Reversal: naResult('-'),
+          Displacement_Continuation: naResult('-'),
         },
         fetchError: msg.slice(0, 80),
       };
@@ -1221,14 +1249,14 @@ async function main(): Promise<void> {
     if (ev.fetchError) {
       fetchErrors++;
       console.log(
-        `${ts} | ${tk} | ${bi} | ${llm} | ${pad('FETCH_ERROR', 9)} | ${pad('-', 9)} | ${pad('-', 9)} | ${pad('-', 9)} | ${pad('-', 9)} | ${ev.fetchError}`,
+        `${ts} | ${tk} | ${bi} | ${llm} | ${pad('FETCH_ERROR', 9)} | ${pad('-', 9)} | ${pad('-', 9)} | ${pad('-', 9)} | ${pad('-', 9)} | ${pad('-', 9)} | ${ev.fetchError}`,
       );
       continue;
     }
 
     const flag = determineFlag(cycle, ev.results);
     console.log(
-      `${ts} | ${tk} | ${bi} | ${llm} | ${pad(shortResult(ev.results.OB_retest), 9)} | ${pad(shortResult(ev.results.FVG_fill), 9)} | ${pad(shortResult(ev.results.Liquidity_Sweep), 9)} | ${pad(shortResult(ev.results.Breakout_Retest), 9)} | ${pad(shortResult(ev.results.Range_Sweep_Reversal), 9)} | ${flag}`,
+      `${ts} | ${tk} | ${bi} | ${llm} | ${pad(shortResult(ev.results.OB_retest), 9)} | ${pad(shortResult(ev.results.FVG_fill), 9)} | ${pad(shortResult(ev.results.Liquidity_Sweep), 9)} | ${pad(shortResult(ev.results.Breakout_Retest), 9)} | ${pad(shortResult(ev.results.Range_Sweep_Reversal), 9)} | ${pad(shortResult(ev.results.Displacement_Continuation), 9)} | ${flag}`,
     );
 
     await new Promise((r) => setTimeout(r, RATE_LIMIT_MS));
@@ -1262,6 +1290,7 @@ async function main(): Promise<void> {
     'Liquidity_Sweep',
     'Breakout_Retest',
     'Range_Sweep_Reversal',
+    'Displacement_Continuation',
   ];
 
   console.log('\nPer-trigger confusion matrix (LLM verdict vs. math result):');
@@ -1371,6 +1400,7 @@ async function main(): Promise<void> {
   console.log('  - Spread approx (TYPICAL_SPREAD) may bias Liq_Sweep / Range_Sweep results in either direction.');
   console.log('  - OB_retest INDETERMINATE = OB candidate not identifiable; excluded from agreement counts.');
   console.log('  - Breakout_Retest now uses fractal swings (2-each-side) for level identification.\n');
+  console.log('  - Displacement_Continuation has lowest precedence: fires only when OB/FVG/Liq_Sweep/Breakout reject.\n');
 }
 
 // 2026-05-12 (PR 1 prereq T3): only run main() when this file is the entry

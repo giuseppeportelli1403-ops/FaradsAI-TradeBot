@@ -323,7 +323,14 @@ async function main() {
   console.log(`\nWINNER: ${JSON.stringify(winner.params)} — meanR=${winner.meanR.toFixed(3)}`);
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// Only run main() when this file is the direct entry point.
+// Allows audit-trigger-decisions.ts to import checkDisplacementContinuation
+// without triggering the backtest CLI flow.
+import { fileURLToPath } from 'node:url';
+const __dcBacktestFile = fileURLToPath(import.meta.url);
+if (process.argv[1] && process.argv[1] === __dcBacktestFile) {
+  main().catch(e => { console.error(e); process.exit(1); });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Task 7: JSON + Markdown output writers with ship-criteria gate
