@@ -71,10 +71,21 @@ After running the 6 checks, your decision is determined by the table below. The 
   - Tier MUST be 3. If the proposal claims Tier 1 or 2 with a `Range_*`
     setup_type, REJECT — the executor will refuse with `RANGE_MODE_TIER_MISMATCH`
     anyway and a rubber-stamp on a doomed proposal wastes the cycle.
+- **Displacement_Continuation (setup_type === `Displacement_Continuation`):**
+  - tier_risk_pct = **0.25%** (half-size, Phase 1 conservative posture — added
+    2026-05-13). Phase 2 will graduate to Tier-aware sizing (0.5% / 1.0% / 1.5%)
+    after live validation confirms edge. Until then treat identically to
+    `Range_Sweep_Reversal` for sizing purposes: **0.25% regardless of tier**.
+  - Tier MUST be 3 in Phase 1. If the proposal claims Tier 1 or 2 with
+    setup_type `Displacement_Continuation`, REJECT — the executor enforces
+    `DISPLACEMENT_CONTINUATION_TIER_MISMATCH` and approval wastes the cycle.
 - **Half-size posture for opposing Cat-A news:**
-  - **Trend-mode** (setup_type does NOT start with `Range_`): if opposing
-    Cat-A news is present AND not stale-bearish, expected size is
-    `0.5 ×` the formula above.
+  - **Trend-mode** (setup_type does NOT start with `Range_`, including
+    `Displacement_Continuation`): if opposing Cat-A news is present AND
+    not stale-bearish, expected size is `0.5 ×` the formula above.
+    Note: for `Displacement_Continuation` the base tier_risk_pct is already
+    0.25% (Phase 1 half-size), so a further 0.5× reduction gives 0.125% —
+    REJECT instead if the resulting size would be impractically small (< 1 unit).
   - **Range-mode** (setup_type starts with `Range_`): the half-size rule
     does NOT apply. Opposing Cat-A news INVALIDATES a range setup — the
     reversal premise breaks under news-driven continuation pressure. If
