@@ -7,14 +7,14 @@
 // merges MarketAux articles + RSS articles, deduping by URL via the
 // canonicalizeUrl helper.
 //
-// Tier semantics:
-//   - Tier 1 (wires + regulators) → highest weight; a single Tier-1 article
-//     can qualify as Cat A on its own.
-//   - Tier 2 (FX/commodity specialists) → high weight; ≥2 Tier-2 sources
-//     confirming the same event qualifies as Cat A; one Tier-2 alone is
-//     Cat B at best.
-//   - Tier 3 (analysis blogs) → supporting context only; never qualifies
-//     as Cat A on its own.
+// Tier semantics (POST-2026-05-13 NEWS-PRUNING):
+//   - Tier 1 is currently the only active tier — every entry in RSS_FEEDS
+//     has tier:1 after the prune. A single Tier-1 article can qualify as
+//     Cat A on its own.
+//   - Tier 2 / Tier 3 branches below are intentionally preserved (per
+//     specs/001-news-pruning/ FR-7) so future re-introduction of lower-
+//     tier feeds doesn't require a migration. They are presently dead
+//     paths — every concrete article has tier:1.
 //
 // (The tier-aware classifier upgrade — wiring this weighting into the
 // impact classifier — is left for a follow-up commit. This commit ships
@@ -207,9 +207,10 @@ export function getRssNewsForInstrument(
  * classifier handles Cat A/B/C downstream from title+snippet.
  */
 export function rssArticleToNewsItem(article: RssArticle): NewsItem {
-  // Cat A only when impact-keyword fires (single Tier-1 source can qualify;
-  // Tier 2/3 require keyword match too — full tier-aware corroboration is
-  // a follow-up). Sentiment defaulted to 0; impact-classifier doesn't need it.
+  // Cat A only when impact-keyword fires. Post-2026-05-13 pruning every
+  // article has tier:1; the tier-2/3 fallback at :221 is preserved per
+  // FR-7 but currently unreachable. Sentiment defaulted to 0; the
+  // impact-classifier doesn't need it.
   const haystack = `${article.title}\n\n${article.contentSnippet}`;
   let category: 'A' | 'B' | 'C';
   if (matchesHighImpactKeyword(article.title, article.contentSnippet)) {
@@ -218,6 +219,7 @@ export function rssArticleToNewsItem(article: RssArticle): NewsItem {
     // Without sentiment scores, default RSS articles to Cat C unless the
     // keyword fires. Tier-2 specialist articles get Cat B floor since they
     // come from FX/commodity-targeted feeds.
+    // FR-7: tier-2/3 fallback preserved; post-2026-05-13 every article is tier:1 so this consistently returns 'B'. The :C branch is the dead path.
     category = article.tier <= 2 ? 'B' : 'C';
   }
   return {
@@ -225,6 +227,7 @@ export function rssArticleToNewsItem(article: RssArticle): NewsItem {
     source: article.feedName,
     published_at: article.pubDate,
     sentiment_score: 0,
+    // FR-7: tier-aware branch preserved; post-2026-05-13 every article is tier:1 so this evaluates to 1.0 in practice.
     relevance_score: article.tier === 1 ? 1.0 : article.tier === 2 ? 0.6 : 0.3,
     category,
     summary: article.contentSnippet || haystack.slice(0, 500),

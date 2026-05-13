@@ -492,36 +492,6 @@ export async function computeCorrelation(
   });
 }
 
-// ==================== FINNHUB ====================
-// Covers: Economic calendar
-
-const FINNHUB_BASE = 'https://finnhub.io/api/v1';
-
-export async function fetchEconomicCalendar(daysAhead: number): Promise<EconomicEvent[]> {
-  return withFallback(async () => {
-    const apiKey = process.env.FINNHUB_API_KEY;
-    if (!apiKey) { console.error('[Market Data] FINNHUB_API_KEY not set'); return []; }
-
-    const from = new Date().toISOString().split('T')[0];
-    const to = new Date(Date.now() + daysAhead * 86400000).toISOString().split('T')[0];
-
-    const { data } = await axios.get(`${FINNHUB_BASE}/calendar/economic`, {
-      params: { from, to, token: apiKey },
-    });
-
-    return (data.economicCalendar || []).map((e: Record<string, unknown>) => ({
-      date: e.date as string,
-      time: e.time as string || '',
-      event: e.event as string,
-      country: e.country as string,
-      impact: e.impact as 'high' | 'medium' | 'low',
-      actual: e.actual as string | null,
-      estimate: e.estimate as string | null,
-      previous: e.prev as string | null,
-      affected_instruments: [] as string[],
-    })) as EconomicEvent[];
-  }, [] as EconomicEvent[]);
-}
 
 // ==================== YAHOO FINANCE (SECTOR STRENGTH) ====================
 // FMP's /sector-performance was deprecated 2025-08-31. We now compute sector

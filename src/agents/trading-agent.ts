@@ -794,7 +794,7 @@ const MCP_TOOLS: Anthropic.Messages.Tool[] = [
 // Routes tool calls from Claude to the actual MCP tool implementations
 
 import {
-  fetchCandles, fetchNewsContext as fetchNewsRaw, fetchEconomicCalendar,
+  fetchCandles, fetchNewsContext as fetchNewsRaw,
 } from '../mcp-server/market-data.js';
 import { getRankedInstruments, INSTRUMENT_UNIVERSE } from '../scanner/index.js';
 import {
@@ -846,8 +846,9 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     case 'get_news_context':
       return JSON.stringify(await fetchNewsRaw(input.instrument as string));
     case 'get_economic_calendar': {
-      const daysAhead = Number(input.days_ahead) > 0 ? Number(input.days_ahead) : 1;
-      return JSON.stringify(await fetchEconomicCalendar(daysAhead));
+      // 2026-05-13: tool now serves FF calendar only (Finnhub removed).
+      // daysAhead is ignored — FF returns the current week + next week.
+      return JSON.stringify(await fetchForexFactoryCalendar());
     }
     case 'get_lessons': {
       const filters = {
@@ -1484,11 +1485,17 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         });
       }
       try {
-        const [finnhubCalendar, ffCalendar] = await Promise.all([
-          fetchEconomicCalendar(1),
-          fetchForexFactoryCalendar(),
-        ]);
-        const calendar = [...finnhubCalendar, ...ffCalendar];
+        // 2026-05-13 news-pruning: Finnhub branch removed. FF is now the
+        // sole calendar source for the veto. Pre-removal, the Promise.all
+        // union with Finnhub provided one layer of defense-in-depth when
+        // fetchForexFactoryWeek (:170-172, :175) silently returns [] on
+        // network/HTTP failure. With Finnhub gone, an FF outage that
+        // returns silent [] would let trades through that should have
+        // been vetoed. Hardening this silent-[] path in FF itself is
+        // tracked as follow-up work, not in this PR (FR-4 said "no new
+        // behaviour"). The outer try/catch below still fails closed on
+        // any FF rejection that propagates past the silent-[] handler.
+        const calendar = await fetchForexFactoryCalendar();
         const veto = shouldVetoOrderForCalendar(tradeCurrencies, calendar, Date.now());
         if (veto.veto) {
           return JSON.stringify({
