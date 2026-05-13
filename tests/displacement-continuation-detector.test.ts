@@ -206,12 +206,60 @@ describe("checkDisplacementContinuation (8-criterion detector, Task 4)", () => {
     expect(result.reason.toLowerCase()).toMatch(/sweep/);
   });
 
-  // Test 8: fewer than 14 candles → 'indeterminate'
-  it("Test 8 — fewer than 14 candles → qualifies: 'indeterminate', reason mentions insufficient history", () => {
+  // Test 8: fewer than 15 candles → 'indeterminate'
+  // (uses 13-candle input — well below threshold, still caught by guard)
+  it("Test 8 — fewer than 15 candles → qualifies: 'indeterminate', reason mentions insufficient history", () => {
     const shortFixture: Candle[] = Array(13).fill(atrBodyCandle);
     const result = checkDisplacementContinuation(shortFixture, "bullish", baseParams, spread);
     expect(result.qualifies).toBe("indeterminate");
     expect(result.reason.toLowerCase()).toMatch(/insufficient/);
+  });
+
+  // Test 9 (boundary): exactly 14 candles → 'indeterminate'
+  // Off-by-one boundary introduced by C1 fix: previously 14 candles would slip through
+  // the old "< 14" guard (14 is NOT < 14) and reach ATR calc with only 13 prior candles
+  // (slice(-15,-1) on length=14 = indices 0..12 = 13 elements). Now "< 15" catches it.
+  it("Test 9 — exactly 14 candles → qualifies: 'indeterminate' (boundary off-by-one catch)", () => {
+    const fourteenCandles: Candle[] = Array(14).fill(atrBodyCandle);
+    const result = checkDisplacementContinuation(fourteenCandles, "bullish", baseParams, spread);
+    expect(result.qualifies).toBe("indeterminate");
+    expect(result.reason.toLowerCase()).toMatch(/insufficient/);
+  });
+
+  // Test 10: canonical qualifying bearish setup (mirrors bullish Test 1)
+  //
+  // Fixture (16 candles): [...14 × bearishAtrCandle, priorBearishCandle, goodBearishCandle]
+  //
+  // goodBearishCandle: open=1.110, high=1.111, low=1.099, close=1.100
+  //   body  = |1.100 - 1.110| = 0.010  (bearish: close < open ✓)
+  //   range = 1.111 - 1.099   = 0.012
+  //   C3  body/range = 0.010/0.012 = 0.833 >= X=0.5 ✓
+  //   C5  closeStrength (bear) = (1.111-1.100)/0.012 = 0.917 >= Z=0.7 ✓
+  //
+  // priorBearishCandle: open=1.111, high=1.112, low=1.099, close=1.101
+  //   bearish close: 1.101 < 1.111 ✓  (C2 n=2 satisfied)
+  //   low=1.099 = goodBearishCandle.low → minPrior8Low=1.099
+  //
+  // bearishAtrCandle (x14): open=1.106, high=1.110, low=1.104, close=1.107
+  //   body = 0.001
+  //
+  // C4 ATR-of-bodies window: slice(1, 15) = 13×bearishAtrCandle + priorBearishCandle
+  //   = (13×0.001 + 0.010) / 14 = 0.023/14 ≈ 0.001643
+  //   Y×ATR = 1.2 × 0.001643 ≈ 0.001971; body=0.010 >= 0.001971 ✓
+  //
+  // C8 (bearish): prior8 = slice(7,15) = 7×bearishAtrCandle(low=1.104) + priorBearishCandle(low=1.099)
+  //   minPrior8Low = 1.099; wickExceedance = 1.099 - 1.099 = 0 < spread=0.0001 ✓
+  it("Test 10 — canonical qualifying bearish setup (mirrors bullish Test 1)", () => {
+    const goodBearishCandle = mkCandle(1.110, 1.111, 1.099, 1.100);
+    const priorBearishCandle = mkCandle(1.111, 1.112, 1.099, 1.101);
+    const bearishAtrCandle = mkCandle(1.106, 1.110, 1.104, 1.107);
+    const bearishFixture: Candle[] = [
+      ...Array(14).fill(bearishAtrCandle),
+      priorBearishCandle,
+      goodBearishCandle,
+    ];
+    const result = checkDisplacementContinuation(bearishFixture, "bearish", baseParams, spread);
+    expect(result.qualifies).toBe(true);
   });
 
 });

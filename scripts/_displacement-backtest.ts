@@ -160,13 +160,12 @@ export function checkDisplacementContinuation(
     return { qualifies: false, reason: 'bias is neutral — continuation requires a directional bias' };
   }
 
-  // ── Minimum history check (need 14 prior candles for ATR-of-bodies + n for sequence) ──
-  // We need at least 14 candles before the latest (index L-1 back to L-14),
-  // plus the latest itself → total minimum = 15.
-  // But per spec the edge case threshold is < 14 candles total:
-  // "candles15m.length < 14 → indeterminate". We apply that strictly.
-  if (candles15m.length < 14) {
-    return { qualifies: 'indeterminate', reason: 'insufficient history for ATR-of-bodies(14): need at least 14 candles' };
+  // ── Minimum history check (need 14 prior candles for ATR-of-bodies + latest) ──
+  // We need the latest candle (index L) plus 14 prior candles for the ATR-of-bodies
+  // window (slice(L-14, L)) → total minimum = 15. With only 14 candles, the latest
+  // is at index 13 but slice(-15,-1) = indices 0..12 = only 13 elements → degraded.
+  if (candles15m.length < 15) {
+    return { qualifies: 'indeterminate', reason: 'insufficient history (<15 candles for ATR(14) + latest)' };
   }
 
   const L = candles15m.length - 1;
