@@ -32,3 +32,22 @@ async function main() {
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
+
+// ---------------------------------------------------------------------------
+// Bias detection — Task 2
+// Port of src/scanner/index.ts:detectBias — primary HH+HL / LH+LL branch.
+// Slope fallback disabled (matches production SCANNER_SLOPE_FALLBACK=false default).
+// ---------------------------------------------------------------------------
+export type Bias = 'bullish' | 'bearish' | 'neutral';
+
+export function detectBias(candles1h: ReadonlyArray<Pick<Candle, 'high' | 'low'>>): Bias {
+  if (candles1h.length < 4) return 'neutral';
+  const last4 = candles1h.slice(-4);
+  const hh = last4.every((c, i) => i === 0 || c.high > last4[i - 1].high);
+  const hl = last4.every((c, i) => i === 0 || c.low > last4[i - 1].low);
+  if (hh && hl) return 'bullish';
+  const lh = last4.every((c, i) => i === 0 || c.high < last4[i - 1].high);
+  const ll = last4.every((c, i) => i === 0 || c.low < last4[i - 1].low);
+  if (lh && ll) return 'bearish';
+  return 'neutral';
+}
