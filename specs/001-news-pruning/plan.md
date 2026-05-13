@@ -147,19 +147,16 @@ Open `src/news/rss-feeds.ts`. Replace lines 34-161 (from the `// 2026-04-28 vali
 
 ```ts
 // 2026-05-13 news-pruning pass via specs/001-news-pruning/spec.md collapsed
-// the previous 3-tier 15-feed configuration down to 6 Tier-1 feeds. Drops:
-// BBC Business, CNBC Top News, OilPrice.com, Investing.com news (general),
-// Yahoo Finance Top Stories, MarketWatch Top Stories, Calculated Risk
-// (stale 106 days), Wolf Street, ZeroHedge. Promotions to Tier 1: ActionForex,
-// ForexLive, Investing.com Forex Opinion. The audit (specs/001-news-pruning/spec.md
-// §Context Summary) established that news is NOT the trade-frequency
-// bottleneck — this change is pure noise reduction, not scoring change.
+// the previous 3-tier 15-feed configuration down to 6 Tier-1 feeds.
+// 9 generic-news + alarmist + dead feeds dropped (full list in spec.md
+// Context Summary); 3 forex-specialist feeds promoted from Tier 2 to Tier 1.
+// The audit (specs/001-news-pruning/spec.md §Context Summary) established
+// that news is NOT the trade-frequency bottleneck — this change is pure
+// noise reduction, not a scoring change.
 //
-// Pre-pruning 2026-04-28 validation-pass history (kept for archaeology):
-//   - Removed 2026-04-28: US Treasury / AP Business / IMF / BIS / FXStreet /
-//     DailyFX / Kitco (all 401/403/404 from Hetzner IP).
-//   - Replacements 2026-04-28: ActionForex, Investing.com Forex Opinion,
-//     ForexLive, CNBC Top News, Yahoo Finance Top Stories.
+// Earlier 2026-04-28 validation-pass history removed 6 stale feeds (details
+// in git log on this file). FeedTier type still admits 2 and 3 to allow
+// future re-introduction of lower-tier feeds without a migration.
 export const RSS_FEEDS: ReadonlyArray<FeedConfig> = [
   // ====== TIER 1 — wires, regulators, FX specialists ======
   {
@@ -361,20 +358,84 @@ Two edits:
 
 If the researcher's downstream code at `:296` filters events to a specific window, that filter MUST still work against FF's output shape — `EconomicEvent` interface is unchanged between FF and Finnhub paths. Read `:290-310` to confirm before committing.
 
-- [ ] **Step 4.4d: Annotate `rss-aggregator.ts:228` per FR-7**
+- [ ] **Step 4.4d: Annotate tier-aware code in `rss-aggregator.ts` per FR-7**
 
-Read `src/news/rss-aggregator.ts:220-235` first to confirm the exact current code. Use `Edit` to add a comment immediately above line 228:
+After Task 2, every retained feed has `tier: 1`, so all tier-aware branches at lines 211, 221, and 228 effectively short-circuit to the Tier-1 path. The `FeedTier` type still admits 2 and 3 (preserved per FR-7), so this code stays — but a single explanatory comment block must mark each special-cased site as "currently unreachable in production, kept for future re-introduction." Four targeted edits in this file.
 
+**Edit 1 — file-header tier-semantics block (lines 10-22):**
+
+Read `:1-25` first. The current block describes the 1/2/3 tier model. Replace with a version that documents the post-2026-05-13 reality:
+
+`old_string`:
 ```ts
-    // 2026-05-13 news-pruning: every retained feed has tier === 1 after this
-    // change, so this ternary effectively returns 1.0 for all articles. The
-    // tier-2/3 branches are intentionally preserved (not collapsed to 1.0)
-    // because FeedTier still admits 2 and 3, allowing future re-introduction
-    // of lower-tier feeds without touching this scoring expression.
+// Tier semantics:
+//   - Tier 1 (wires + regulators) → highest weight; a single Tier-1 article
+//     can qualify as Cat A on its own.
+//   - Tier 2 (FX/commodity specialists) → high weight; ≥2 Tier-2 sources
+//     confirming the same event qualifies as Cat A; one Tier-2 alone is
+//     Cat B at best.
+//   - Tier 3 (analysis blogs) → supporting context only; never qualifies
+//     as Cat A on its own.
+```
+
+`new_string`:
+```ts
+// Tier semantics (POST-2026-05-13 NEWS-PRUNING):
+//   - Tier 1 is currently the only active tier — every entry in RSS_FEEDS
+//     has tier:1 after the prune. A single Tier-1 article can qualify as
+//     Cat A on its own.
+//   - Tier 2 / Tier 3 branches below are intentionally preserved (per
+//     specs/001-news-pruning/ FR-7) so future re-introduction of lower-
+//     tier feeds doesn't require a migration. They are presently dead
+//     paths — every concrete article has tier:1.
+```
+
+**Edit 2 — inline comment at `:210-212` (Cat A/B/C classification path):**
+
+`old_string`:
+```ts
+  // Cat A only when impact-keyword fires (single Tier-1 source can qualify;
+  // Tier 2/3 require keyword match too — full tier-aware corroboration is
+  // a follow-up). Sentiment defaulted to 0; impact-classifier doesn't need it.
+```
+
+`new_string`:
+```ts
+  // Cat A only when impact-keyword fires. Post-2026-05-13 pruning every
+  // article has tier:1; the tier-2/3 fallback at :221 is preserved per
+  // FR-7 but currently unreachable. Sentiment defaulted to 0; the
+  // impact-classifier doesn't need it.
+```
+
+**Edit 3 — annotate the category ternary at `:221`:**
+
+Use `Edit` to insert a one-line comment immediately above the existing ternary. Do NOT change the ternary itself.
+
+`old_string`:
+```ts
+    category = article.tier <= 2 ? 'B' : 'C';
+```
+
+`new_string`:
+```ts
+    // FR-7: tier-aware branch preserved; post-2026-05-13 every article is tier:1 so this evaluates to 'B' in practice.
+    category = article.tier <= 2 ? 'B' : 'C';
+```
+
+**Edit 4 — annotate the relevance-score ternary at `:228`:**
+
+`old_string`:
+```ts
     relevance_score: article.tier === 1 ? 1.0 : article.tier === 2 ? 0.6 : 0.3,
 ```
 
-(Adapt indentation to match the surrounding code.)
+`new_string`:
+```ts
+    // FR-7: tier-aware branch preserved; post-2026-05-13 every article is tier:1 so this evaluates to 1.0 in practice.
+    relevance_score: article.tier === 1 ? 1.0 : article.tier === 2 ? 0.6 : 0.3,
+```
+
+(Adapt indentation to match surrounding code in each case.)
 
 - [ ] **Step 4.5: Delete the `fetchEconomicCalendar` function definition + adjacent Finnhub block**
 
@@ -516,6 +577,9 @@ event 30 min ahead must veto a EURUSD trade."
 - Modify: `src/news/index.ts:79-82` — feed-list comment (18 feeds → 6)
 - Modify: `src/preflight.ts:32` — DELETE `OPTIONAL_KEYS` entry for FINNHUB_API_KEY
 - Modify: `src/preflight.ts:123` — drop FINNHUB from the doc-comment list of silent-degradation keys
+- Modify: `src/news/rss-aggregator.ts:3` — file-header "18 hand-curated RSS feeds" → "6 hand-curated Tier-1 RSS feeds"
+- Modify: `src/scheduler/index.ts:1025` — cron comment "18 RSS feeds" → "6 Tier-1 RSS feeds"
+- Modify: `src/scheduler/index.ts:1118` — **live startup `console.log`** "RSS news poll (18 feeds, Tier 1/2/3)" → "RSS news poll (6 Tier-1 feeds)"
 - Modify: `tests/calendar-veto.test.ts:5` — historical comment
 - Modify: `tests/preflight.test.ts:21, :96, :254` — three Finnhub fixture references
 - Modify: `.env.example:16` — DELETE `FINNHUB_API_KEY=...` line
@@ -693,6 +757,29 @@ The test passes a fixture `warnings` array to `alertOnDegradedEnv`. The Finnhub 
 
 After these three edits, run `npm test -- tests/preflight.test.ts` and confirm all tests pass.
 
+- [ ] **Step 6.13b: Fix `src/news/rss-aggregator.ts:3` — stale feed count**
+
+Read `:1-10`. The file header says "Polls 18 hand-curated RSS feeds".
+
+`old_string`: `// Polls 18 hand-curated RSS feeds (see rss-feeds.ts), parses each into a`
+`new_string`: `// Polls 6 hand-curated Tier-1 RSS feeds (see rss-feeds.ts), parses each into a`
+
+- [ ] **Step 6.13c: Fix `src/scheduler/index.ts:1025` — stale comment**
+
+Read `:1018-1035`. Line 1025 says "Every 10 minutes: poll all 18 RSS feeds (B3, 2026-04-28)."
+
+`old_string`: `// Every 10 minutes: poll all 18 RSS feeds (B3, 2026-04-28).`
+`new_string`: `// Every 10 minutes: poll all 6 Tier-1 RSS feeds (B3 lineage; pruned 2026-05-13 per specs/001-news-pruning/).`
+
+- [ ] **Step 6.13d: Fix `src/scheduler/index.ts:1118` — live startup log**
+
+**THIS IS THE OPERATIONALLY DANGEROUS ONE** — a live `console.log` printed at every bot startup. Without this fix, post-merge production logs will show `"RSS news poll (18 feeds, Tier 1/2/3)"` to operators, contradicting the actual code.
+
+Read `:1110-1122`.
+
+`old_string`: `  console.log('  */10 * * * *          — RSS news poll (18 feeds, Tier 1/2/3)');`
+`new_string`: `  console.log('  */10 * * * *          — RSS news poll (6 Tier-1 feeds)');`
+
 - [ ] **Step 6.14: Verification — zero-grep pass**
 
 Run each grep command separately and capture output:
@@ -704,7 +791,9 @@ grep -rn -i "finnhub" src/ tests/ | grep -v "indices"
 # Should return ZERO matches:
 grep -rn "fetchEconomicCalendar\|FINNHUB_BASE\|FINNHUB_API_KEY" src/ tests/ .env.example
 
-# Dropped feed names — should return ZERO matches in src/ + tests/:
+# Dropped feed names — should return ZERO matches in src/ + tests/.
+# Task 2's replacement comment block in rss-feeds.ts was deliberately
+# kept abstract (no enumerated names) so this grep passes cleanly.
 grep -rn "BBC Business\|CNBC Top News\|OilPrice\.com\|Investing\.com news\|Yahoo Finance Top Stories\|MarketWatch Top Stories\|Calculated Risk\|Wolf Street\|ZeroHedge" src/ tests/
 
 # Dropped URLs — should return ZERO matches:
@@ -712,6 +801,9 @@ grep -rn "feeds\.bbci\|search\.cnbc\|oilprice\.com/rss\|finance\.yahoo\.com/rss\
 
 # Top-level docs — should return ZERO matches in CLAUDE.md / TRADING_BOT_MASTER.md / .env.example:
 grep -n -i "finnhub" CLAUDE.md TRADING_BOT_MASTER.md .env.example
+
+# Stale feed-count strings — should return ZERO matches in src/ + tests/:
+grep -rn "18 hand-curated\|18 RSS\|18 feeds\|polls 18\|Tier 1/2/3" src/ tests/
 ```
 
 **Acceptance:** each of the 5 greps returns zero matches **except** historical artifacts under `docs/superpowers/plans/`, `docs/superpowers/specs/`, `BENCHMARK_REPORT.md`, `audit/`, and `memory/` — those are intentionally preserved as point-in-time snapshots and should still match. Any unexpected hit means a cleanup miss — fix and re-run.
@@ -731,7 +823,7 @@ If any fail, the failure is either:
 - [ ] **Step 6.16: Commit the sweep**
 
 ```bash
-git add src/mcp-server/market-data.ts src/news/forex-factory-calendar.ts src/news/calendar-veto.ts src/news/index.ts src/preflight.ts tests/calendar-veto.test.ts tests/preflight.test.ts .env.example TRADING_BOT_MASTER.md CLAUDE.md
+git add src/mcp-server/market-data.ts src/news/forex-factory-calendar.ts src/news/calendar-veto.ts src/news/index.ts src/news/rss-aggregator.ts src/preflight.ts src/scheduler/index.ts tests/calendar-veto.test.ts tests/preflight.test.ts .env.example TRADING_BOT_MASTER.md CLAUDE.md
 git commit -m "chore(news): strip dead Finnhub + dropped-feed references
 
 Comment + config cleanup pass per Codex twin review and user
