@@ -1019,6 +1019,11 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       const isRangeModeProposal = /^range_/.test(
         proposal.setup_type.trim().toLowerCase().replace(/[\s_]+/g, '_'),
       );
+      // NOTE (2026-05-13, Task 9 follow-up): isRangeModeProposal is NOT
+      // extended to cover Displacement_Continuation here because
+      // validateRRFloor uses universal TP1≥1.0R / TP2≥1.3R floors for all
+      // setups (isRangeMode is kept for forward-compat only, see line ~216).
+      // DC uses the same R:R floors, so no change needed at this site.
       const rrPreCheck = validateRRFloor({
         direction: proposal.direction,
         entry: proposal.entry,
@@ -1205,6 +1210,15 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // word (after trimming whitespace/underscores) is "range".
       const setupTypeNorm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_');
       const isRangeMode = /^range_/.test(setupTypeNorm);
+      // Phase 1 (2026-05-13, Task 9 follow-up): Displacement_Continuation
+      // uses the same half-size posture as Range_Sweep_Reversal (0.25%
+      // total risk). The match is exact — setupTypeNorm above already
+      // lowercases + collapses whitespace/underscores, so
+      // 'Displacement_Continuation', 'displacement continuation', and
+      // 'displacement_continuation' all normalise to
+      // 'displacement_continuation'.
+      const isDisplacementContinuation = setupTypeNorm === 'displacement_continuation';
+      const isHalfSize = isRangeMode || isDisplacementContinuation;
       const tier3Floor = tier3FloorFor(proposalForVerify.instrument);
       if (!Number.isFinite(score) || score < tier3Floor) {
         return JSON.stringify({
@@ -1221,21 +1235,23 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       }
       // Range-mode is structurally Tier 3 only — reject T1/T2 proposals
       // that try to use a Range_* setup_type.
-      if (isRangeMode && tier !== 3) {
+      // Displacement_Continuation (Phase 1) is also Tier 3 only at 0.25%.
+      if (isHalfSize && tier !== 3) {
         return JSON.stringify({
           error: 'RANGE_MODE_TIER_MISMATCH',
-          reason: `setup_type "${setupType}" is range-mode and Tier 3 only. Proposal has Tier ${tier}.`,
+          reason: `setup_type "${setupType}" is half-size (Tier 3 only in Phase 1). Proposal has Tier ${tier}.`,
         });
       }
-      const expectedRiskPct = isRangeMode ? 0.25
+      const expectedRiskPct = isHalfSize ? 0.25
         : expectedTier === 1 ? 1.5
         : expectedTier === 2 ? 1.0
         : 0.5;
       const riskPctCheck = validateRiskPct({ riskPct, expectedRiskPct });
       if (!riskPctCheck.ok) {
+        const sizingLabel = isRangeMode ? 'Range-mode' : isDisplacementContinuation ? 'Displacement-Continuation' : `Tier ${expectedTier}`;
         return JSON.stringify({
           error: 'RISK_PCT_TIER_MISMATCH',
-          reason: `${isRangeMode ? 'Range-mode' : `Tier ${expectedTier}`} requires risk ${expectedRiskPct}%. ${riskPctCheck.reason}.`,
+          reason: `${sizingLabel} requires risk ${expectedRiskPct}%. ${riskPctCheck.reason}.`,
         });
       }
 

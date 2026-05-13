@@ -875,3 +875,75 @@ describe('Critical-section tracking (B3 shutdown drain)', () => {
     expect(getCriticalSectionDepth()).toBe(0);
   });
 });
+
+// =============================================================================
+// Displacement_Continuation — inline risk-check path (Task 9 follow-up)
+// =============================================================================
+// These tests model the exact logic wired into place_split_trade Step 2 after
+// the 2026-05-13 fix. The handler derives:
+//   setupTypeNorm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_')
+//   isDisplacementContinuation = setupTypeNorm === 'displacement_continuation'
+//   isHalfSize = isRangeMode || isDisplacementContinuation
+//   expectedRiskPct = isHalfSize ? 0.25 : (tier-aware)
+// and then calls validateRiskPct({ riskPct, expectedRiskPct }).
+// These tests assert that a DC proposal with 0.25% passes and 0.50% fails.
+describe('Displacement_Continuation — validateRiskPct path (isHalfSize = true)', () => {
+  // Helper that mirrors the inline handler derivation
+  function dcExpectedRiskPct(setupType: string, tier: 1 | 2 | 3): number {
+    const norm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_');
+    const isRangeMode = /^range_/.test(norm);
+    const isDisplacementContinuation = norm === 'displacement_continuation';
+    const isHalfSize = isRangeMode || isDisplacementContinuation;
+    return isHalfSize ? 0.25 : tier === 1 ? 1.5 : tier === 2 ? 1.0 : 0.5;
+  }
+
+  it('derives expectedRiskPct = 0.25 for Displacement_Continuation (canonical)', () => {
+    expect(dcExpectedRiskPct('Displacement_Continuation', 3)).toBe(0.25);
+  });
+
+  it('derives expectedRiskPct = 0.25 for space-separated variant (normalises correctly)', () => {
+    expect(dcExpectedRiskPct('Displacement Continuation', 3)).toBe(0.25);
+  });
+
+  it('derives expectedRiskPct = 0.25 for lowercase variant', () => {
+    expect(dcExpectedRiskPct('displacement_continuation', 3)).toBe(0.25);
+  });
+
+  it('accepts total_risk_pct = 0.25 for Displacement_Continuation (half-size — Phase 1)', () => {
+    const expectedRiskPct = dcExpectedRiskPct('Displacement_Continuation', 3);
+    const result = validateRiskPct({ riskPct: 0.25, expectedRiskPct });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects total_risk_pct = 0.50 for Displacement_Continuation (Tier 3 full-size — wrong)', () => {
+    const expectedRiskPct = dcExpectedRiskPct('Displacement_Continuation', 3);
+    // 0.50 is what Tier 3 full-size would send; DC expects 0.25 — must be rejected
+    const result = validateRiskPct({ riskPct: 0.50, expectedRiskPct });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/0.005/); // tolerance message
+    }
+  });
+
+  it('accepts 0.254% for DC (IEEE 754 float within ±0.005)', () => {
+    const expectedRiskPct = dcExpectedRiskPct('Displacement_Continuation', 3);
+    expect(validateRiskPct({ riskPct: 0.254, expectedRiskPct }).ok).toBe(true);
+  });
+
+  it('does NOT treat Displacement_Continuation as range-mode (isRangeMode stays false)', () => {
+    // isRangeMode uses /^range_/ — DC does not match, only isHalfSize is true
+    const norm = 'Displacement_Continuation'.trim().toLowerCase().replace(/[\s_]+/g, '_');
+    const isRangeMode = /^range_/.test(norm);
+    const isDisplacementContinuation = norm === 'displacement_continuation';
+    expect(isRangeMode).toBe(false);
+    expect(isDisplacementContinuation).toBe(true);
+  });
+
+  it('does NOT half-size OB_retest at Tier 3 (control: isHalfSize is false)', () => {
+    const expectedRiskPct = dcExpectedRiskPct('OB_retest', 3);
+    expect(expectedRiskPct).toBe(0.5); // full Tier 3
+    // A 0.25% proposal for OB_retest must be rejected
+    const result = validateRiskPct({ riskPct: 0.25, expectedRiskPct });
+    expect(result.ok).toBe(false);
+  });
+});
