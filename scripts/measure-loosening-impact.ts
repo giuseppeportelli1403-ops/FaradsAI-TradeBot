@@ -12,7 +12,8 @@
 // Manual: npx tsx scripts/measure-loosening-impact.ts [--days N]
 
 import 'dotenv/config';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
 import initSqlJs from 'sql.js';
 
 interface PerInstrument {
@@ -104,6 +105,7 @@ function computeStats(trades: Array<{ pnl_total: number; entry: number; sl: numb
 async function buildReport(days: number): Promise<DailyReport> {
   const DB_PATH = '/home/bot/trading-bot/data/trading-bot.db';
   const LOG_PATH = '/home/bot/trading-bot/data/pm2-out.log';
+  const METRICS_PATH = '/home/bot/trading-bot/data/metrics';
 
   const SQL = await initSqlJs();
   const db = new SQL.Database(readFileSync(DB_PATH));
@@ -235,6 +237,56 @@ async function buildReport(days: number): Promise<DailyReport> {
   }
   // FP-from-audit not directly measurable here — requires running the audit
   // script as a separate step. Documented but not enforced from this script.
+
+  // Displacement Continuation Phase 1 rollback triggers (added 2026-05-13)
+  //
+  // Trigger 6: DC produces 0 firings in 5 consecutive days.
+  // Reads 'Firings today: **N**' from data/metrics/reject-YYYY-MM-DD.md
+  // (field added in Task 16). If 5 most recent files all show 0 firings,
+  // the backtest did not generalise to live data → rollback DC.
+  if (existsSync(METRICS_PATH)) {
+    const rejectFiles = readdirSync(METRICS_PATH)
+      .filter((f) => /^reject-\d{4}-\d{2}-\d{2}\.md$/.test(f))
+      .sort()
+      .slice(-5);
+    const dcFiringsByDay = rejectFiles.map((f) => {
+      const text = readFileSync(join(METRICS_PATH, f), 'utf-8');
+      const m = text.match(/Firings today:\s*\*\*(\d+)\*\*/);
+      return m ? Number(m[1]) : 0;
+    });
+    if (rejectFiles.length >= 5 && dcFiringsByDay.every((n) => n === 0)) {
+      report.rollbackTriggers.push(
+        `DC: 0 firings in 5 consecutive days (files: ${rejectFiles.join(', ')}) — backtest did not generalise to live data`,
+      );
+    }
+  }
+
+  // Trigger 7: DC-only decided WR < 25% on n >= 8 trades (14-day window).
+  // Matches setup_type via LOWER/REPLACE to cover any casing the LLM emits
+  // ('Displacement_Continuation', 'displacement continuation', etc.).
+  // Only closed trades (pnl_total IS NOT NULL) count as decided.
+  const dcCutoff = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000)
+    .toISOString()
+    .replace('T', ' ')
+    .slice(0, 19);
+  const dcRows = db.exec(
+    `SELECT pnl_total FROM trades
+     WHERE LOWER(REPLACE(setup_type, ' ', '_')) LIKE '%displacement%continuation%'
+       AND pnl_total IS NOT NULL
+       AND opened_at > '${dcCutoff}'`,
+  );
+  const dcDecided: number[] = dcRows.length
+    ? dcRows[0].values.map((r: any) => Number(r[0]))
+    : [];
+  if (dcDecided.length >= 8) {
+    const dcWins = dcDecided.filter((pnl) => pnl > 0).length;
+    const dcWR = dcWins / dcDecided.length;
+    if (dcWR < 0.25) {
+      report.rollbackTriggers.push(
+        `DC: decided WR ${(dcWR * 100).toFixed(1)}% < 25% on n=${dcDecided.length} — demonstrably bad`,
+      );
+    }
+  }
 
   return report;
 }
