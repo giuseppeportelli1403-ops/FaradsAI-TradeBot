@@ -138,6 +138,15 @@ export interface PnlCaptureDeps {
    */
   windowMode?: 'terminal' | 'partial';
   now?: () => Date;
+  /**
+   * Real wall-clock (ms since epoch) used to clamp the `to` settlement
+   * buffer. Defaults to `Date.now`. Injected separately from `now()` so
+   * the backfill path (which pins `now` to `trade.closed_at`) keeps the
+   * +5min buffer intact, while live-capture calls — where `now()` ≈
+   * wall-clock — clamp `to` at wall-clock and avoid Capital's HTTP 400
+   * `error.invalid.daterange` on a future `to`.
+   */
+  wallClock?: () => number;
 }
 
 export interface PnlCaptureResult extends MatchResult {
@@ -171,7 +180,13 @@ export async function capturePnlForTrade(deps: PnlCaptureDeps): Promise<PnlCaptu
     windowMode === 'terminal'
       ? toCapitalDateFmt(trade.opened_at)
       : toCapitalDateFmt(new Date(now.getTime() - 60_000).toISOString());
-  const toDate = new Date(now.getTime() + 5 * 60_000);
+  // Capital rejects `to` in the future relative to its server clock with
+  // HTTP 400 `error.invalid.daterange`. Clamp the +5min settlement-flush
+  // buffer at wall-clock so live captures (now() ≈ wall-clock) hit Capital
+  // with `to ≈ wall-clock`. Pinned/backfill calls (now = closed_at, in the
+  // past) keep the full buffer since closed_at+5min ≤ wall-clock.
+  const wallClockMs = deps.wallClock ? deps.wallClock() : Date.now();
+  const toDate = new Date(Math.min(now.getTime() + 5 * 60_000, wallClockMs));
   const to = toCapitalDateFmt(toDate.toISOString());
 
   let txs: Transaction[] = [];

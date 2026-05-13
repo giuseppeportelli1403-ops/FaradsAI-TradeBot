@@ -194,6 +194,54 @@ describe('capturePnlForTrade', () => {
     expect(capturedTo).toBe('2026-05-07T13:45:00');
   });
 
+  it('clamps `to` at wall-clock time so live SL captures do not get HTTP 400 error.invalid.daterange from Capital', async () => {
+    // Capital rejects /history/transactions when `to` is in the future relative
+    // to its server clock. For live closes (now() ≈ real wall-clock), the
+    // +5min settlement buffer would push `to` ~5 min ahead of Capital and
+    // every call fails with HTTP 400 error.invalid.daterange. The fix: cap
+    // `to` at the wall-clock; the +5min buffer is preserved for pinned /
+    // historical now() values (backfill) where now()+5min stays in the past.
+    const trade = baseTrade({ opened_at: '2026-05-13T14:16:56.000Z' });
+    let capturedTo = '';
+    const capital = {
+      getTransactionHistory: async (_from?: string, to?: string) => {
+        capturedTo = to ?? '';
+        return [];
+      },
+    };
+    await capturePnlForTrade({
+      trade,
+      capital,
+      accountCurrency: 'EUR',
+      now: () => new Date('2026-05-13T16:29:00.000Z'),
+      wallClock: () => Date.parse('2026-05-13T16:29:01.000Z'),
+    });
+    // now+5min = 16:34:00 would be in the future relative to wall-clock.
+    // Clamp to wall-clock instead.
+    expect(capturedTo).toBe('2026-05-13T16:29:01');
+  });
+
+  it('preserves the +5min settlement buffer for pinned (historical / backfill) now() values', async () => {
+    // When the caller pins now() to trade.closed_at (backfill path), now()+5min
+    // stays in the past relative to wall-clock, so the clamp does not trigger.
+    const trade = baseTrade({});
+    let capturedTo = '';
+    const capital = {
+      getTransactionHistory: async (_from?: string, to?: string) => {
+        capturedTo = to ?? '';
+        return [];
+      },
+    };
+    await capturePnlForTrade({
+      trade,
+      capital,
+      accountCurrency: 'EUR',
+      now: () => new Date('2026-05-07T13:35:01.106Z'),  // pinned to closed_at
+      wallClock: () => Date.parse('2026-05-13T16:29:01.000Z'),
+    });
+    expect(capturedTo).toBe('2026-05-07T13:40:01');
+  });
+
   it('partial windowMode uses [now-1min, now+5min] for tight isolation', async () => {
     const trade = baseTrade({});
     let capturedFrom = '';
