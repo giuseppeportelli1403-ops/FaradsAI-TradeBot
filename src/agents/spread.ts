@@ -68,3 +68,37 @@ export function assertUniverseSpreadConsistency(
     );
   }
 }
+
+/**
+ * Map setup_type + tier → total_risk_pct fraction (not percent).
+ *
+ * Special cases (flat regardless of tier):
+ *   Range_Sweep_Reversal   → 0.0025  (0.25% — range-mode half-size; existing)
+ *   Displacement_Continuation → 0.0025  (0.25% — Phase 1 half-size posture;
+ *                              promote to tier-aware in Phase 2 once live
+ *                              data confirms the setup is safe)
+ *
+ * Standard tier-aware cases (all other setup types):
+ *   Tier 1 → 0.015 (1.5%)
+ *   Tier 2 → 0.010 (1.0%)
+ *   Tier 3 → 0.005 (0.5%)
+ *
+ * The match for range-mode is intentionally lenient (matches any setup_type
+ * whose first underscore-delimited word is range) so that minor casing
+ * variants (Range Sweep Reversal, range_sweep_reversal) are handled
+ * consistently with the inline logic in trading-agent.ts.
+ */
+export function tierRiskPct(setupType: string, tier: 1 | 2 | 3 | number): number {
+  const norm = setupType.trim().toLowerCase().replace(/[\s_]+/g, '_');
+
+  // Displacement_Continuation — Phase 1 half-size posture
+  if (norm === 'displacement_continuation') return 0.0025; // Phase 1 half-size; promote in Phase 2
+
+  // Range_Sweep_Reversal (and any range_* variant) — existing half-size rule
+  if (/^range_/.test(norm)) return 0.0025;
+
+  // Standard tier-aware risk
+  if (tier === 1) return 0.015;
+  if (tier === 2) return 0.010;
+  return 0.005; // Tier 3 (and any unexpected tier value)
+}
