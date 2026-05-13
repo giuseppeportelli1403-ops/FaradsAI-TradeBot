@@ -1,6 +1,6 @@
 # ICT Intraday Trading Strategy — BetterOpsAI Trading Bot
-> Last Updated: 2026-04-29
-> Updated By: 2026-04-29 range-mode addition — 5th trigger (Range Sweep Reversal) for neutral-bias instruments, half-size posture, Tier-3-only cap
+> Last Updated: 2026-05-13
+> Updated By: 2026-05-13 Task 12 — add trigger 6 Displacement Continuation (Phase 1, Phase 0 winning combo); fix OB/FVG body/wick drift (PR 1 2026-05-12 sync)
 > Strategy Tag: ICT_INTRADAY
 
 ---
@@ -32,19 +32,19 @@ Trading outside kill zones: hard gate. The scanner returns no candidates outside
 
 Every trigger requires a quantitative match — no subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; the agent must log "watching, no trigger" and move on.
 
-Triggers 1-4 are **trend-following** — they require the 1H bias to be `bullish` or `bearish` and align the entry with that bias. Trigger 5 is **range-mode** — it activates ONLY when 1H bias is `neutral` and looks for reversal at a range extreme.
+Triggers 1-4 are **trend-following** — they require the 1H bias to be `bullish` or `bearish` and align the entry with that bias. Trigger 5 is **range-mode** — it activates ONLY when 1H bias is `neutral` and looks for reversal at a range extreme. Trigger 6 is **displacement continuation** — trend-aligned, evaluated only after triggers 1-4 have all failed on the same candle.
 
 ### Trend-following triggers (1H bias bullish or bearish)
 
 1. **OB Retest**
    - Price taps an order block from the bias-aligned side and prints a *rejection candle* with ALL of:
-     - body ≥ 0.4 × candle range (`|close - open| / (high - low) ≥ 0.4`) — *lowered 0.5 → 0.4 in Phase E (2026-05-04) loosening; many borderline rejection candles in observed kill zones were 41–49% body and were rejected by the prior 0.5 floor.*
+     - body ≥ 0.3 × candle range (`|close - open| / (high - low) ≥ 0.3`) — *lowered 0.5 → 0.4 in Phase E (2026-05-04) loosening; many borderline rejection candles in observed kill zones were 41–49% body and were rejected by the prior 0.5 floor. Then 0.4 → 0.3 in PR 1 (2026-05-12) to capture additional valid rejection candles in the 30–39% body range.*
      - close in the bias direction (close > open for bullish, < for bearish)
-     - opposing wick ≥ 1.0 × body (the rejection wick is at least as long as the body)
+     - opposing wick ≥ 0.7 × body (the rejection wick is at least 70% of the body — *lowered 1.0 → 0.7 in PR 1 (2026-05-12) to reduce false-negative rejections where the opposing wick was 70–99% of body*)
      - tap depth ≤ 50% inside the OB (close deeper than 50% invalidates the retest)
 
 2. **FVG Fill**
-   - Price closes back inside (≥ 50% fill of the FVG range) AND the next candle closes in the bias direction with body ≥ 0.4 × range. *Lowered 0.5 → 0.4 in Phase E (2026-05-04) loosening — same rationale as trigger 1.*
+   - Price closes back inside (≥ 50% fill of the FVG range) AND the next candle closes in the bias direction with body ≥ 0.3 × range. *Lowered 0.5 → 0.4 in Phase E (2026-05-04) loosening — same rationale as trigger 1. Then 0.4 → 0.3 in PR 1 (2026-05-12).*
    - Partial fills (< 50%) followed by reversal do NOT qualify — wait for a real fill or pass.
 
 3. **Liquidity Sweep**
@@ -70,7 +70,26 @@ Triggers 1-4 are **trend-following** — they require the 1H bias to be `bullish
    - **News interaction:** if Cat A news aligned with the reversal direction (e.g. hawkish-USD news + sweep-of-range-high on EURUSD = short), this is a strong confluence — full Tier-3 score. If Cat A news opposes the reversal direction, **invalidate** — the news is more likely to drive a continuation breakout than the reversal pattern, so abort the setup.
    - **Tier:** Tier 3 only. Range setups never qualify for Tier 1 or 2 regardless of score (they're capped at score **59** by the scanner — see Section 5 note).
 
-In all five cases, "spread" = current bid/ask spread on the instrument at trigger evaluation time; "candle" = 15M candle unless otherwise specified; "range" = the current 1H high-low envelope of the last ≥ 8 candles for trigger 5.
+### Trend-continuation trigger (1H bias bullish or bearish — evaluated after triggers 1-4 fail)
+
+6. **Displacement Continuation** *(added 2026-05-13 to capture trend-continuation impulses missed by triggers 1-4)*
+   - **Pre-condition:** 1H bias must be `bullish` or `bearish`.
+   - **Precedence:** evaluated ONLY when triggers 1-4 have all failed on the same candle. Mutually exclusive with Range Sweep Reversal (which requires neutral bias).
+   - **Criteria** (15M candle, ALL must hold):
+     - **2 consecutive same-direction closes** (latest + previous bar)
+     - body ≥ **0.4 × candle range** (body/range conviction filter)
+     - body ≥ **1.0 × ATR-of-bodies(14)** (volume of conviction; mean |close − open| over prior 14 bars)
+     - close in the bias-aligned **0.6 fraction** of range (bullish: close ≥ low + 0.6 × range; bearish: mirror)
+     - latest wick must NOT exceed prior 8-candle 15M swing by ≥ 1 × spread (cede to Liquidity Sweep)
+   - **No opposing-wick filter, no retest required** — these absences distinguish DC from triggers 1-4 and are the source of its added coverage.
+   - **SL:** prior 15M low (bullish) or high (bearish) + 0.1 × ATR(14). Floor = max(2×spread, 0.3×ATR); cap = 2×ATR; abort if outside.
+   - **TP:** TP1 = entry ± 1.01 × R, TP2 = entry ± 1.31 × R (R = |entry − SL|).
+   - **Sizing:** Phase 1 total_risk_pct = **0.25%** (half-size, same as Range Sweep). 70/30 split, tick-aware.
+   - **Time-stop:** close at market if neither TP1 nor SL hits within 4h (16 × 15M bars).
+   - **Promotion to Phase 2 (Tier-aware sizing):** ≥ 10 live firings, mean R ≥ +0.05R, decided WR ≥ 35%.
+   - **Tier:** Tier 3 ONLY in Phase 1. Capped at score 59 by scanner.
+
+In all six cases, "spread" = current bid/ask spread on the instrument at trigger evaluation time; "candle" = 15M candle unless otherwise specified; "range" = the current 1H high-low envelope of the last ≥ 8 candles for triggers 5 and 6.
 
 ---
 
