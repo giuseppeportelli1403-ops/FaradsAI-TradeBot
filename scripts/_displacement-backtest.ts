@@ -278,3 +278,88 @@ export function checkDisplacementContinuation(
     reason: `qualifies: all 8 criteria met (body/range=${bodyRatio.toFixed(3)}, body/ATR=${atrOfBodies > 0 ? (body / atrOfBodies).toFixed(2) : 'n/a'}, close-strength=${closeStrength.toFixed(3)})`,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 5: Forward simulation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Which price event ended the trade (or it never resolved). */
+export type SimOutcome = 'tp1_hit' | 'tp2_hit' | 'sl_hit' | 'open';
+
+/**
+ * Result of a single forward simulation walk.
+ * - r  : realised R-multiple (positive = profit, negative = loss).
+ *        For 'tp1_hit' -> 1.0; 'tp2_hit' -> 1.31; 'sl_hit' -> -1.0;
+ *        'open' -> mark-to-last-close expressed in R.
+ * - barsHeld : number of forward bars consumed (1-indexed; 0 for degenerate cases).
+ */
+export interface SimResult {
+  outcome: SimOutcome;
+  r: number;
+  barsHeld: number;
+}
+
+/**
+ * Walk forward up to  bars from a confirmed displacement-continuation
+ * setup and classify the trade outcome.
+ *
+ * Conservative tie-breaking: if both SL and TP1 (or TP2) are touched in the
+ * same candle, SL wins and we record 'sl_hit'.
+ *
+ * Degenerate guards:
+ *   - R = |entry - sl| = 0  ->  { outcome:'open', r:0, barsHeld:0 }
+ *   - future.length = 0      ->  { outcome:'open', r:0, barsHeld:0 }
+ *
+ * @param future  Candles that follow the signal bar (index 0 = bar after entry).
+ * @param entry   Trade entry price (typically the close of the signal bar).
+ * @param sl      Stop-loss price.
+ * @param tp1     First profit target (1xR by convention).
+ * @param tp2     Second profit target (1.31xR by convention).
+ * @param dir     1 for bullish (long), -1 for bearish (short).
+ * @param horizon Maximum bars to walk before marking open.
+ */
+export function simulateForward(
+  future: ReadonlyArray<Pick<Candle, 'open' | 'high' | 'low' | 'close'>>,
+  entry: number,
+  sl: number,
+  tp1: number,
+  tp2: number,
+  dir: 1 | -1,
+  horizon: number,
+): SimResult {
+  // Guard: degenerate zero-R setup
+  const R = Math.abs(entry - sl);
+  if (R === 0) return { outcome: 'open', r: 0, barsHeld: 0 };
+
+  // Guard: no forward data available
+  if (future.length === 0) return { outcome: 'open', r: 0, barsHeld: 0 };
+
+  const limit = Math.min(future.length, horizon);
+
+  for (let i = 0; i < limit; i++) {
+    const c = future[i];
+
+    // Determine which levels were touched in this bar
+    const hitSl  = dir > 0 ? c.low  <= sl  : c.high >= sl;
+    const hitTp1 = dir > 0 ? c.high >= tp1 : c.low  <= tp1;
+    const hitTp2 = dir > 0 ? c.high >= tp2 : c.low  <= tp2;
+
+    // Conservative tie: SL + any TP in the same bar -> SL wins
+    if (hitSl && (hitTp1 || hitTp2)) {
+      return { outcome: 'sl_hit', r: -1.0, barsHeld: i + 1 };
+    }
+
+    if (hitSl)  return { outcome: 'sl_hit',  r: -1.0, barsHeld: i + 1 };
+
+    // TP2 implies TP1 was also passed through; record the better outcome.
+    if (hitTp2) return { outcome: 'tp2_hit', r: 1.31, barsHeld: i + 1 };
+    if (hitTp1) return { outcome: 'tp1_hit', r: 1.0,  barsHeld: i + 1 };
+  }
+
+  // Horizon exhausted without resolution -- mark-to-last-close
+  const lastClose = future[limit - 1].close;
+  const markR = dir > 0
+    ? (lastClose - entry) / R   // bullish: positive if above entry
+    : (entry - lastClose) / R;  // bearish: positive if below entry
+  return { outcome: 'open', r: markR, barsHeld: limit };
+}
