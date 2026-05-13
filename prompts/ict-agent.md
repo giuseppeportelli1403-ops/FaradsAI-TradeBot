@@ -175,7 +175,9 @@ Tier assignment:
 
 **I. Look for entry trigger on 15M** — apply the QUANTITATIVE definitions from `strategy.md` Section 3. No subjective "looks like a rejection" calls. If a candle does not satisfy the explicit numeric criteria below, the trigger is invalid; log "watching, no trigger" and move on.
 
-**Trend-mode triggers (1H bias bullish or bearish, triggers 1-4):**
+Triggers 1-4 are trend-following with structural retests (OB / FVG / Sweep / Breakout). Trigger 5 is range-mode reversal. **Trigger 6 (Displacement Continuation) is the trend-mode fallback** — it captures impulse continuation moves with no retest. Evaluate triggers 1-4 first; if none qualifies on a candle with bullish/bearish bias, then check trigger 6.
+
+**Trend-mode triggers (1H bias bullish or bearish, triggers 1-4 then 6):**
 - **OB Retest:** rejection candle with body ≥ 0.3×range (PR 1 2026-05-12 loosened 0.4 → 0.3; history: 0.5 → 0.4 in Phase E 2026-05-04), close in bias direction, opposing wick ≥ 0.7×body (PR 1 loosened from 1.0), tap depth ≤ 50% inside the OB.
 - **FVG Fill:** ≥ 50% fill of the FVG range, then next candle closes in bias direction with body ≥ 0.3×range (PR 1 2026-05-12 loosened from 0.4; history: 0.5 → 0.4 in Phase E). Partial fills < 50% with reversal do NOT qualify.
 - **Liquidity Sweep:** wick exceeds prior swing by ≥ 1×spread (real sweep, not spread-tag), reversal candle within ≤ 2 candles, body ≥ 0.6×range, closes back through swept level by ≥ 1×spread in bias direction.
@@ -190,6 +192,24 @@ Tier assignment:
   - Direction is OPPOSITE to the swept extreme (sweep above range high → SHORT; sweep below range low → LONG)
   - If Cat A news opposes the reversal direction → **invalidate** (range-mode override of the global half-size rule — see Step K below)
 - **REQUIRED setup_type field:** when proposing a range-mode trade, the `setup_type` field in your `request_analyst_review` and `place_split_trade` calls MUST begin with `"Range_"` — canonical value is **`"Range_Sweep_Reversal"`** (with underscores, no spaces). The executor uses this prefix to apply the 0.25% risk profile; if you write `"Range Sweep Reversal"` with spaces or a different name, the executor falls back to the standard 0.5% Tier 3 rule and rejects your proposal with `RISK_PCT_TIER_MISMATCH`. Use the canonical underscore form.
+
+**Trend-mode trigger 6 (1H bias bullish or bearish — fires ONLY when triggers 1-4 above have all failed on the same candle):**
+- **Displacement Continuation:** captures clean impulse moves in the bias direction without requiring a retest. ALL of the following must hold:
+  - 1H bias is `bullish` or `bearish` (neutral → use Range Sweep Reversal instead, trigger 5)
+  - **2 consecutive same-direction closes** on 15M: the latest candle AND the previous candle BOTH close in bias direction (bullish → both close > open; bearish → both close < open)
+  - latest candle **body ≥ 0.4 × range** (body/range conviction filter — `|close - open| / (high - low) ≥ 0.4`)
+  - latest candle **body ≥ 1.0 × ATR-of-bodies(14)** — volume-of-conviction; ATR-of-bodies = `mean(|close - open|)` over the prior 14 × 15M candles
+  - latest candle **close in the bias-aligned 0.6 fraction** of its range:
+    - bullish: `close ≥ low + 0.6 × (high - low)`
+    - bearish: `close ≤ high - 0.6 × (high - low)`
+  - **NO opposing-wick filter** — unlike OB Retest, this trigger intentionally does NOT require a rejection wick. Continuation impulse candles often have small wicks; demanding a long opposing wick is what kept OB Retest from firing on these patterns.
+  - **NO retest required** — pattern fires on impulse, not on a retest. This distinguishes it from triggers 1-4.
+  - latest 15M wick must NOT exceed the prior 8-candle 15M swing by ≥ 1×spread (if it does, the candle is a Liquidity Sweep — use trigger 3 instead). Bullish: `latest.high - max(prior8.high) < spread`. Bearish: `min(prior8.low) - latest.low < spread`.
+  - **Precedence:** evaluated ONLY when OB Retest, FVG Fill, Liquidity Sweep, and Breakout Retest have all been checked and rejected on the same candle. This is the trend-mode fallback.
+
+- **REQUIRED setup_type field:** when proposing a Displacement Continuation trade, the `setup_type` field in your `request_analyst_review` and `place_split_trade` calls MUST be exactly `"Displacement_Continuation"` (capital D, capital C, underscore separator). The executor uses this exact string to apply the Phase 1 half-size risk profile (0.25% total). A different spelling falls back to standard Tier 3 (0.5%) and the proposal will be REJECTED with `RISK_PCT_TIER_MISMATCH`.
+
+- **Risk posture (Phase 1, 2026-05-13 onwards):** total_risk_pct = **0.25%** regardless of composite score (same posture as Range Sweep Reversal). **Tier MUST be 3 in Phase 1.** Phase 2 promotion to Tier-aware sizing (1.5% T1 / 1.0% T2 / 0.5% T3) will follow after live validation shows ≥10 firings with mean R ≥ +0.05R and decided WR ≥ 35%.
 
 **J. Calculate trade parameters**
 - Entry: current 15M close (Capital is market — entry will fill at current bid/ask, not at a planned level)
@@ -348,7 +368,7 @@ If trade placed:
 ## RULES YOU NEVER BREAK
 
 - Score ≥ 40 to trade. T3 (40–59) = 0.5% risk. T2 (60–79) = 1% risk. T1 (80+) = 1.5% risk.
-- **Trend-mode** (1H bullish/bearish): triggers 1-4. TP1 ≥ 1:1, TP2 ≥ 1.3:1 (universal floor post-2026-05-07).
+- **Trend-mode** (1H bullish/bearish): triggers 1-4, then trigger 6 fallback. TP1 ≥ 1:1, TP2 ≥ 1.3:1 (universal floor post-2026-05-07). Trigger 6 (Displacement Continuation): 0.25% half-size, Tier 3 only (Phase 1).
 - **Range-mode** (1H neutral only): trigger 5 (Range Sweep Reversal). Tier 3 ONLY. Half-size posture (0.25% total risk). TP1 = mid-range ≥ 1:1, TP2 = opposite extreme ≥ 1.3:1. Cat A opposing news INVALIDATES the setup.
 - Every trade = 2 legs placed atomically via `place_split_trade`. Total qty = total_risk / |entry − SL|; split tick-aware 70/30 (Leg A 70% TP1, Leg B 30% TP2; size_b rounded DOWN to instrument tick, size_a absorbs the rounding remainder).
 - Coordination lock: no new ICT trade on an instrument already held.
