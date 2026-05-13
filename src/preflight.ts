@@ -29,7 +29,6 @@ const OPTIONAL_KEYS = [
   { key: 'TELEGRAM_BOT_TOKEN', feature: 'Telegram alerts' },
   { key: 'TELEGRAM_CHAT_ID', feature: 'Telegram alerts' },
   { key: 'TWELVE_DATA_API_KEY', feature: 'Twelve Data candles' },
-  { key: 'FINNHUB_API_KEY', feature: 'Economic calendar' },
   { key: 'FRED_API_KEY', feature: 'Yield curve' },
   { key: 'MARKETAUX_API_KEY', feature: 'News feed (sentiment)' },
 ] as const;
@@ -120,7 +119,7 @@ async function verifyCapitalConnectivity(): Promise<void> {
  * 2026-05-05 audit (Phase 2 / Round 2 / item 2.1).
  *
  * Emits ONE Telegram alert at startup listing optional env vars that are
- * missing AND would cause silent feature degradation (TWELVE_DATA, FINNHUB,
+ * missing AND would cause silent feature degradation (TWELVE_DATA,
  * FRED, MARKETAUX, TELEGRAM_*). Pre-fix the warnings only printed to
  * console; ops never noticed when a deploy lost a key. Skips warnings
  * for keys with sensible defaults (CAPITAL_API_URL).

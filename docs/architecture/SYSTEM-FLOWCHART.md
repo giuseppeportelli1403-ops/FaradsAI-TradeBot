@@ -68,7 +68,7 @@ graph LR
 
     CapitalSing -->|HTTP CST + X-SECURITY-TOKEN| Capital
 
-    RSS -->|18 feeds rss-feeds.ts| RSS
+    RSS -->|6 Tier-1 feeds rss-feeds.ts| RSS
 ```
 
 Reading the arrows: `Scheduler -->|"*/1 * * * *"| ICT` means the scheduler's 1-minute cron is what wakes the ICT agent. The candle-close gate inside that cron decides whether the agent actually runs.
@@ -111,7 +111,7 @@ flowchart TD
 | `0 22 * * 0` | Market Researcher (weekly outlook) | `scheduler/index.ts:902-904` | Sunday 22:00 UTC |
 | `0 0 * * 0` | Weekly Review Agent | `scheduler/index.ts:919-921` | Sunday 00:00 UTC |
 | `30 21 * * 1-5` | EOD Journal Agent | `scheduler/index.ts:927-929` | Mon-Fri 21:30 UTC |
-| `*/10 * * * *` | RSS news poll (18 feeds) | `scheduler/index.ts:934-936` | Every 10 minutes |
+| `*/10 * * * *` | RSS news poll (6 Tier-1 feeds) | `scheduler/index.ts:934-936` | Every 10 minutes |
 | `5 0 * * *` | Reject metrics dump (spawned `npx tsx`) | `scheduler/index.ts:950-960` | Daily 00:05 UTC |
 
 Every job is wrapped with `{timezone: 'UTC'}` (`scheduler/index.ts:700`) — Hetzner is UTC+1/+2, so without this the EOD cron would fire at 19:30 UTC instead of 21:30.
@@ -317,7 +317,7 @@ flowchart TD
     SZQ -- yes --> Step4[Step 4 — coordination lock<br/>DB + live Capital<br/>:1357-1388]
     Step4 --> CL{open trade in DB?<br/>live position on epic?}
     CL -- yes --> E4[COORDINATION_LOCK / COORDINATION_LOCK_LIVE / LIVE_POSITION_CHECK_FAILED]
-    CL -- no --> Step5[Step 5 — calendar veto<br/>Finnhub + ForexFactory<br/>:1390-1433]
+    CL -- no --> Step5[Step 5 — calendar veto<br/>ForexFactory<br/>:1465-1511]
     Step5 --> CV{shouldVetoOrderForCalendar?}
     CV -- yes --> E5[CALENDAR_VETO / CALENDAR_FETCH_FAILED]
     CV -- no --> Step6[Step 6 — place legs sequentially<br/>:1440-1496]
@@ -416,7 +416,7 @@ Tier 0 was the 2026-05-07 SILVER incident fix: an `EDIT_STOP_AND_LIMIT` activity
 | **Market Researcher (weekly)** | `0 22 * * 0` | same agent | same | same |
 | **EOD Journal** | `30 21 * * 1-5` | `eod-journal-agent.ts`, scheduled at `scheduler/index.ts:927` | `getTradesForWeek`, `getDailyPnl`, `getLatestBrief`, `getLessons` | `journal/YYYY-MM-DD.md` (file) — preamble for next day's ICT cycle via `loadRecentJournal` (`eod-journal-agent.ts:67-91`) |
 | **Weekly Review** | `0 0 * * 0` | `review-agent.ts`, scheduled at `scheduler/index.ts:919` | `getTradesForWeek`, `getLessons`, `getLessonWinRate` | `memory/strategy.md` updates (file) + Telegram `alertWeeklyReport` |
-| **RSS Poll** | `*/10 * * * *` | `news/rss-aggregator.ts`, scheduled at `scheduler/index.ts:934` | 18 feeds (`news/rss-feeds.ts:39+`), Tier 1/2/3 | in-process cache (`POLL_FRESH_MS = 10min`, `rss-aggregator.ts:35`); merged with MarketAux on `getNewsScore` |
+| **RSS Poll** | `*/10 * * * *` | `news/rss-aggregator.ts`, scheduled at `scheduler/index.ts:934` | 6 Tier-1 feeds (`news/rss-feeds.ts:39+`; post-2026-05-13 news pruning, per specs/001-news-pruning/) | in-process cache (`POLL_FRESH_MS = 10min`, `rss-aggregator.ts:35`); merged with MarketAux on `getNewsScore` |
 | **Capital keep-alive** | `*/8 * * * *` | `scheduler/index.ts:894`, `pingKeepAlive` at `:645-676` | none | Telegram alert on 3-failure streak (`PING_ALERT_THRESHOLD = 3`, `:615`) |
 | **Reject metrics dump** | `5 0 * * *` | `scheduler/index.ts:950-960`, spawns `npx tsx scripts/dump-reject-metrics.ts` (detached) | pm2 logs / DB | log file |
 | **Reflection (event-triggered)** | not cron — fires on TP/SL fill detection | `scheduler/index.ts:761-778` (decideReflectionQueue) | trade row + closed PnL | `lessons` table via `insertLesson` |
@@ -457,7 +457,7 @@ All agents use Claude via the Anthropic SDK (Haiku 4.5 + Sonnet 4.6). The bot do
 | `get_ranked_instruments` | yes | scanner output, includes `min_deal_size` since 2026-05-09 |
 | `get_prices` | yes | OHLC fetch |
 | `get_news_context` | yes | per-instrument news score |
-| `get_economic_calendar` | yes | Finnhub upcoming high/medium/low |
+| `get_economic_calendar` | yes | Forex Factory upcoming high/medium/low |
 | `get_lessons` | yes | filtered past lessons |
 | `request_analyst_review` | NO (spawns sub-LLM, mutates approval map) | mandatory pre-trade gate |
 | `place_split_trade` | NO | atomic 2-leg placement |

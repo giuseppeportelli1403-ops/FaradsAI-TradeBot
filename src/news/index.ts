@@ -75,11 +75,13 @@ export async function getNewsContext(instrument: string): Promise<ScoredNews> {
     marketauxFailed = true;
   }
 
-  // B3 (2026-04-28): merge cached RSS articles into the MarketAux pool.
-  // RSS feeds (FXStreet, Kitco, OilPrice, Fed/ECB/BoE, etc) cover FX +
-  // commodity narratives that MarketAux's equity-centric entity DB misses.
-  // The aggregator polls 18 feeds every 10 min via cron; here we just read
-  // from cache. Articles deduped by canonical URL against MarketAux items.
+  // 2026-05-13 (post news-pruning, specs/001-news-pruning/): merge cached
+  // RSS articles into the MarketAux pool. RSS feeds are now 6 Tier-1
+  // sources covering Fed/ECB/BoE primary press releases plus FX specialists
+  // (ActionForex, ForexLive, Investing.com Forex Opinion) — see
+  // src/news/rss-feeds.ts for the full list. Aggregator polls every 10 min
+  // via cron; here we just read from cache. Articles deduped by canonical
+  // URL against MarketAux items.
   const currencies = instrumentToCurrencies(instrument);
   const rssArticles = getRssNewsForInstrument(instrument, currencies, {
     maxAgeHours: 24,

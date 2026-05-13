@@ -2,8 +2,9 @@
 //
 // Production motivation: pre-2026-04-28, the ICT trading agent had no
 // awareness of high-impact macro events (FOMC, NFP, CPI, ECB, BoE) at the
-// moment of decision. fetchEconomicCalendar was implemented in market-data.ts
-// but never exposed via MCP_TOOLS, and there was no code-level pre-trade veto.
+// moment of decision. fetchForexFactoryCalendar in
+// src/news/forex-factory-calendar.ts is the sole calendar source (as of
+// 2026-05-13 news-pruning), and there was no code-level pre-trade veto.
 // Bot would happily place orders 5 minutes before NFP.
 //
 // This module provides:

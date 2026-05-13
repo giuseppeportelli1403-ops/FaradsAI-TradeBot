@@ -1,12 +1,12 @@
 // Market Data Clients — External API integrations
-// Provides price data, economic calendar, yields, sector strength, news
+// Provides price data, yields, sector strength, news (economic calendar moved to src/news/forex-factory-calendar.ts on 2026-05-13)
 //
 // APIs used:
 //   Twelve Data   — OHLC candles (800 req/day free, 8 credits/min)
-//   Finnhub       — Economic calendar (60 req/min free)
 //   Yahoo Finance — Sector strength via sector ETFs (no key, unofficial)
 //   FRED          — Treasury yields (unlimited free)
 //   MarketAux     — News with per-entity sentiment (100 req/day free)
+//   ForexFactory  — Economic calendar (free XML scrape, see src/news/forex-factory-calendar.ts)
 
 import axios from 'axios';
 import YahooFinance from 'yahoo-finance2';
@@ -429,7 +429,7 @@ export async function fetchCandles(
 // which calls these in `Promise.all`; one rejection would otherwise tear
 // down the whole research cycle. Observed failure on 2026-04-21 05:30 UTC
 // when the Twelve Data daily cap was tripped — Researcher crashed before
-// reaching Finnhub/FRED/Yahoo stages.
+// reaching FRED/Yahoo stages.
 //
 // The fallback log (`[Market Data] Fallback triggered: ...`) is intentionally
 // loud so ops notices. If a brief is generated with multiple fallbacks,
@@ -492,36 +492,6 @@ export async function computeCorrelation(
   });
 }
 
-// ==================== FINNHUB ====================
-// Covers: Economic calendar
-
-const FINNHUB_BASE = 'https://finnhub.io/api/v1';
-
-export async function fetchEconomicCalendar(daysAhead: number): Promise<EconomicEvent[]> {
-  return withFallback(async () => {
-    const apiKey = process.env.FINNHUB_API_KEY;
-    if (!apiKey) { console.error('[Market Data] FINNHUB_API_KEY not set'); return []; }
-
-    const from = new Date().toISOString().split('T')[0];
-    const to = new Date(Date.now() + daysAhead * 86400000).toISOString().split('T')[0];
-
-    const { data } = await axios.get(`${FINNHUB_BASE}/calendar/economic`, {
-      params: { from, to, token: apiKey },
-    });
-
-    return (data.economicCalendar || []).map((e: Record<string, unknown>) => ({
-      date: e.date as string,
-      time: e.time as string || '',
-      event: e.event as string,
-      country: e.country as string,
-      impact: e.impact as 'high' | 'medium' | 'low',
-      actual: e.actual as string | null,
-      estimate: e.estimate as string | null,
-      previous: e.prev as string | null,
-      affected_instruments: [] as string[],
-    })) as EconomicEvent[];
-  }, [] as EconomicEvent[]);
-}
 
 // ==================== YAHOO FINANCE (SECTOR STRENGTH) ====================
 // FMP's /sector-performance was deprecated 2025-08-31. We now compute sector

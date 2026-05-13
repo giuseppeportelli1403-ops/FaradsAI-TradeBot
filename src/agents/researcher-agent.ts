@@ -10,7 +10,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPromptWithSystemTime } from './load-prompt.js';
 import { withTimeout } from './llm-output.js';
-import { fetchYieldCurve, fetchEconomicCalendar, fetchSectorStrength } from '../mcp-server/market-data.js';
+import { fetchYieldCurve, fetchSectorStrength } from '../mcp-server/market-data.js';
+import { fetchForexFactoryCalendar } from '../news/forex-factory-calendar.js';
 import { getRankedInstruments, INSTRUMENT_UNIVERSE } from '../scanner/index.js';
 import { saveResearchBrief } from '../database/index.js';
 import type { ResearchBrief, RegimeData, EconomicEvent, SectorStrength } from '../types.js';
@@ -228,7 +229,7 @@ export async function runResearcherAgent(): Promise<ResearchBrief> {
   // rather than guessing").
   const [yieldsResult, calendarResult, sectorsResult] = await Promise.allSettled([
     fetchYieldCurve(),
-    fetchEconomicCalendar(5),
+    fetchForexFactoryCalendar(),
     fetchSectorStrength(),
   ]);
 

@@ -12,9 +12,10 @@ import { CapitalClient } from '../capital-client.js';
 import { wrapTool } from '../logger.js';
 import {
   fetchCandles, fetchYieldCurve,
-  fetchEconomicCalendar, fetchSectorStrength, fetchNewsContext,
+  fetchSectorStrength, fetchNewsContext,
   computeCorrelation,
 } from '../market-data.js';
+import { fetchForexFactoryCalendar } from '../../news/forex-factory-calendar.js';
 import { saveResearchBrief } from '../../database/index.js';
 import type { Timeframe, Resolution } from '../../types.js';
 
@@ -117,12 +118,13 @@ export function registerMarketDataTools(server: McpServer): void {
     'get_economic_calendar',
     {
       title: 'Get Economic Calendar',
-      description: 'Get upcoming macro economic events (FOMC, NFP, CPI, central bank decisions) from Finnhub for the next N days.',
-      inputSchema: { days_ahead: z.number().optional().default(5).describe('Number of days ahead to check') },
+      description: 'Get upcoming macro economic events (FOMC, NFP, CPI, central bank decisions) from Forex Factory for the current and next week. Note: the days_ahead parameter is accepted for API backward-compatibility but is currently ignored — FF always returns the current + next week.',
+      inputSchema: { days_ahead: z.number().optional().default(1).describe('Number of days ahead to check (accepted for backward-compat; currently ignored — FF returns current + next week)') },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('get_economic_calendar', async ({ days_ahead }) => {
-      const events = await fetchEconomicCalendar(days_ahead);
+      // 2026-05-13: days_ahead kept for backward-compat but ignored — FF returns current + next week.
+      const events = await fetchForexFactoryCalendar();
       return { content: [{ type: 'text' as const, text: JSON.stringify(events) }] };
     })
   );
