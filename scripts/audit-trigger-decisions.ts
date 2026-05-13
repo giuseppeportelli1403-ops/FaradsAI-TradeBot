@@ -548,7 +548,7 @@ export function checkFvgFill(
 // Bullish bias: sweep is BELOW (wick takes out lowest low), reversal closes
 // back ABOVE swept level. Bearish bias: sweep above highest high, reversal
 // closes back below.
-function checkLiquiditySweep(
+export function checkLiquiditySweep(
   m15: Candle[],
   bias: 'bullish' | 'bearish',
   spread: number,
@@ -664,7 +664,7 @@ function findFractalSwings(
 //
 // If no fractal swing exists in the 30-candle lookback, return false with
 // the reason 'no confirmed fractal swing in 30-candle lookback'.
-function checkBreakoutRetest(
+export function checkBreakoutRetest(
   m15: Candle[],
   bias: 'bullish' | 'bearish',
 ): TriggerResult {

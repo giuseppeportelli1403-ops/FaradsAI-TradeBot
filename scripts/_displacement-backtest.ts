@@ -51,3 +51,37 @@ export function detectBias(candles1h: ReadonlyArray<Pick<Candle, 'high' | 'low'>
   if (lh && ll) return 'bearish';
   return 'neutral';
 }
+
+// ---------------------------------------------------------------------------
+// Task 3: Precedence check — existingTriggerFires
+//
+// Returns true if ANY of the 4 existing trend triggers (OB Retest, FVG Fill,
+// Liquidity Sweep, Breakout Retest) qualifies on the given candle array.
+// The Displacement Continuation trigger should only fire when NONE of these
+// qualify — this function implements that gate.
+//
+// Signature mirrors the exported detectors in audit-trigger-decisions.ts.
+// qualifies === true means the detector confirms a trigger (boolean per
+// TriggerResult type, not 'yes'/'no').
+// ---------------------------------------------------------------------------
+import {
+  checkObRetest,
+  checkFvgFill,
+  checkLiquiditySweep,
+  checkBreakoutRetest,
+} from './audit-trigger-decisions.js';
+
+export function existingTriggerFires(
+  candles15m: ReadonlyArray<Candle>,
+  bias: Bias,
+  spread: number,
+): boolean {
+  if (bias === 'neutral') return false;
+  const m15 = candles15m as Candle[];
+  const dir = bias as 'bullish' | 'bearish';
+  if (checkObRetest(m15, dir).qualifies === true) return true;
+  if (checkFvgFill(m15, dir).qualifies === true) return true;
+  if (checkLiquiditySweep(m15, dir, spread).qualifies === true) return true;
+  if (checkBreakoutRetest(m15, dir).qualifies === true) return true;
+  return false;
+}
