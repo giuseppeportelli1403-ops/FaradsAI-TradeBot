@@ -123,7 +123,7 @@ export function registerMarketDataTools(server: McpServer): void {
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     wrapTool('get_economic_calendar', async ({ days_ahead }) => {
-      // 2026-05-13: Finnhub removed. days_ahead kept for backward-compat but ignored.
+      // 2026-05-13: days_ahead kept for backward-compat but ignored — FF returns current + next week.
       const events = await fetchForexFactoryCalendar();
       return { content: [{ type: 'text' as const, text: JSON.stringify(events) }] };
     })

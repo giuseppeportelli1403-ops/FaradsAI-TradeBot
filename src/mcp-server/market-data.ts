@@ -1,12 +1,12 @@
 // Market Data Clients — External API integrations
-// Provides price data, economic calendar, yields, sector strength, news
+// Provides price data, yields, sector strength, news (economic calendar moved to src/news/forex-factory-calendar.ts on 2026-05-13)
 //
 // APIs used:
 //   Twelve Data   — OHLC candles (800 req/day free, 8 credits/min)
-//   Finnhub       — Economic calendar (60 req/min free)
 //   Yahoo Finance — Sector strength via sector ETFs (no key, unofficial)
 //   FRED          — Treasury yields (unlimited free)
 //   MarketAux     — News with per-entity sentiment (100 req/day free)
+//   ForexFactory  — Economic calendar (free XML scrape, see src/news/forex-factory-calendar.ts)
 
 import axios from 'axios';
 import YahooFinance from 'yahoo-finance2';
@@ -429,7 +429,7 @@ export async function fetchCandles(
 // which calls these in `Promise.all`; one rejection would otherwise tear
 // down the whole research cycle. Observed failure on 2026-04-21 05:30 UTC
 // when the Twelve Data daily cap was tripped — Researcher crashed before
-// reaching Finnhub/FRED/Yahoo stages.
+// reaching FRED/Yahoo stages.
 //
 // The fallback log (`[Market Data] Fallback triggered: ...`) is intentionally
 // loud so ops notices. If a brief is generated with multiple fallbacks,

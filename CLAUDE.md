@@ -64,7 +64,7 @@ src/mcp-server/
 ├── index.ts                    (41 lines — entry point)
 ├── logger.ts                   (32 lines — wrapTool error boundaries + request logging)
 ├── capital-client.ts           (~680 lines — Capital.com REST client: session mgmt + deal confirmation polling)
-├── market-data.ts              (274 lines — Twelve Data, Finnhub, FMP, FRED, Alpha Vantage)
+├── market-data.ts              (~1106 lines — Twelve Data, Yahoo Finance, FRED, MarketAux, ForexFactory)
 └── tools/
     ├── trading-tools.ts        (155 lines — 6 tools, destructiveHint: true on orders)
     ├── market-data-tools.ts    (155 lines — 9 tools, readOnlyHint: true)
@@ -152,7 +152,6 @@ Still pending: Blocker 6 (24h `capital.ping()` keep-alive soak) and the broader 
 | TELEGRAM_BOT_TOKEN | @BotFather on Telegram | Pending |
 | TELEGRAM_CHAT_ID | Send /start to bot | Pending |
 | TWELVE_DATA_API_KEY | twelvedata.com (free: 800 req/day) | Pending |
-| FINNHUB_API_KEY | finnhub.io (free: 60 req/min) | Pending |
 | FMP_API_KEY | financialmodelingprep.com (free: 250 req/day) | Pending |
 | FRED_API_KEY | fred.stlouisfed.org (free, unlimited) | Pending |
 | ALPHA_VANTAGE_API_KEY | alphavantage.co (free: 25 req/day) | Pending |

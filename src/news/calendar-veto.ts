@@ -1,10 +1,11 @@
 // Economic-calendar veto helper.
 //
 // Pre-2026-04-28, the ICT trading agent had zero awareness of high-impact
-// macro events at decision time. fetchEconomicCalendar in market-data.ts was
-// implemented but never exposed via MCP_TOOLS, and there was no code-level
-// pre-trade veto. This module supplies both pieces: a pure helper that the
-// place_order executor calls before submitting any order to Capital.com.
+// macro events at decision time. fetchForexFactoryCalendar in
+// src/news/forex-factory-calendar.ts is the sole calendar source as of
+// 2026-05-13 (news-pruning pass), and there was no code-level pre-trade
+// veto until this module. This module supplies both pieces: a pure helper
+// that the place_order executor calls before submitting any order to Capital.com.
 //
 // Defense-in-depth pattern: the agent ALSO sees the calendar via the
 // `get_economic_calendar` MCP tool (added in trading-agent.ts), but the code

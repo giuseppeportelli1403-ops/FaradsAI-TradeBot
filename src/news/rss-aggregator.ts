@@ -1,6 +1,6 @@
 // Tiered RSS news aggregator — B3 (2026-04-28).
 //
-// Polls 18 hand-curated RSS feeds (see rss-feeds.ts), parses each into a
+// Polls 6 hand-curated Tier-1 RSS feeds (see rss-feeds.ts), parses each into a
 // normalised RssArticle record with tier metadata, and caches per-feed.
 // The aggregator complements MarketAux + Jina Reader, NOT replaces them:
 // when the agent calls getNewsContext(instrument), the existing pipeline

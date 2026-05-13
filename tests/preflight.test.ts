@@ -18,7 +18,6 @@ describe('checkEnvKeys', () => {
     delete process.env.TELEGRAM_BOT_TOKEN;
     delete process.env.TELEGRAM_CHAT_ID;
     delete process.env.TWELVE_DATA_API_KEY;
-    delete process.env.FINNHUB_API_KEY;
     delete process.env.FMP_API_KEY;
     delete process.env.FRED_API_KEY;
     delete process.env.MARKETAUX_API_KEY;
@@ -93,7 +92,6 @@ describe('checkEnvKeys', () => {
     process.env.TELEGRAM_BOT_TOKEN = 't';
     process.env.TELEGRAM_CHAT_ID = 'c';
     process.env.TWELVE_DATA_API_KEY = 'td';
-    process.env.FINNHUB_API_KEY = 'fh';
     process.env.FMP_API_KEY = 'fmp';
     process.env.FRED_API_KEY = 'fred';
     process.env.MARKETAUX_API_KEY = 'mktaux';
@@ -251,7 +249,7 @@ describe('alertOnDegradedEnv', () => {
     const calls: string[] = [];
     const warnings = [
       'OPTIONAL: TELEGRAM_BOT_TOKEN is not set — Telegram alerts will be disabled',
-      'OPTIONAL: FINNHUB_API_KEY is not set — Economic calendar will be disabled',
+      'OPTIONAL: TWELVE_DATA_API_KEY is not set — Twelve Data candles will be disabled',
     ];
     await alertOnDegradedEnv(warnings, async (m) => { calls.push(m); }, false);
     expect(calls).toHaveLength(0); // Telegram fn NOT called

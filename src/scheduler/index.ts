@@ -1022,7 +1022,7 @@ export function startScheduler(): void {
     await safeRun('EOD Journal Agent', () => runEodJournalAgent());
   }, CRON_UTC);
 
-  // Every 10 minutes: poll all 18 RSS feeds (B3, 2026-04-28).
+  // Every 10 minutes: poll all 6 Tier-1 RSS feeds (B3 lineage; pruned 2026-05-13 per specs/001-news-pruning/).
   // Tiered FX/commodity-specialist news pipeline — see src/news/rss-feeds.ts.
   // Failures isolated per feed; one dead source doesn't take down the rest.
   cron.schedule('*/10 * * * *', async () => {
@@ -1115,6 +1115,6 @@ export function startScheduler(): void {
   console.log('  0 22 * * 0            — Market Researcher (weekly)');
   console.log('  0 0 * * 0             — Weekly Review Agent');
   console.log('  30 21 * * 1-5         — EOD Journal Agent (Mon-Fri after US close)');
-  console.log('  */10 * * * *          — RSS news poll (18 feeds, Tier 1/2/3)');
+  console.log('  */10 * * * *          — RSS news poll (6 Tier-1 feeds)');
   console.log('  5 0 * * *             — Reject metrics dump (previous UTC day) + Daily P&L aggregator (self-healing retry + roll-up)');
 }

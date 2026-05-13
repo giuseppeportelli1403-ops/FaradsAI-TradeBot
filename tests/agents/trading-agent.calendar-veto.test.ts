@@ -1,13 +1,13 @@
-// Regression test: FF-only calendar veto path fires correctly after Finnhub removal.
+// Regression test: FF-only calendar veto path fires correctly (post news-pruning).
 //
 // Why this test exists: Codex twin review during planning (spec/news-pruning)
-// flagged that Task 3's test only verifies `fetchEconomicCalendar` is removed —
+// flagged that Task 3's test only verifies the old calendar helper is removed —
 // it doesn't prove the live veto path still fires. Since shouldVetoOrderForCalendar
 // is the hard pre-LLM gate, this test exercises the post-removal code path
 // with a known FOMC event 30 minutes ahead of "now".
 //
-// The mock proves the code path now flows through FF (not Finnhub):
-// `fetchEconomicCalendar` is gone and cannot be called.
+// The mock proves the code path flows through fetchForexFactoryCalendar (sole
+// calendar source); the old economic-calendar helper is gone and cannot be called.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   instrumentToCurrencies,
@@ -64,7 +64,7 @@ const FOMC_EVENT: EconomicEvent = makeEvent({
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('trading-agent calendar-veto regression — FF-only path (post-Finnhub-removal)', () => {
+describe('trading-agent calendar-veto regression — FF-only path (post-news-pruning)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });

@@ -846,7 +846,7 @@ export async function executeTool(name: string, input: Record<string, unknown>):
     case 'get_news_context':
       return JSON.stringify(await fetchNewsRaw(input.instrument as string));
     case 'get_economic_calendar': {
-      // 2026-05-13: tool now serves FF calendar only (Finnhub removed).
+      // 2026-05-13: tool now serves FF calendar only (sole source per news-pruning).
       // daysAhead is ignored — FF returns the current week + next week.
       return JSON.stringify(await fetchForexFactoryCalendar());
     }
@@ -1465,10 +1465,10 @@ export async function executeTool(name: string, input: Record<string, unknown>):
       // === Step 5: calendar veto (fail-closed on fetch error)
       // 2026-04-29 audit-3 fix (P0-4): drop the `.catch(() => [])` on
       // fetchForexFactoryCalendar. Pre-fix, an FF outage silently swallowed
-      // the error and returned [] — the calendar veto then ran on Finnhub
-      // alone, leaving FX-calibrated tier-1 events that Finnhub doesn't
-      // carry (or carries late) invisible. The outer try/catch already
-      // fails closed on Promise.all rejection; let FF rejection propagate.
+      // the error and returned [] — the calendar veto then ran on an empty
+      // set, leaving FX-calibrated tier-1 events invisible. The outer
+      // try/catch already fails closed on Promise.all rejection; let FF
+      // rejection propagate.
       const tradeCurrencies = instrumentToCurrencies(epic);
       if (tradeCurrencies.length === 0) {
         // 2026-05-05 audit (A4): pre-fix this silently bypassed the calendar
@@ -1485,16 +1485,13 @@ export async function executeTool(name: string, input: Record<string, unknown>):
         });
       }
       try {
-        // 2026-05-13 news-pruning: Finnhub branch removed. FF is now the
-        // sole calendar source for the veto. Pre-removal, the Promise.all
-        // union with Finnhub provided one layer of defense-in-depth when
-        // fetchForexFactoryWeek (:170-172, :175) silently returns [] on
-        // network/HTTP failure. With Finnhub gone, an FF outage that
-        // returns silent [] would let trades through that should have
-        // been vetoed. Hardening this silent-[] path in FF itself is
-        // tracked as follow-up work, not in this PR (FR-4 said "no new
-        // behaviour"). The outer try/catch below still fails closed on
-        // any FF rejection that propagates past the silent-[] handler.
+        // 2026-05-13 news-pruning: FF is the sole calendar source for
+        // the veto (specs/001-news-pruning/). An FF outage that returns
+        // silent [] would let trades through that should have been vetoed.
+        // Hardening this silent-[] path in FF itself is tracked as
+        // follow-up work, not in this PR (FR-4 said "no new behaviour").
+        // The outer try/catch below still fails closed on any FF rejection
+        // that propagates past the silent-[] handler.
         const calendar = await fetchForexFactoryCalendar();
         const veto = shouldVetoOrderForCalendar(tradeCurrencies, calendar, Date.now());
         if (veto.veto) {

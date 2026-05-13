@@ -11,9 +11,10 @@
 //   - https://nfs.faireconomy.media/ff_calendar_nextweek.xml  (next week)
 //
 // We poll thisweek hourly and nextweek daily, parse to the EconomicEvent
-// shape used by the existing calendar veto, and merge with Finnhub's feed.
-// FF and Finnhub both have known gaps; the union is more accurate than
-// either alone.
+// shape used by the existing calendar veto. FF is the sole calendar source
+// as of the 2026-05-13 news-pruning pass (specs/001-news-pruning/) —
+// previously unioned with a secondary economic-calendar API that had FX-tier
+// blind spots that FF covers; see specs/001-news-pruning/ for context.
 import axios from 'axios';
 import type { EconomicEvent } from '../types.js';
 
@@ -182,8 +183,8 @@ export async function fetchForexFactoryWeek(url: string): Promise<EconomicEvent[
 
 /**
  * Combined "this week + next week" calendar. Used by the calendar veto
- * helper as a richer / FX-calibrated alternative to Finnhub. Returns
- * union; deduped is unnecessary because each event is unique by date+title.
+ * helper as the calendar source (sole path since 2026-05-13 news-pruning).
+ * Returns union; deduped is unnecessary because each event is unique by date+title.
  */
 export async function fetchForexFactoryCalendar(): Promise<EconomicEvent[]> {
   const [thisWeek, nextWeek] = await Promise.all([

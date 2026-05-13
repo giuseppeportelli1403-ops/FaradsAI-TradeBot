@@ -266,7 +266,6 @@ ANTHROPIC_API_KEY=your_anthropic_api_key
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 TWELVE_DATA_API_KEY=your_twelve_data_api_key
-FINNHUB_API_KEY=your_finnhub_api_key
 FMP_API_KEY=your_fmp_api_key
 FRED_API_KEY=your_fred_api_key
 ALPHA_VANTAGE_API_KEY=your_alpha_vantage_api_key
