@@ -514,7 +514,10 @@ event 30 min ahead must veto a EURUSD trade."
 - Modify: `src/news/forex-factory-calendar.ts:14-15, :185` — "FF alongside Finnhub" comments
 - Modify: `src/news/calendar-veto.ts:4` — historical comment
 - Modify: `src/news/index.ts:79-82` — feed-list comment (18 feeds → 6)
+- Modify: `src/preflight.ts:32` — DELETE `OPTIONAL_KEYS` entry for FINNHUB_API_KEY
+- Modify: `src/preflight.ts:123` — drop FINNHUB from the doc-comment list of silent-degradation keys
 - Modify: `tests/calendar-veto.test.ts:5` — historical comment
+- Modify: `tests/preflight.test.ts:21, :96, :254` — three Finnhub fixture references
 - Modify: `.env.example:16` — DELETE `FINNHUB_API_KEY=...` line
 - Modify: `TRADING_BOT_MASTER.md:269` — DELETE `FINNHUB_API_KEY=...` line
 - Modify: `CLAUDE.md:67` — remove "Finnhub" from data-source inventory
@@ -635,7 +638,62 @@ Line 67 currently reads `├── market-data.ts (274 lines — Twelve Data, Fi
 
 Line 155 is a table row: `| FINNHUB_API_KEY | finnhub.io (free: 60 req/min) | Pending |`. Delete the entire row.
 
-- [ ] **Step 6.12: Verification — zero-grep pass**
+- [ ] **Step 6.12: Remove `FINNHUB_API_KEY` from runtime preflight**
+
+Read `src/preflight.ts:20-60` first to confirm the `OPTIONAL_KEYS` array shape.
+
+Use the `Edit` tool to delete the entire entry at line 32:
+
+`old_string`:
+```ts
+  { key: 'FINNHUB_API_KEY', feature: 'Economic calendar' },
+```
+
+`new_string`: *(empty — delete the line)*
+
+Then read `src/preflight.ts:118-135` and update the doc-comment at line 122-124. Current text:
+```
+missing AND would cause silent feature degradation (TWELVE_DATA, FINNHUB,
+FRED, MARKETAUX, TELEGRAM_*). Pre-fix the warnings only printed to
+```
+
+Replace `TWELVE_DATA, FINNHUB, FRED, MARKETAUX` with `TWELVE_DATA, FRED, MARKETAUX` (drop the FINNHUB token).
+
+- [ ] **Step 6.13: Update `tests/preflight.test.ts`**
+
+Three edits in this file.
+
+**Edit A — beforeEach teardown (line 21):**
+
+Delete the line:
+```ts
+    delete process.env.FINNHUB_API_KEY;
+```
+
+**Edit B — all-keys-set fixture (line 96):**
+
+Delete the line:
+```ts
+    process.env.FINNHUB_API_KEY = 'fh';
+```
+
+**Edit C — Telegram-fallback test fixture (line 254):**
+
+The test passes a fixture `warnings` array to `alertOnDegradedEnv`. The Finnhub line is just test data, not an assertion target — but it references a now-nonexistent OPTIONAL key, which would mislead future readers. Read `:250-265` first, then replace the Finnhub fixture line with a still-existing optional key.
+
+`old_string`:
+```ts
+      'OPTIONAL: FINNHUB_API_KEY is not set — Economic calendar will be disabled',
+```
+
+`new_string`:
+```ts
+      'OPTIONAL: TWELVE_DATA_API_KEY is not set — Twelve Data candles will be disabled',
+```
+
+After these three edits, run `npm test -- tests/preflight.test.ts` and confirm all tests pass.
+
+- [ ] **Step 6.14: Verification — zero-grep pass**
 
 Run each grep command separately and capture output:
 
@@ -658,7 +716,7 @@ grep -n -i "finnhub" CLAUDE.md TRADING_BOT_MASTER.md .env.example
 
 **Acceptance:** each of the 5 greps returns zero matches **except** historical artifacts under `docs/superpowers/plans/`, `docs/superpowers/specs/`, `BENCHMARK_REPORT.md`, `audit/`, and `memory/` — those are intentionally preserved as point-in-time snapshots and should still match. Any unexpected hit means a cleanup miss — fix and re-run.
 
-- [ ] **Step 6.13: Verify tests still pass with tier-2/3 fixtures**
+- [ ] **Step 6.15: Verify tests still pass with tier-2/3 fixtures**
 
 The tests at `tests/news.test.ts:316,323,330` and `tests/rss-aggregator.test.ts:17,52,59` construct fixture RSS articles with `tier: 2` and `tier: 3` directly. These are SYNTHETIC fixtures, not derived from `RSS_FEEDS`, so they will still typecheck and run after the pruning (the `FeedTier` type still admits 2 and 3 per FR-7). 
 
@@ -670,10 +728,10 @@ If any fail, the failure is either:
 - a test that depended on a specific feed's URL or notes string — fix the test
 - a real regression in the tier-branch logic — STOP and investigate
 
-- [ ] **Step 6.14: Commit the sweep**
+- [ ] **Step 6.16: Commit the sweep**
 
 ```bash
-git add src/mcp-server/market-data.ts src/news/forex-factory-calendar.ts src/news/calendar-veto.ts src/news/index.ts tests/calendar-veto.test.ts .env.example TRADING_BOT_MASTER.md CLAUDE.md
+git add src/mcp-server/market-data.ts src/news/forex-factory-calendar.ts src/news/calendar-veto.ts src/news/index.ts src/preflight.ts tests/calendar-veto.test.ts tests/preflight.test.ts .env.example TRADING_BOT_MASTER.md CLAUDE.md
 git commit -m "chore(news): strip dead Finnhub + dropped-feed references
 
 Comment + config cleanup pass per Codex twin review and user
@@ -721,26 +779,36 @@ Expected: Agreement rate **≥ 95.0%** (within ±0.2% of the pre-change 95.2% ba
 ### Task 8: Update the architecture doc
 
 **Files:**
-- Modify: `docs/architecture/SYSTEM-FLOWCHART.md` (news ingestion section — locate via grep for "news" / "RSS" / "Finnhub" / "MarketAux")
+- Modify: `docs/architecture/SYSTEM-FLOWCHART.md:320` — Mermaid node "Step 5 — calendar veto / Finnhub + ForexFactory / :1390-1433" (now FF-only; line numbers in the comment also drift after the Finnhub removal)
+- Modify: `docs/architecture/SYSTEM-FLOWCHART.md:460` — tool table row `` `get_economic_calendar` | yes | Finnhub upcoming high/medium/low `` (now FF-backed)
+- Plus any other Finnhub or 18-RSS-feed mentions that fall out of a `Finnhub` / `Finnhub + ForexFactory` / `18 RSS feeds` / `Tier 3` grep — read the news section in full before editing
 
-- [ ] **Step 6.1: Read the current news section**
+- [ ] **Step 8.1: Grep + read the news section**
 
-Run a `Grep` for `Finnhub` in `docs/architecture/SYSTEM-FLOWCHART.md`. Read the surrounding Mermaid diagram + prose to understand what to change.
+Run a `Grep` for `Finnhub|18 RSS|Tier 3` in `docs/architecture/SYSTEM-FLOWCHART.md`. Read the surrounding Mermaid diagrams + prose to understand what needs changing — Codex twin confirmed at least lines 320 and 460 have active Finnhub references that now misrepresent reality.
 
-- [ ] **Step 6.2: Update the Mermaid diagram + prose to reflect 3 sources**
+- [ ] **Step 8.2: Update line 320 (Mermaid node)**
 
-Replace any "Finnhub calendar" node with a note that Finnhub was removed on 2026-05-13. Update the RSS feed count from 18 → 6. Update the tier breakdown from "Tier 1 + Tier 2 + Tier 3" to "Tier 1 only".
+The node currently reads something like `Step5[Step 5 — calendar veto<br/>Finnhub + ForexFactory<br/>:1390-1433]`. Use `Edit` to replace `Finnhub + ForexFactory` with `ForexFactory` and update the `:1390-1433` line range if it shifted (likely shifted by ~5 lines after the Finnhub removal — `git blame` or a quick re-grep of `trading-agent.ts` will confirm).
 
-The exact diff depends on the current state of the doc — read first, then write a focused `Edit` call that preserves all unrelated content.
+- [ ] **Step 8.3: Update line 460 (tool table row)**
 
-- [ ] **Step 6.3: Commit the doc update**
+The row currently reads `` | `get_economic_calendar` | yes | Finnhub upcoming high/medium/low | ``. Use `Edit` to swap `Finnhub` → `ForexFactory` (or `Forex Factory` to match house style in the rest of the doc — read the surrounding rows first to pick the right form).
+
+- [ ] **Step 8.4: Update the RSS feed count + tier breakdown**
+
+Anywhere the doc says "18 RSS feeds" / "polls 18 feeds" — change to "6 Tier-1 RSS feeds". Anywhere it describes the tier hierarchy as 1/2/3 — change to "Tier 1 only (post-2026-05-13 news pruning)". Cite the spec if the doc has a tradition of citing specs.
+
+- [ ] **Step 8.5: Commit the doc update**
 
 ```bash
 git add docs/architecture/SYSTEM-FLOWCHART.md
 git commit -m "docs(architecture): update news section for 3-source layout
 
 Reflects the 2026-05-13 pruning: MarketAux + FF calendar + 6 Tier-1
-RSS feeds. Per specs/001-news-pruning/."
+RSS feeds. Specifically updates the Mermaid 'calendar veto' node
+at line 320 (Finnhub + ForexFactory → ForexFactory) and the tool
+table row at line 460. Per specs/001-news-pruning/ Task 8."
 ```
 
 ---
