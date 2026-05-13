@@ -218,10 +218,24 @@ export interface Transaction {
   date: string;
   reference: string;
   transactionType: string;
-  size: number;
+  /**
+   * Capital encodes this as a quoted JSON string. On demo accounts it also
+   * carries the realised P&L (in account currency) rather than the deal
+   * quantity — pnl-capture's matcher coerces and uses it as a fallback when
+   * `profitAndLoss` is absent (demo shape).
+   */
+  size: number | string;
+  /**
+   * Demo accounts return the account currency with a trailing `d` suffix
+   * (e.g. "EURd"). Matcher normalises by stripping that suffix.
+   */
   currency: string;
   profitAndLoss?: string;
   note?: string;
+  /** Capital deal identifier. Always present on real responses; used by
+   * the matcher to attribute a transaction to a trade leg unambiguously
+   * (size/quantity matching is unreliable on demo). */
+  dealId?: string;
 }
 
 export interface Sentiment {

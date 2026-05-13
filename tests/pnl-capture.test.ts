@@ -131,6 +131,87 @@ describe('matchTransactionsToLegs', () => {
     expect(result.matched).toBe(2);
     expect(result.unmatched).toBe(1);
   });
+
+  it('accepts demo-account "EURd" currency suffix as matching "EUR"', () => {
+    // Capital's demo environment appends a `d` suffix to the currency
+    // ("EURd" instead of "EUR"). Real broker P&L records arrive with the
+    // suffix and were previously all dropped as unmatched on demo.
+    const trade = baseTrade({});
+    const txs = [
+      baseTx({ size: 0.5, profitAndLoss: '10.50', currency: 'EURd' }),
+      baseTx({ size: 0.3, profitAndLoss: '8.72', currency: 'EURd' }),
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlA).toBeCloseTo(10.5);
+    expect(result.pnlB).toBeCloseTo(8.72);
+    expect(result.pnlTotal).toBeCloseTo(19.22);
+    expect(result.unmatched).toBe(0);
+  });
+
+  it('matches by dealId when present (preferred over size matching)', () => {
+    // Demo responses include dealId on every transaction. Trade records
+    // store position_a_id / position_b_id (the dealIds from open).
+    // Matching by dealId is unambiguous and survives Capital quirks
+    // (string size, ambiguous quantity vs. amount on the `size` field).
+    const trade = baseTrade({
+      position_a_id: 'DEAL-A',
+      position_b_id: 'DEAL-B',
+      size_a: 0.5,
+      size_b: 0.3,
+    });
+    const txs = [
+      // Sizes deliberately set to garbage so size-matching would fail —
+      // dealId matching must take priority.
+      baseTx({ size: -31.86, profitAndLoss: '10.50', dealId: 'DEAL-A' } as Partial<Transaction>),
+      baseTx({ size: -13.30, profitAndLoss: '8.72', dealId: 'DEAL-B' } as Partial<Transaction>),
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlA).toBeCloseTo(10.5);
+    expect(result.pnlB).toBeCloseTo(8.72);
+    expect(result.unmatched).toBe(0);
+  });
+
+  it('falls back to `size` as P&L when `profitAndLoss` field is absent (demo-account shape)', () => {
+    // Capital's demo environment omits `profitAndLoss` and places the
+    // realised P&L (in account currency) into `size`. Today's two
+    // 2026-05-13 SL captures (GOLD, GBPUSD) returned exactly this shape.
+    const trade = baseTrade({
+      position_a_id: 'DEAL-A',
+      position_b_id: 'DEAL-B',
+    });
+    const txs = [
+      baseTx({ size: -31.86, currency: 'EURd', dealId: 'DEAL-A', profitAndLoss: undefined } as Partial<Transaction>),
+      baseTx({ size: -13.30, currency: 'EURd', dealId: 'DEAL-B', profitAndLoss: undefined } as Partial<Transaction>),
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlA).toBeCloseTo(-31.86);
+    expect(result.pnlB).toBeCloseTo(-13.30);
+    expect(result.pnlTotal).toBeCloseTo(-45.16);
+    expect(result.unmatched).toBe(0);
+  });
+
+  it('accepts size as a numeric string (Capital returns JSON-stringified numbers)', () => {
+    // Real Capital responses encode `size` as a quoted string ("-13.3")
+    // rather than a JSON number. The matcher must coerce, otherwise
+    // strict equality vs. the trade record's numeric size_a/size_b fails.
+    const trade = baseTrade({ position_a_id: 'DEAL-A', position_b_id: 'DEAL-B' });
+    const txs = [
+      baseTx({
+        size: '0.5' as unknown as number,
+        profitAndLoss: '10.50',
+        dealId: 'DEAL-A',
+      } as Partial<Transaction>),
+      baseTx({
+        size: '0.3' as unknown as number,
+        profitAndLoss: '8.72',
+        dealId: 'DEAL-B',
+      } as Partial<Transaction>),
+    ];
+    const result = matchTransactionsToLegs(txs, trade, 'EUR');
+    expect(result.pnlA).toBeCloseTo(10.5);
+    expect(result.pnlB).toBeCloseTo(8.72);
+    expect(result.unmatched).toBe(0);
+  });
 });
 
 describe('capturePnlForTrade', () => {
