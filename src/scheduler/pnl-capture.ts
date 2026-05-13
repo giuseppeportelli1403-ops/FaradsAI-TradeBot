@@ -43,12 +43,41 @@ export interface MatchResult {
 }
 
 /**
+ * Strip Capital's demo-account currency suffix so "EURd" matches "EUR".
+ * Capital appends a lowercase `d` to the account currency code on demo
+ * environments; live accounts return the bare ISO code. Anything else
+ * (e.g. "USD" vs "EUR") still legitimately fails the equality check.
+ */
+function normaliseCurrency(c: string): string {
+  return c.endsWith('d') ? c.slice(0, -1) : c;
+}
+
+/**
+ * Resolve a transaction's realised P&L value. Capital's live API returns
+ * the value as a string in `profitAndLoss`; demo responses omit that
+ * field and put the realised P&L (in account currency) into `size`
+ * instead — observed on 2026-05-13. Prefer `profitAndLoss` when present;
+ * fall back to `size` only when the transaction also carries a `dealId`
+ * (the signal that this is a demo settlement row, not a generic
+ * data-less record).
+ */
+function resolveTxPnl(tx: Transaction): number | null {
+  if (tx.profitAndLoss !== undefined && tx.profitAndLoss !== null) {
+    return parsePnlString(tx.profitAndLoss);
+  }
+  if (!tx.dealId) return null;
+  const sizeNum = typeof tx.size === 'number' ? tx.size : parseFloat(String(tx.size));
+  return Number.isFinite(sizeNum) ? sizeNum : null;
+}
+
+/**
  * Match a list of Capital.com transactions against a trade record's
- * known legs. Capital's Transaction type lacks dealId / instrument, so
- * we match by `size` against the trade's recorded leg sizes. When leg
- * sizes are equal (ambiguous), we fall back to a total-only attribution
- * — pnl_total gets the sum, pnl_a / pnl_b stay null. This is "incomplete
- * but correct" — preferable to guessing which side got which.
+ * known legs. Preferred match key is `dealId` against `trade.position_*_id`
+ * — unambiguous, survives Capital's quantity-vs-amount overload on the
+ * `size` field. Falls back to size matching when dealId is absent (live
+ * responses sometimes elide it). When leg sizes are equal (ambiguous),
+ * we fall back to a total-only attribution — pnl_total gets the sum,
+ * pnl_a / pnl_b stay null.
  */
 export function matchTransactionsToLegs(
   txs: Transaction[],
@@ -65,25 +94,37 @@ export function matchTransactionsToLegs(
   const sizeA = trade.size_a;
   const sizeB = trade.size_b;
   const ambiguousSizes = Number.isFinite(sizeA) && Number.isFinite(sizeB) && sizeA === sizeB;
+  const accountCurrencyN = normaliseCurrency(accountCurrency);
 
   for (const tx of txs) {
-    if (tx.currency !== accountCurrency) {
+    if (normaliseCurrency(tx.currency) !== accountCurrencyN) {
       unmatched += 1;
       continue;
     }
-    const pnl = parsePnlString(tx.profitAndLoss);
+    const pnl = resolveTxPnl(tx);
     if (pnl === null) {
       unmatched += 1;
       continue;
     }
 
-    const sizeMatchesA = Number.isFinite(sizeA) && tx.size === sizeA;
-    const sizeMatchesB = Number.isFinite(sizeB) && tx.size === sizeB;
+    // dealId is the most reliable attribution key — exact equality, no
+    // quantity-vs-amount ambiguity. Use it when both sides have it.
+    const dealMatchesA = !!tx.dealId && tx.dealId === trade.position_a_id;
+    const dealMatchesB = !!tx.dealId && tx.dealId === trade.position_b_id;
 
-    if (ambiguousSizes) {
-      // Same-size legs — can't attribute by size. Still trust the
-      // transaction's currency + non-null P&L and aggregate, but only
-      // when the size matches the leg size (else it's a different trade).
+    // Coerce `size` for the fallback comparison: Capital encodes it as a
+    // JSON string ("0.5"), so strict equality vs the numeric size_a/size_b
+    // would otherwise always fail.
+    const txSizeNum = typeof tx.size === 'number' ? tx.size : parseFloat(String(tx.size));
+    const sizeMatchesA = !dealMatchesA && !dealMatchesB
+      && Number.isFinite(sizeA) && txSizeNum === sizeA;
+    const sizeMatchesB = !dealMatchesA && !dealMatchesB
+      && Number.isFinite(sizeB) && txSizeNum === sizeB;
+
+    if (ambiguousSizes && !dealMatchesA && !dealMatchesB) {
+      // Same-size legs without dealIds — can't attribute. Still trust
+      // the currency + non-null P&L and aggregate, but only when the
+      // size matches the leg size (else it's a different trade).
       if (sizeMatchesA || sizeMatchesB) {
         pnlTotal += pnl;
         matched += 1;
@@ -93,17 +134,17 @@ export function matchTransactionsToLegs(
       continue;
     }
 
-    if (sizeMatchesA && pnlA === null) {
+    if ((dealMatchesA || sizeMatchesA) && pnlA === null) {
       pnlA = pnl;
       pnlTotal += pnl;
       matched += 1;
-    } else if (sizeMatchesB && pnlB === null) {
+    } else if ((dealMatchesB || sizeMatchesB) && pnlB === null) {
       pnlB = pnl;
       pnlTotal += pnl;
       matched += 1;
     } else {
-      // Size matches neither leg (or that leg already filled) — this
-      // transaction belongs to a different trade. Tag it for
+      // Neither dealId nor size matches a leg (or that leg already
+      // filled) — transaction belongs to a different trade. Tag it for
       // diagnostics, don't pollute pnlTotal.
       unmatched += 1;
     }
