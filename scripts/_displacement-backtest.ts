@@ -262,10 +262,89 @@ async function main() {
     );
   }
 
-  return { allResults, outDir, days };
+  const { winner, mdPath } = writeOutputs(allResults, outDir, days);
+  if (!winner) {
+    console.error(`\nSTOP: no combo met ship criteria. See ${mdPath}`);
+    process.exit(2);
+  }
+  console.log(`\nWINNER: ${JSON.stringify(winner.params)} — meanR=${winner.meanR.toFixed(3)}`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 7: JSON + Markdown output writers with ship-criteria gate
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * writeOutputs — writes two files and evaluates the ship-criteria gate.
+ *
+ * Files written to outDir:
+ *   displacement-backtest-{YYYY-MM-DD}.json  — full allResults array (raw)
+ *   displacement-backtest-{YYYY-MM-DD}.md    — readable summary with verdict + sensitivity table
+ *
+ * Ship criteria (spec Section 2):
+ *   - N decided setups >= 10
+ *   - Mean R per setup >= +0.10R
+ *   - Win rate (decided) >= 40%
+ *   - Breadth: >= 3 instruments with >= 3 decided firings each
+ *     NOTE: uses perInstrumentDecided (NOT perInstrument) — Task 6 I1 fix.
+ *
+ * Returns { winner, mdPath } — winner is null if no combo passes criteria.
+ */
+function writeOutputs(
+  allResults: ComboStats[],
+  outDir: string,
+  days: number,
+): { winner: ComboStats | null; mdPath: string } {
+  const today = new Date().toISOString().slice(0, 10);
+  const jsonPath = `${outDir}/displacement-backtest-${today}.json`;
+  const mdPath = `${outDir}/displacement-backtest-${today}.md`;
+
+  // Write full event detail (raw)
+  writeFileSync(jsonPath, JSON.stringify(allResults, null, 2));
+
+  // SHIP CRITERIA gate — spec Section 2.
+  // BREADTH uses perInstrumentDecided (not perInstrument) — Task 6 I1 fix.
+  const eligible = allResults.filter(r =>
+    r.nDecided >= 10 &&
+    r.meanR >= 0.10 &&
+    (r.wins / Math.max(1, r.nDecided)) >= 0.40 &&
+    Object.values(r.perInstrumentDecided).filter(n => n >= 3).length >= 3,
+  );
+  const winner = eligible.length
+    ? eligible.sort((a, b) => b.meanR - a.meanR)[0]
+    : null;
+
+  // Build markdown summary
+  const md: string[] = [];
+  md.push(`# Displacement Continuation Backtest — ${today}\n`);
+  md.push(`Window: last ${days} days · Combos: ${allResults.length} · Universe: 7 instruments\n`);
+  md.push(`## Ship verdict\n`);
+  if (winner) {
+    md.push(`**SHIP** — combo X=${winner.params.X} Y=${winner.params.Y} Z=${winner.params.Z} n=${winner.params.n}`);
+    md.push(`- N total: ${winner.nTotal}, decided: ${winner.nDecided}`);
+    md.push(`- W/L/Open: ${winner.wins}/${winner.losses}/${winner.open}`);
+    md.push(`- Decided WR: ${(winner.wins / Math.max(1, winner.nDecided) * 100).toFixed(1)}%`);
+    md.push(`- Mean R: ${winner.meanR.toFixed(3)}, Mean R (decided): ${winner.meanRDecided.toFixed(3)}`);
+    md.push(`- Per-instrument (total): ${JSON.stringify(winner.perInstrument)}`);
+    md.push(`- Per-instrument (decided): ${JSON.stringify(winner.perInstrumentDecided)}\n`);
+  } else {
+    md.push(`**DO NOT SHIP** — no combo passed ship criteria (N≥10 decided, meanR≥+0.10R, WR≥40%, breadth≥3 instruments with ≥3 decided firings)\n`);
+  }
+  md.push(`## Sensitivity table (sorted by meanR desc)\n`);
+  md.push(`| X | Y | Z | n | N | dec | W/L/O | WR% | meanR | meanRDec | breadth |`);
+  md.push(`|---|---|---|---|---|---|---|---|---|---|---|`);
+  for (const r of [...allResults].sort((a, b) => b.meanR - a.meanR)) {
+    const wr = r.nDecided ? (r.wins / r.nDecided * 100).toFixed(1) : '-';
+    const breadth = Object.values(r.perInstrumentDecided).filter(n => n >= 3).length;
+    md.push(`| ${r.params.X} | ${r.params.Y} | ${r.params.Z} | ${r.params.n} | ${r.nTotal} | ${r.nDecided} | ${r.wins}/${r.losses}/${r.open} | ${wr} | ${r.meanR.toFixed(3)} | ${r.meanRDecided.toFixed(3)} | ${breadth} |`);
+  }
+
+  writeFileSync(mdPath, md.join('\n'));
+  console.log(`\nWrote ${jsonPath} and ${mdPath}`);
+  return { winner, mdPath };
+}
 
 // ---------------------------------------------------------------------------
 // Bias detection — Task 2
