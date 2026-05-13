@@ -72,6 +72,8 @@ export interface ComboStats {
   meanR: number;
   meanRDecided: number;
   perInstrument: Record<string, number>;
+  /** I1 fix: decided-only firings per instrument (outcome !== 'open'). Use for Task 7 breadth ≥3 criterion. */
+  perInstrumentDecided: Record<string, number>;
 }
 
 async function main() {
@@ -110,59 +112,108 @@ async function main() {
 
   const allResults: ComboStats[] = [];
 
+  // ── C2 fix: hoist per-candle pre-compute out of the combo loop ──────────────
+  // The inner candle loop (slice, 1H filter, bias, precedence, SL/TP) is
+  // combo-independent — it produces the same results for all 54 combos.
+  // Pre-computing it once per ticker reduces the total work from
+  //   54 combos × 7 tickers × ~3000 candles × O(i) slice  ≈ 3.4 B ops
+  // to
+  //   7 tickers × ~3000 candles × O(i) slice               ≈ 63 M ops
+  // plus 54 combos × (perCandleCtx.length) DC-detector calls.
+
+  interface CandleContext {
+    ticker: string;
+    candle: Candle;
+    candles15Slice: Candle[];
+    bias: Bias;
+    sl: number;
+    tp1: number;
+    tp2: number;
+    dir: 1 | -1;
+    futureSlice: Candle[];
+    timestamp: string;
+  }
+
+  const allCandleCtx: CandleContext[] = [];
+
+  for (const ticker of SUPPORTED_TICKERS) {
+    const data = tickerData[ticker];
+    if (!data) continue;
+    const spread = TYPICAL_SPREAD[ticker as Ticker];
+
+    for (let i = 15; i < data.c15.length - 1; i++) {
+      const candle = data.c15[i];
+      const ts = new Date(candle.datetime);
+
+      if (!inKillZone(ts)) continue;
+
+      // C1 fix: 1H bias filter — include only 1H candles that have FULLY CLOSED
+      // before the current 15M candle's open. Capital encodes c.datetime as candle
+      // OPEN-time (confirmed: capitalCandleToCandle in capital-client.ts:1062 maps
+      // snapshotTimeUTC → datetime; scheduler/index.ts:makeCandleKey confirms same
+      // open-time rounding). A 1H candle at ts.getTime() opened at ts and closes
+      // ts+3600s — admitting it with <= would leak its still-forming OHLC.
+      // Fix: strict < (exclude same-timestamp 1H candle).
+      const tsMs = ts.getTime();
+      const c1hFiltered = data.c1h.filter(
+        c => new Date(c.datetime).getTime() < tsMs,
+      );
+      const bias = detectBias(c1hFiltered.slice(-4));
+      if (bias === 'neutral') continue;
+
+      const candles15Slice = data.c15.slice(0, i + 1);
+
+      if (existingTriggerFires(candles15Slice, bias, spread)) continue;
+
+      // SL/TP math is combo-independent (depends only on candle + ATR + spread)
+      const dir: 1 | -1 = bias === 'bullish' ? 1 : -1;
+      const a14 = atr14(candles15Slice);
+      const prior = data.c15[i - 1];
+      const slRaw = dir > 0
+        ? prior.low - 0.1 * a14
+        : prior.high + 0.1 * a14;
+      const minDist = Math.max(2 * spread, 0.3 * a14);
+      const maxDist = 2 * a14;
+      const slDist = Math.abs(candle.close - slRaw);
+      if (slDist < minDist || slDist > maxDist) continue;
+
+      allCandleCtx.push({
+        ticker,
+        candle,
+        candles15Slice,
+        bias,
+        sl: slRaw,
+        tp1: candle.close + dir * 1.01 * slDist,
+        tp2: candle.close + dir * 1.31 * slDist,
+        dir,
+        futureSlice: data.c15.slice(i + 1),
+        timestamp: ts.toISOString(),
+      });
+    }
+  }
+
+  console.log(`  pre-compute: ${allCandleCtx.length} candidate candles across all tickers`);
+
+  // ── Per-combo: only run DC detector + simulateForward ───────────────────────
   for (const params of PARAM_COMBOS) {
     const events: ComboEvent[] = [];
 
-    for (const ticker of SUPPORTED_TICKERS) {
-      const data = tickerData[ticker];
-      if (!data) continue;
-      const spread = TYPICAL_SPREAD[ticker as Ticker];
+    for (const ctx of allCandleCtx) {
+      const spread = TYPICAL_SPREAD[ctx.ticker as Ticker];
+      const dc = checkDisplacementContinuation(ctx.candles15Slice, ctx.bias, params, spread);
+      if (dc.qualifies !== true) continue;
 
-      for (let i = 15; i < data.c15.length - 1; i++) {
-        const candle = data.c15[i];
-        const ts = new Date(candle.datetime);
+      const sim = simulateForward(
+        ctx.futureSlice, ctx.candle.close, ctx.sl, ctx.tp1, ctx.tp2, ctx.dir, horizon,
+      );
 
-        if (!inKillZone(ts)) continue;
-
-        const c1hFiltered = data.c1h.filter(
-          c => new Date(c.datetime).getTime() <= ts.getTime(),
-        );
-        const bias = detectBias(c1hFiltered.slice(-4));
-        if (bias === 'neutral') continue;
-
-        const candles15Slice = data.c15.slice(0, i + 1);
-
-        if (existingTriggerFires(candles15Slice, bias, spread)) continue;
-
-        const dc = checkDisplacementContinuation(candles15Slice, bias, params, spread);
-        if (dc.qualifies !== true) continue;
-
-        const dir: 1 | -1 = bias === 'bullish' ? 1 : -1;
-        const a14 = atr14(candles15Slice);
-        const prior = data.c15[i - 1];
-        const slRaw = dir > 0
-          ? prior.low - 0.1 * a14
-          : prior.high + 0.1 * a14;
-        const minDist = Math.max(2 * spread, 0.3 * a14);
-        const maxDist = 2 * a14;
-        const slDist = Math.abs(candle.close - slRaw);
-        if (slDist < minDist || slDist > maxDist) continue;
-
-        const sl = slRaw;
-        const tp1 = candle.close + dir * 1.01 * slDist;
-        const tp2 = candle.close + dir * 1.31 * slDist;
-
-        const future = data.c15.slice(i + 1);
-        const sim = simulateForward(future, candle.close, sl, tp1, tp2, dir, horizon);
-
-        events.push({
-          ticker,
-          timestamp: ts.toISOString(),
-          bias,
-          outcome: sim.outcome,
-          r: sim.r,
-        });
-      }
+      events.push({
+        ticker: ctx.ticker,
+        timestamp: ctx.timestamp,
+        bias: ctx.bias,
+        outcome: sim.outcome,
+        r: sim.r,
+      });
     }
 
     const nTotal = events.length;
@@ -179,9 +230,16 @@ async function main() {
     const meanRDecided = decidedRs.length
       ? decidedRs.reduce((s, r) => s + r, 0) / decidedRs.length
       : 0;
+
+    // I1 fix: track both total firings and decided-only firings per instrument.
+    // Task 7 breadth criterion (≥3 instruments with ≥3 firings) uses perInstrumentDecided.
     const perInstrument: Record<string, number> = {};
+    const perInstrumentDecided: Record<string, number> = {};
     for (const e of events) {
       perInstrument[e.ticker] = (perInstrument[e.ticker] ?? 0) + 1;
+      if (e.outcome !== 'open') {
+        perInstrumentDecided[e.ticker] = (perInstrumentDecided[e.ticker] ?? 0) + 1;
+      }
     }
 
     allResults.push({
@@ -195,6 +253,7 @@ async function main() {
       meanR,
       meanRDecided,
       perInstrument,
+      perInstrumentDecided,
     });
 
     console.log(
