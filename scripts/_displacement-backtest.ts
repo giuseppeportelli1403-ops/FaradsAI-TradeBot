@@ -25,10 +25,185 @@ function parseArgs(argv: string[]) {
   return { days, outDir, horizon };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 6: ATR helper, kill-zone check, parameter combos
+// ─────────────────────────────────────────────────────────────────────────────
+
+function atr14(candles: ReadonlyArray<Candle>): number {
+  if (candles.length < 15) return 0;
+  const trs: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const h = candles[i].high, l = candles[i].low, pc = candles[i - 1].close;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  const last14 = trs.slice(-14);
+  return last14.reduce((a, b) => a + b, 0) / 14;
+}
+
+function inKillZone(d: Date): boolean {
+  const t = d.getUTCHours() + d.getUTCMinutes() / 60;
+  return (t >= 7 && t < 10) || (t >= 13 && t < 16) || (t >= 16 && t < 17);
+}
+
+const PARAM_COMBOS: DcParams[] = [];
+for (const X of [0.40, 0.50, 0.60])
+  for (const Y of [1.0, 1.2, 1.5])
+    for (const Z of [0.60, 0.70, 0.75])
+      for (const n of [2, 3])
+        PARAM_COMBOS.push({ X, Y, Z, n });
+// Total: 3x3x3x2 = 54 combos
+
+interface ComboEvent {
+  ticker: string;
+  timestamp: string;
+  bias: Bias;
+  outcome: SimOutcome;
+  r: number;
+}
+
+export interface ComboStats {
+  params: DcParams;
+  events: ComboEvent[];
+  nTotal: number;
+  nDecided: number;
+  wins: number;
+  losses: number;
+  open: number;
+  meanR: number;
+  meanRDecided: number;
+  perInstrument: Record<string, number>;
+}
+
 async function main() {
   const { days, outDir, horizon } = parseArgs(process.argv.slice(2));
-  console.log(`Displacement Continuation backtest — days=${days}, horizon=${horizon}×15M`);
-  // TODO: fill in with Tasks 2-8
+  console.log(
+    `Displacement Continuation backtest -- days=${days}, horizon=${horizon}x15M, combos=${PARAM_COMBOS.length}`,
+  );
+
+  const cap = new CapitalClient({
+    apiKey: process.env.CAPITAL_API_KEY!,
+    identifier: process.env.CAPITAL_IDENTIFIER!,
+    password: process.env.CAPITAL_PASSWORD!,
+    baseURL: process.env.CAPITAL_BASE_URL ?? 'https://demo-api-capital.backend-capital.com',
+  });
+
+  const now = new Date();
+  const from = new Date(now.getTime() - days * 86400000)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "");
+  const to = now.toISOString().replace(/\.\d{3}Z$/, "");
+  console.log(`  window: ${from} to ${to}`);
+
+  const tickerData: Record<string, { c15: Candle[]; c1h: Candle[] }> = {};
+  for (const ticker of SUPPORTED_TICKERS) {
+    try {
+      const c15 = await cap.getCandlesAsCandles(ticker as any, '15m', 3000, from, to);
+      await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
+      const c1h = await cap.getCandlesAsCandles(ticker as any, '1h', 1000, from, to);
+      await new Promise(r => setTimeout(r, RATE_LIMIT_MS));
+      tickerData[ticker] = { c15: c15 as Candle[], c1h: c1h as Candle[] };
+      console.log(`  ${ticker}: 15m=${c15.length} 1h=${c1h.length}`);
+    } catch (e: any) {
+      console.warn(`  ${ticker}: fetch error -- ${String(e?.message ?? e).slice(0, 120)}`);
+    }
+  }
+
+  const allResults: ComboStats[] = [];
+
+  for (const params of PARAM_COMBOS) {
+    const events: ComboEvent[] = [];
+
+    for (const ticker of SUPPORTED_TICKERS) {
+      const data = tickerData[ticker];
+      if (!data) continue;
+      const spread = TYPICAL_SPREAD[ticker as Ticker];
+
+      for (let i = 15; i < data.c15.length - 1; i++) {
+        const candle = data.c15[i];
+        const ts = new Date(candle.datetime);
+
+        if (!inKillZone(ts)) continue;
+
+        const c1hFiltered = data.c1h.filter(
+          c => new Date(c.datetime).getTime() <= ts.getTime(),
+        );
+        const bias = detectBias(c1hFiltered.slice(-4));
+        if (bias === 'neutral') continue;
+
+        const candles15Slice = data.c15.slice(0, i + 1);
+
+        if (existingTriggerFires(candles15Slice, bias, spread)) continue;
+
+        const dc = checkDisplacementContinuation(candles15Slice, bias, params, spread);
+        if (dc.qualifies !== true) continue;
+
+        const dir: 1 | -1 = bias === 'bullish' ? 1 : -1;
+        const a14 = atr14(candles15Slice);
+        const prior = data.c15[i - 1];
+        const slRaw = dir > 0
+          ? prior.low - 0.1 * a14
+          : prior.high + 0.1 * a14;
+        const minDist = Math.max(2 * spread, 0.3 * a14);
+        const maxDist = 2 * a14;
+        const slDist = Math.abs(candle.close - slRaw);
+        if (slDist < minDist || slDist > maxDist) continue;
+
+        const sl = slRaw;
+        const tp1 = candle.close + dir * 1.01 * slDist;
+        const tp2 = candle.close + dir * 1.31 * slDist;
+
+        const future = data.c15.slice(i + 1);
+        const sim = simulateForward(future, candle.close, sl, tp1, tp2, dir, horizon);
+
+        events.push({
+          ticker,
+          timestamp: ts.toISOString(),
+          bias,
+          outcome: sim.outcome,
+          r: sim.r,
+        });
+      }
+    }
+
+    const nTotal = events.length;
+    const nDecided = events.filter(e => e.outcome !== 'open').length;
+    const wins = events.filter(
+      e => e.outcome === 'tp1_hit' || e.outcome === 'tp2_hit',
+    ).length;
+    const losses = events.filter(e => e.outcome === 'sl_hit').length;
+    const open = events.filter(e => e.outcome === 'open').length;
+    const meanR = events.length
+      ? events.reduce((s, e) => s + e.r, 0) / events.length
+      : 0;
+    const decidedRs = events.filter(e => e.outcome !== 'open').map(e => e.r);
+    const meanRDecided = decidedRs.length
+      ? decidedRs.reduce((s, r) => s + r, 0) / decidedRs.length
+      : 0;
+    const perInstrument: Record<string, number> = {};
+    for (const e of events) {
+      perInstrument[e.ticker] = (perInstrument[e.ticker] ?? 0) + 1;
+    }
+
+    allResults.push({
+      params,
+      events,
+      nTotal,
+      nDecided,
+      wins,
+      losses,
+      open,
+      meanR,
+      meanRDecided,
+      perInstrument,
+    });
+
+    console.log(
+      `  combo X=${params.X} Y=${params.Y} Z=${params.Z} n=${params.n}: ` +
+      `N=${nTotal} dec=${nDecided} W/L/O=${wins}/${losses}/${open} meanR=${meanR.toFixed(3)}`,
+    );
+  }
+
+  return { allResults, outDir, days };
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
